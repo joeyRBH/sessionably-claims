@@ -7,4 +7,4 @@ export const authRouter = Router();
 authRouter.post('/login', authController.login);
 authRouter.post('/register', authController.register);
 authRouter.get('/me', authenticate, authController.me);
-authRouter.post('/change-password', authenticate, authController.changePassword);
+authRouter.post('/change-credential', authenticate, authController.changeCredential);

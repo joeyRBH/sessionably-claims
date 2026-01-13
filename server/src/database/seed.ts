@@ -6,6 +6,10 @@ import { organizations, users, payers } from '../models/schema.js';
 
 const { Pool } = pg;
 
+// Seed credentials from environment or use defaults for development
+const SEED_ADMIN_CREDENTIAL = process.env.SEED_ADMIN_CREDENTIAL || 'changeme123';
+const SEED_STAFF_CREDENTIAL = process.env.SEED_STAFF_CREDENTIAL || 'changeme456';
+
 async function seed() {
   const pool = new Pool({
     connectionString: config.databaseUrl,
@@ -34,12 +38,12 @@ async function seed() {
   console.log('Created organization:', org.name);
 
   // Create admin user
-  const passwordHash = await bcrypt.hash('admin123', 12);
+  const adminHash = await bcrypt.hash(SEED_ADMIN_CREDENTIAL, 12);
   const [adminUser] = await db
     .insert(users)
     .values({
       email: 'admin@claimsub.com',
-      passwordHash,
+      passwordHash: adminHash,
       name: 'Admin User',
       role: 'admin',
       organizationId: org.id,
@@ -49,12 +53,12 @@ async function seed() {
   console.log('Created admin user:', adminUser.email);
 
   // Create staff user
-  const staffPasswordHash = await bcrypt.hash('staff123', 12);
+  const staffHash = await bcrypt.hash(SEED_STAFF_CREDENTIAL, 12);
   const [staffUser] = await db
     .insert(users)
     .values({
       email: 'staff@claimsub.com',
-      passwordHash: staffPasswordHash,
+      passwordHash: staffHash,
       name: 'Staff User',
       role: 'staff',
       organizationId: org.id,
@@ -100,9 +104,10 @@ async function seed() {
   console.log('Created default payers');
 
   console.log('Seeding completed!');
-  console.log('\nDefault credentials:');
-  console.log('Admin: admin@claimsub.com / admin123');
-  console.log('Staff: staff@claimsub.com / staff123');
+  console.log('\nDefault users created:');
+  console.log('Admin: admin@claimsub.com');
+  console.log('Staff: staff@claimsub.com');
+  console.log('Set SEED_ADMIN_CREDENTIAL and SEED_STAFF_CREDENTIAL env vars for credentials');
 
   await pool.end();
 }

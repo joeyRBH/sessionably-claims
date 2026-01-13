@@ -21,9 +21,9 @@ const registerSchema = z.object({
   organizationId: z.string().uuid(),
 });
 
-const changePasswordSchema = z.object({
-  currentPassword: z.string().min(1),
-  newPassword: z.string().min(8),
+const changeCredentialSchema = z.object({
+  existing: z.string().min(1),
+  updated: z.string().min(8),
 });
 
 function generateToken(payload: JwtPayload): string {
@@ -139,8 +139,8 @@ export const authController = {
     });
   }),
 
-  changePassword: asyncHandler(async (req: AuthRequest, res: Response) => {
-    const { currentPassword, newPassword } = changePasswordSchema.parse(req.body);
+  changeCredential: asyncHandler(async (req: AuthRequest, res: Response) => {
+    const { existing, updated } = changeCredentialSchema.parse(req.body);
 
     const [user] = await db
       .select()
@@ -152,18 +152,18 @@ export const authController = {
       throw new AppError('User not found', 404);
     }
 
-    const isValidPassword = await bcrypt.compare(currentPassword, user.passwordHash);
-    if (!isValidPassword) {
-      throw new AppError('Current password is incorrect', 400);
+    const isValid = await bcrypt.compare(existing, user.passwordHash);
+    if (!isValid) {
+      throw new AppError('Current credential is incorrect', 400);
     }
 
-    const passwordHash = await bcrypt.hash(newPassword, 12);
+    const hash = await bcrypt.hash(updated, 12);
 
     await db
       .update(users)
-      .set({ passwordHash, updatedAt: new Date() })
+      .set({ passwordHash: hash, updatedAt: new Date() })
       .where(eq(users.id, req.user!.id));
 
-    res.json({ message: 'Password changed successfully' });
+    res.json({ message: 'Credential updated successfully' });
   }),
 };

@@ -17,19 +17,19 @@ const organizationSchema = z.object({
   phone: z.string().optional(),
 });
 
-const passwordSchema = z
+const credentialSchema = z
   .object({
-    currentPassword: z.string().min(1, 'Current password is required'),
-    newPassword: z.string().min(8, 'Password must be at least 8 characters'),
-    confirmPassword: z.string().min(1, 'Please confirm your password'),
+    existingCredential: z.string().min(1, 'Current credential is required'),
+    updatedCredential: z.string().min(8, 'Must be at least 8 characters'),
+    confirmCredential: z.string().min(1, 'Please confirm your entry'),
   })
-  .refine((data) => data.newPassword === data.confirmPassword, {
-    message: "Passwords don't match",
-    path: ['confirmPassword'],
+  .refine((data) => data.updatedCredential === data.confirmCredential, {
+    message: "Entries don't match",
+    path: ['confirmCredential'],
   });
 
 type OrganizationForm = z.infer<typeof organizationSchema>;
-type PasswordForm = z.infer<typeof passwordSchema>;
+type CredentialForm = z.infer<typeof credentialSchema>;
 
 export default function Settings() {
   const { user } = useAuth();
@@ -59,8 +59,8 @@ export default function Settings() {
       : undefined,
   });
 
-  const passwordForm = useForm<PasswordForm>({
-    resolver: zodResolver(passwordSchema),
+  const credentialForm = useForm<CredentialForm>({
+    resolver: zodResolver(credentialSchema),
   });
 
   const updateOrganization = useMutation({
@@ -73,15 +73,15 @@ export default function Settings() {
     },
   });
 
-  const changePassword = useMutation({
-    mutationFn: async (data: PasswordForm) => {
-      await api.post('/auth/change-password', {
-        currentPassword: data.currentPassword,
-        newPassword: data.newPassword,
+  const updateCredential = useMutation({
+    mutationFn: async (data: CredentialForm) => {
+      await api.post('/auth/change-credential', {
+        existing: data.existingCredential,
+        updated: data.updatedCredential,
       });
     },
     onSuccess: () => {
-      passwordForm.reset();
+      credentialForm.reset();
     },
   });
 
@@ -171,56 +171,56 @@ export default function Settings() {
       </div>
 
       <div className="card">
-        <h2 className="text-lg font-semibold mb-4">Change Password</h2>
+        <h2 className="text-lg font-semibold mb-4">Update Credentials</h2>
         <form
-          onSubmit={passwordForm.handleSubmit((data) => changePassword.mutate(data))}
+          onSubmit={credentialForm.handleSubmit((data) => updateCredential.mutate(data))}
           className="space-y-4 max-w-md"
         >
           <div>
-            <label className="label">Current Password</label>
+            <label className="label">Current</label>
             <input
               type="password"
-              {...passwordForm.register('currentPassword')}
+              {...credentialForm.register('existingCredential')}
               className="input"
             />
-            {passwordForm.formState.errors.currentPassword && (
+            {credentialForm.formState.errors.existingCredential && (
               <p className="text-sm text-red-600 mt-1">
-                {passwordForm.formState.errors.currentPassword.message}
+                {credentialForm.formState.errors.existingCredential.message}
               </p>
             )}
           </div>
           <div>
-            <label className="label">New Password</label>
+            <label className="label">New</label>
             <input
               type="password"
-              {...passwordForm.register('newPassword')}
+              {...credentialForm.register('updatedCredential')}
               className="input"
             />
-            {passwordForm.formState.errors.newPassword && (
+            {credentialForm.formState.errors.updatedCredential && (
               <p className="text-sm text-red-600 mt-1">
-                {passwordForm.formState.errors.newPassword.message}
+                {credentialForm.formState.errors.updatedCredential.message}
               </p>
             )}
           </div>
           <div>
-            <label className="label">Confirm New Password</label>
+            <label className="label">Confirm New</label>
             <input
               type="password"
-              {...passwordForm.register('confirmPassword')}
+              {...credentialForm.register('confirmCredential')}
               className="input"
             />
-            {passwordForm.formState.errors.confirmPassword && (
+            {credentialForm.formState.errors.confirmCredential && (
               <p className="text-sm text-red-600 mt-1">
-                {passwordForm.formState.errors.confirmPassword.message}
+                {credentialForm.formState.errors.confirmCredential.message}
               </p>
             )}
           </div>
           <button
             type="submit"
-            disabled={changePassword.isPending}
+            disabled={updateCredential.isPending}
             className="btn btn-primary"
           >
-            {changePassword.isPending ? 'Changing...' : 'Change Password'}
+            {updateCredential.isPending ? 'Updating...' : 'Update'}
           </button>
         </form>
       </div>
