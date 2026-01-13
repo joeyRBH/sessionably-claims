@@ -1,0 +1,51 @@
+{
+  "name": "@claimsub/server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "lint": "eslint . --ext ts --report-unused-disable-directives --max-warnings 0",
+    "test": "vitest",
+    "db:migrate": "tsx src/database/migrate.ts",
+    "db:seed": "tsx src/database/seed.ts",
+    "db:reset": "tsx src/database/reset.ts"
+  },
+  "dependencies": {
+    "express": "^4.21.1",
+    "cors": "^2.8.5",
+    "helmet": "^8.0.0",
+    "compression": "^1.7.5",
+    "morgan": "^1.10.0",
+    "dotenv": "^16.4.5",
+    "pg": "^8.13.0",
+    "drizzle-orm": "^0.35.2",
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.2",
+    "zod": "^3.23.8",
+    "uuid": "^10.0.0",
+    "date-fns": "^4.1.0",
+    "winston": "^3.15.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/cors": "^2.8.17",
+    "@types/compression": "^1.7.5",
+    "@types/morgan": "^1.9.9",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/jsonwebtoken": "^9.0.7",
+    "@types/uuid": "^10.0.0",
+    "@types/pg": "^8.11.10",
+    "@types/node": "^22.8.1",
+    "@typescript-eslint/eslint-plugin": "^8.11.0",
+    "@typescript-eslint/parser": "^8.11.0",
+    "drizzle-kit": "^0.26.2",
+    "eslint": "^9.13.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.3"
+  }
+}
