@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Claimsub</title>
+
+  <!-- Tokens first (authoritative F0 design system), then shell layout. -->
+  <link rel="stylesheet" href="../app-foundation/styles/tokens.css">
+  <link rel="stylesheet" href="./app.css">
+</head>
+<body>
+  <div class="app-shell" id="app-shell">
+
+    <!-- ===================== Top bar ===================== -->
+    <header class="topbar" role="banner">
+      <div class="topbar__left">
+        <button
+          type="button"
+          class="icon-btn topbar__menu-btn"
+          id="drawer-toggle"
+          aria-label="Open navigation menu"
+          aria-controls="sidebar"
+          aria-expanded="false"
+        >
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M4 6h16M4 12h16M4 18h16" fill="none" stroke="currentColor"
+                  stroke-width="2" stroke-linecap="round"/>
+          </svg>
+        </button>
+
+        <a class="wordmark" href="#" aria-label="Claimsub home">
+          <svg class="wordmark__mark" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <rect x="3" y="3" width="18" height="18" rx="5" fill="currentColor"/>
+            <path d="M16 9.2a4.2 4.2 0 1 0 0 5.6" fill="none" stroke="var(--color-on-primary)"
+                  stroke-width="2" stroke-linecap="round"/>
+          </svg>
+          <span class="wordmark__text">Claimsub</span>
+        </a>
+      </div>
+
+      <div class="topbar__right">
+        <span class="practice-name" id="practice-name" title="Current practice">
+          Riverbend Behavioral Health
+        </span>
+
+        <!-- User menu -->
+        <div class="user-menu" id="user-menu">
+          <button
+            type="button"
+            class="user-menu__trigger"
+            id="user-menu-trigger"
+            aria-haspopup="menu"
+            aria-expanded="false"
+            aria-controls="user-menu-dropdown"
+          >
+            <span class="user-menu__avatar" aria-hidden="true" id="user-initials">JH</span>
+            <span class="user-menu__name" id="user-name">Account</span>
+            <svg class="icon user-menu__chevron" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M6 9l6 6 6-6" fill="none" stroke="currentColor"
+                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+
+          <div class="user-menu__dropdown" id="user-menu-dropdown" role="menu" hidden>
+            <button type="button" class="user-menu__item" role="menuitem" id="logout-btn">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M15 12H3m0 0l4-4m-4 4l4 4M11 4h7a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-7"
+                      fill="none" stroke="currentColor" stroke-width="2"
+                      stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              Log out
+            </button>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- ===================== Sidebar ===================== -->
+    <nav class="sidebar" id="sidebar" aria-label="Primary">
+      <ul class="nav-list">
+        <li>
+          <a class="nav-link is-active" href="#dashboard" aria-current="page">
+            <svg class="icon nav-link__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M4 13h7V4H4v9zM4 20h7v-4H4v4zM13 20h7v-9h-7v9zM13 4v4h7V4h-7z"
+                    fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span class="nav-link__label">Dashboard</span>
+          </a>
+        </li>
+        <li>
+          <a class="nav-link" href="#claims">
+            <svg class="icon nav-link__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M8 3h6l5 5v11a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"
+                    fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M14 3v5h5M9 13h6M9 17h6" fill="none" stroke="currentColor"
+                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span class="nav-link__label">Claims</span>
+          </a>
+        </li>
+        <li>
+          <a class="nav-link" href="#clients">
+            <svg class="icon nav-link__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <circle cx="9" cy="8" r="3.2" fill="none" stroke="currentColor" stroke-width="2"/>
+              <path d="M3.5 19a5.5 5.5 0 0 1 11 0M16 6.2a3 3 0 0 1 0 5.6M16.5 14.2c2.2.5 3.5 2 3.5 4.8"
+                    fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+            <span class="nav-link__label">Clients</span>
+          </a>
+        </li>
+        <li>
+          <a class="nav-link" href="#clinicians">
+            <svg class="icon nav-link__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <circle cx="12" cy="7" r="3.2" fill="none" stroke="currentColor" stroke-width="2"/>
+              <path d="M6 20a6 6 0 0 1 12 0" fill="none" stroke="currentColor"
+                    stroke-width="2" stroke-linecap="round"/>
+              <path d="M12 10.2v3.6M10.2 12h3.6" fill="none" stroke="currentColor"
+                    stroke-width="2" stroke-linecap="round"/>
+            </svg>
+            <span class="nav-link__label">Clinicians</span>
+          </a>
+        </li>
+        <li>
+          <a class="nav-link" href="#payers">
+            <svg class="icon nav-link__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <rect x="3" y="6" width="18" height="13" rx="2" fill="none"
+                    stroke="currentColor" stroke-width="2"/>
+              <path d="M3 10h18M7 15h4" fill="none" stroke="currentColor"
+                    stroke-width="2" stroke-linecap="round"/>
+            </svg>
+            <span class="nav-link__label">Payers</span>
+          </a>
+        </li>
+        <li>
+          <a class="nav-link" href="#reports">
+            <svg class="icon nav-link__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M4 20V10M10 20V4M16 20v-7M22 20H2" fill="none" stroke="currentColor"
+                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span class="nav-link__label">Reports</span>
+          </a>
+        </li>
+        <li>
+          <a class="nav-link" href="#settings">
+            <svg class="icon nav-link__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2"/>
+              <path d="M12 2.5v3M12 18.5v3M21.5 12h-3M5.5 12h-3M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1M18.4 18.4l-2.1-2.1M7.7 7.7L5.6 5.6"
+                    fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+            <span class="nav-link__label">Settings</span>
+          </a>
+        </li>
+      </ul>
+    </nav>
+
+    <!-- Backdrop for the off-canvas drawer (mobile only). -->
+    <div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
+
+    <!-- ===================== Main content ===================== -->
+    <main class="content" id="view-root" tabindex="-1">
+      <div class="empty-state">
+        <svg class="empty-state__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <rect x="3" y="4" width="18" height="16" rx="2" fill="none"
+                stroke="currentColor" stroke-width="1.5"/>
+          <path d="M3 9h18M8 14h8M8 17h5" fill="none" stroke="currentColor"
+                stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        <h1 class="empty-state__title">Welcome to Claimsub</h1>
+        <p class="empty-state__body">
+          Select a section from the sidebar to get started. Screens render here.
+        </p>
+      </div>
+    </main>
+
+  </div>
+
+  <!-- Canonical API namespace: all network calls go through window.ClaimsubAPI. -->
+  <script src="../js/api-client.js"></script>
+  <!-- Shell behavior: auth guard, drawer, user menu, logout. -->
+  <script src="./app.js"></script>
+</body>
+</html>

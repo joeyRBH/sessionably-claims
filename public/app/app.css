@@ -1,0 +1,408 @@
+/* =============================================================================
+ * Claimsub — app shell layout
+ * =============================================================================
+ * SHELL ONLY: topbar + sidebar + main region. View/component styling lives
+ * elsewhere. Every color, font, radius, spacing, shadow, motion and z-index
+ * value resolves from a tokens.css variable — no literals. Light mode only.
+ * ========================================================================== */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-body);
+  font-size: var(--font-size-4);
+  line-height: var(--leading-base);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Shared focus style — visible, token-based, oxblood ring. */
+:where(a, button) {
+  color: inherit;
+}
+
+:focus-visible {
+  outline: var(--focus-ring-width) solid var(--color-focus-ring);
+  outline-offset: var(--focus-ring-offset);
+  border-radius: var(--radius-1);
+}
+
+.icon {
+  width: var(--space-5);
+  height: var(--space-5);
+  display: block;
+  flex: 0 0 auto;
+}
+
+/* -----------------------------------------------------------------------------
+ * Shell grid: full-width topbar, sidebar + main beneath it.
+ *   [ topbar  topbar ]
+ *   [ sidebar  main  ]
+ * -------------------------------------------------------------------------- */
+.app-shell {
+  display: grid;
+  grid-template-columns: var(--rail-width) 1fr;
+  grid-template-rows: var(--topbar-height) 1fr;
+  grid-template-areas:
+    "topbar  topbar"
+    "sidebar main";
+  min-height: 100vh;
+}
+
+/* =============================== Top bar ================================== */
+.topbar {
+  grid-area: topbar;
+  position: sticky;
+  top: 0;
+  z-index: var(--zone-1);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: 0 var(--space-5);
+  background: var(--color-surface);
+  border-bottom: var(--border-width-1) solid var(--color-border);
+  box-shadow: var(--shadow-1);
+}
+
+.topbar__left,
+.topbar__right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+/* Generic icon button (hamburger, etc.) */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--space-8);
+  height: var(--space-8);
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-2);
+  background: transparent;
+  color: var(--color-text-strong);
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease-standard);
+}
+
+.icon-btn:hover {
+  background: var(--color-surface-sunken);
+}
+
+/* Hamburger is desktop-hidden; revealed at the drawer breakpoint. */
+.topbar__menu-btn {
+  display: none;
+}
+
+/* Wordmark / logo */
+.wordmark {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  text-decoration: none;
+  color: var(--color-text);
+}
+
+.wordmark__mark {
+  width: var(--space-7);
+  height: var(--space-7);
+  color: var(--color-primary);
+}
+
+.wordmark__text {
+  font-family: var(--font-display);
+  font-size: var(--font-size-5);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: var(--tracking-wide);
+}
+
+.practice-name {
+  font-size: var(--font-size-3);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 36ch;
+}
+
+/* ------------------------------- User menu ------------------------------- */
+.user-menu {
+  position: relative;
+}
+
+.user-menu__trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border: var(--border-width-1) solid transparent;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--color-text-strong);
+  font-family: var(--font-body);
+  font-size: var(--font-size-3);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease-standard),
+              border-color var(--motion-fast) var(--ease-standard);
+}
+
+.user-menu__trigger:hover,
+.user-menu__trigger[aria-expanded="true"] {
+  background: var(--color-surface-sunken);
+  border-color: var(--color-border);
+}
+
+.user-menu__avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--space-7);
+  height: var(--space-7);
+  border-radius: var(--radius-pill);
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+  font-size: var(--font-size-2);
+  font-weight: var(--font-weight-semibold);
+}
+
+.user-menu__chevron {
+  width: var(--space-4);
+  height: var(--space-4);
+  color: var(--color-text-muted);
+}
+
+.user-menu__dropdown {
+  position: absolute;
+  top: calc(100% + var(--space-2));
+  right: 0;
+  min-width: 11rem;
+  padding: var(--space-1);
+  background: var(--color-surface);
+  border: var(--border-width-1) solid var(--color-border);
+  border-radius: var(--radius-3);
+  box-shadow: var(--shadow-3);
+  z-index: var(--zone-3);
+}
+
+.user-menu__dropdown[hidden] {
+  display: none;
+}
+
+.user-menu__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: none;
+  border-radius: var(--radius-2);
+  background: transparent;
+  color: var(--color-text);
+  font-family: var(--font-body);
+  font-size: var(--font-size-3);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease-standard);
+}
+
+.user-menu__item:hover {
+  background: var(--color-surface-sunken);
+}
+
+/* =============================== Sidebar ================================= */
+.sidebar {
+  grid-area: sidebar;
+  background: var(--color-surface);
+  border-right: var(--border-width-1) solid var(--color-border);
+  padding: var(--space-5) var(--space-3);
+  overflow-y: auto;
+}
+
+.nav-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.nav-link {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-3);
+  border-radius: var(--radius-3);
+  text-decoration: none;
+  color: var(--nav-link-text);
+  font-size: var(--font-size-3);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--leading-tight);
+  position: relative;
+  transition: background var(--motion-fast) var(--ease-standard),
+              color var(--motion-fast) var(--ease-standard);
+}
+
+.nav-link:hover {
+  background: var(--nav-link-hover-bg);
+}
+
+.nav-link__icon {
+  color: var(--color-text-muted);
+  transition: color var(--motion-fast) var(--ease-standard);
+}
+
+.nav-link.is-active {
+  background: var(--nav-link-active-bg);
+  color: var(--nav-link-active-text);
+  font-weight: var(--font-weight-semibold);
+}
+
+.nav-link.is-active .nav-link__icon {
+  color: var(--nav-link-active-text);
+}
+
+/* Oxblood active indicator on the inner edge of the rail. */
+.nav-link.is-active::before {
+  content: "";
+  position: absolute;
+  left: calc(var(--space-3) * -1);
+  top: var(--space-2);
+  bottom: var(--space-2);
+  width: var(--space-1);
+  border-radius: var(--radius-pill);
+  background: var(--nav-active-indicator);
+}
+
+/* =============================== Main ==================================== */
+.content {
+  grid-area: main;
+  padding: var(--space-7);
+  overflow-y: auto;
+  outline: none;
+}
+
+/* Empty-state placeholder (future screens replace this region). */
+.empty-state {
+  max-width: var(--content-max);
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: var(--space-3);
+  padding: var(--space-11) var(--space-5);
+  color: var(--color-text-muted);
+}
+
+.empty-state__icon {
+  width: var(--space-10);
+  height: var(--space-10);
+  color: var(--color-text-subtle);
+  margin-bottom: var(--space-2);
+}
+
+.empty-state__title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--font-size-7);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--leading-tight);
+  color: var(--color-text);
+}
+
+.empty-state__body {
+  margin: 0;
+  max-width: 42ch;
+  font-size: var(--font-size-4);
+  color: var(--color-text-muted);
+}
+
+/* =============================== Drawer ================================== */
+/* Backdrop sits above content, below the open drawer (mobile only). */
+.drawer-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: var(--zone-2);
+  background: var(--color-backdrop);
+  opacity: 0;
+  transition: opacity var(--motion-base) var(--ease-standard);
+}
+
+.drawer-backdrop[hidden] {
+  display: none;
+}
+
+/* -----------------------------------------------------------------------------
+ * Responsive: below the tablet breakpoint the sidebar becomes an off-canvas
+ * drawer toggled by the hamburger.
+ * -------------------------------------------------------------------------- */
+@media (max-width: 900px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+    grid-template-rows: var(--topbar-height) 1fr;
+    grid-template-areas:
+      "topbar"
+      "main";
+  }
+
+  .topbar__menu-btn {
+    display: inline-flex;
+  }
+
+  .practice-name {
+    display: none;
+  }
+
+  /* Sidebar slides in from the left as an overlay panel. */
+  .sidebar {
+    position: fixed;
+    top: var(--topbar-height);
+    bottom: 0;
+    left: 0;
+    width: var(--rail-width);
+    max-width: 86vw;
+    z-index: var(--zone-2);
+    transform: translateX(-100%);
+    box-shadow: var(--shadow-3);
+    transition: transform var(--motion-base) var(--ease-standard);
+  }
+
+  .app-shell.is-drawer-open .sidebar {
+    transform: translateX(0);
+  }
+
+  .drawer-backdrop {
+    display: block;
+  }
+
+  .app-shell.is-drawer-open .drawer-backdrop {
+    opacity: 1;
+  }
+}
+
+/* When the user prefers reduced motion, drop the slide/fade transitions. */
+@media (prefers-reduced-motion: reduce) {
+  .sidebar,
+  .drawer-backdrop {
+    transition: none;
+  }
+}

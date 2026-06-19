@@ -1,0 +1,198 @@
+/* =============================================================================
+ * Claimsub — F0 design tokens ("Ink & Oxblood")
+ * =============================================================================
+ * The authoritative token layer for the app. LIGHT MODE ONLY — no dark mode,
+ * no theme toggle. Two layers:
+ *   1. Primitives  — raw palette + scales. Not consumed directly by views.
+ *   2. Semantic    — role-based aliases. Views/components consume THESE.
+ *
+ * Rules (see CLAUDE.md):
+ *   * Never reference a raw hex / px literal in a view — use a semantic token.
+ *   * Oxblood is primary; brass is the accent; ink is body text; warm paper is
+ *     the background. Calm and clinical — oxblood only where it earns attention.
+ *   * No external font dependency: families degrade to robust system fallbacks.
+ * ========================================================================== */
+
+:root {
+  /* ---------------------------------------------------------------------------
+   * 1. PRIMITIVES — palette
+   * ------------------------------------------------------------------------ */
+
+  /* Oxblood (primary) */
+  --oxblood-700: #652A35;   /* hover / pressed */
+  --oxblood-600: #7E3340;   /* primary */
+  --oxblood-100: #EFE0E2;   /* tint — active nav, soft fills */
+  --oxblood-050: #F8EFF0;   /* faintest wash */
+
+  /* Brass (accent) */
+  --brass-700: #8A6826;     /* accessible brass for text on paper */
+  --brass-500: #B08534;     /* accent */
+  --brass-100: #F0E6D2;     /* tint */
+
+  /* Ink (warm near-black) + warm neutrals derived from paper */
+  --ink-900: #1A1718;       /* body text */
+  --ink-700: #3C3537;       /* strong secondary text */
+  --ink-500: #6E6568;       /* muted text */
+  --ink-400: #8F868A;       /* subtle text / placeholder */
+  --ink-300: #B6ADB0;       /* disabled */
+
+  /* Paper / surfaces (warm) */
+  --paper-base:   #FAF7F3;  /* app background */
+  --paper-raised: #FFFFFF;  /* cards / topbar / sidebar surface */
+  --paper-sunken: #F2ECE4;  /* wells, empty-state fills */
+
+  /* Lines */
+  --line-200: #E7DFD5;      /* default border */
+  --line-300: #D9CEC0;      /* stronger border */
+
+  /* Status (desaturated to stay clinical, not alarmist) */
+  --green-600: #3F7A52;
+  --amber-600: #B0772A;
+  --red-600:   #A6443E;
+  --blue-600:  #3F5E86;
+
+  /* Alpha primitives (for focus ring + overlay; warm-tinted) */
+  --alpha-oxblood-35: rgba(126, 51, 64, 0.35);
+  --alpha-ink-45:     rgba(26, 23, 24, 0.45);
+  --alpha-ink-08:     rgba(26, 23, 24, 0.08);
+  --alpha-ink-06:     rgba(26, 23, 24, 0.06);
+  --alpha-ink-12:     rgba(26, 23, 24, 0.12);
+
+  /* ---------------------------------------------------------------------------
+   * 1b. PRIMITIVES — type
+   * ------------------------------------------------------------------------ */
+  --font-body:    'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-display: 'Source Serif Pro', Georgia, 'Times New Roman', serif;
+  --font-mono:    'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+
+  --font-size-1: 12px;   /* caption */
+  --font-size-2: 13px;   /* small / meta */
+  --font-size-3: 14px;   /* body-small */
+  --font-size-4: 15px;   /* body */
+  --font-size-5: 18px;   /* h3 / wordmark */
+  --font-size-6: 22px;   /* h2 */
+  --font-size-7: 28px;   /* h1 */
+
+  --font-weight-regular: 400;
+  --font-weight-medium:  500;
+  --font-weight-semibold: 600;
+  --font-weight-bold:    700;
+
+  --leading-tight: 1.2;
+  --leading-snug:  1.4;
+  --leading-base:  1.55;
+
+  --tracking-wide: 0.02em;
+
+  /* ---------------------------------------------------------------------------
+   * 1c. PRIMITIVES — spacing (4px base), radius, shadow, motion, z-index, border
+   * ------------------------------------------------------------------------ */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --space-8: 40px;
+  --space-9: 48px;
+  --space-10: 64px;
+  --space-11: 80px;
+
+  --radius-1: 4px;
+  --radius-2: 6px;
+  --radius-3: 8px;
+  --radius-4: 12px;
+  --radius-pill: 999px;
+
+  --shadow-0: none;
+  --shadow-1: 0 1px 2px var(--alpha-ink-06);
+  --shadow-2: 0 2px 8px var(--alpha-ink-08);
+  --shadow-3: 0 12px 32px var(--alpha-ink-12);
+
+  --motion-fast:    120ms;
+  --motion-base:    200ms;
+  --motion-slow:    320ms;
+  --motion-ambient: 600ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0.2, 1);
+
+  --border-width-1: 1px;
+  --border-width-2: 2px;
+
+  /* z-index "zones" */
+  --zone-0: 0;     /* base content */
+  --zone-1: 10;    /* sticky topbar */
+  --zone-2: 100;   /* off-canvas drawer + backdrop */
+  --zone-3: 1000;  /* modals / toasts */
+
+  /* shell metrics */
+  --rail-width: 248px;
+  --topbar-height: 64px;
+  --content-max: 1200px;
+
+  /* ===========================================================================
+   * 2. SEMANTIC — role-based aliases (consume these in views)
+   * ======================================================================== */
+
+  /* surfaces / background */
+  --color-bg:            var(--paper-base);
+  --color-surface:       var(--paper-raised);
+  --color-surface-sunken: var(--paper-sunken);
+
+  /* text */
+  --color-text:          var(--ink-900);
+  --color-text-strong:   var(--ink-700);
+  --color-text-muted:    var(--ink-500);
+  --color-text-subtle:   var(--ink-400);
+  --color-text-disabled: var(--ink-300);
+  --color-text-inverse:  var(--paper-raised);
+
+  /* primary (oxblood) */
+  --color-primary:        var(--oxblood-600);
+  --color-primary-hover:  var(--oxblood-700);
+  --color-primary-tint:   var(--oxblood-100);
+  --color-primary-wash:   var(--oxblood-050);
+  --color-on-primary:     var(--paper-raised);
+
+  /* accent (brass) */
+  --color-accent:        var(--brass-500);
+  --color-accent-strong: var(--brass-700);
+  --color-accent-tint:   var(--brass-100);
+
+  /* lines / borders */
+  --color-border:        var(--line-200);
+  --color-border-strong: var(--line-300);
+
+  /* status */
+  --color-success: var(--green-600);
+  --color-warning: var(--amber-600);
+  --color-danger:  var(--red-600);
+  --color-info:    var(--blue-600);
+
+  /* interaction */
+  --color-focus-ring: var(--alpha-oxblood-35);
+  --color-backdrop:   var(--alpha-ink-45);
+
+  /* component-level shell aliases (kept semantic so app.css stays literal-free) */
+  --nav-link-text:        var(--color-text-strong);
+  --nav-link-hover-bg:    var(--color-surface-sunken);
+  --nav-link-active-bg:   var(--color-primary-tint);
+  --nav-link-active-text: var(--color-primary);
+  --nav-active-indicator: var(--color-primary);
+
+  --focus-ring-width: var(--border-width-2);
+  --focus-ring-offset: var(--border-width-2);
+}
+
+/* =============================================================================
+ * Accessibility — honor reduced-motion by collapsing the motion scale.
+ * Any transition/animation that reads --motion-* becomes effectively instant.
+ * ========================================================================== */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-fast:    1ms;
+    --motion-base:    1ms;
+    --motion-slow:    1ms;
+    --motion-ambient: 1ms;
+  }
+}
