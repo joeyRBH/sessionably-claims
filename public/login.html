@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign in · Claimsub</title>
+
+  <!-- Tokens first (authoritative F0 design system), then page styles. -->
+  <link rel="stylesheet" href="./app-foundation/styles/tokens.css">
+  <link rel="stylesheet" href="./login.css">
+</head>
+<body>
+  <main class="login" role="main">
+    <section class="login-card" aria-labelledby="login-heading">
+
+      <!-- Wordmark -->
+      <div class="wordmark" aria-label="Claimsub">
+        <svg class="wordmark__mark" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <rect x="3" y="3" width="18" height="18" rx="5" fill="currentColor"/>
+          <path d="M16 9.2a4.2 4.2 0 1 0 0 5.6" fill="none" stroke="var(--color-on-primary)"
+                stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        <span class="wordmark__text">Claimsub</span>
+      </div>
+
+      <h1 class="login-card__heading" id="login-heading">Sign in</h1>
+      <p class="login-card__subhead">Access your practice dashboard.</p>
+
+      <form class="login-form" id="login-form" novalidate>
+        <div class="field">
+          <label class="field__label" for="email">Email</label>
+          <input
+            class="field__input"
+            type="email"
+            id="email"
+            name="email"
+            autocomplete="username"
+            autocapitalize="none"
+            spellcheck="false"
+            required
+          >
+        </div>
+
+        <div class="field">
+          <label class="field__label" for="password">Password</label>
+          <input
+            class="field__input"
+            type="password"
+            id="password"
+            name="password"
+            autocomplete="current-password"
+            required
+          >
+        </div>
+
+        <!-- Single generic error — never reveals which field failed. -->
+        <p class="login-form__error" id="login-error" role="alert" aria-live="polite" hidden></p>
+
+        <button class="btn btn--primary" type="submit" id="submit-btn">
+          <span class="btn__label">Sign in</span>
+        </button>
+      </form>
+    </section>
+  </main>
+
+  <!-- Canonical API namespace: all network calls go through window.ClaimsubAPI. -->
+  <script src="./js/api-client.js"></script>
+  <script src="./login.js"></script>
+</body>
+</html>

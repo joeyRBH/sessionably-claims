@@ -1,0 +1,189 @@
+/* =============================================================================
+ * Claimsub — login page
+ * =============================================================================
+ * Standalone, centered login card. Every color, font, radius, spacing, shadow
+ * and motion value resolves from a tokens.css variable — no literals. Light
+ * mode only.
+ * ========================================================================== */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-body);
+  font-size: var(--font-size-4);
+  line-height: var(--leading-base);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Shared focus style — visible, token-based, oxblood ring. */
+:focus-visible {
+  outline: var(--focus-ring-width) solid var(--color-focus-ring);
+  outline-offset: var(--focus-ring-offset);
+  border-radius: var(--radius-1);
+}
+
+/* -----------------------------------------------------------------------------
+ * Layout: center the card on the page.
+ * -------------------------------------------------------------------------- */
+.login {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: var(--space-6);
+}
+
+/* -----------------------------------------------------------------------------
+ * Card
+ * -------------------------------------------------------------------------- */
+.login-card {
+  width: 100%;
+  max-width: 400px;
+  padding: var(--space-8);
+  background: var(--color-surface);
+  border: var(--border-width-1) solid var(--color-border);
+  border-radius: var(--radius-4);
+  box-shadow: var(--shadow-2);
+}
+
+/* Wordmark */
+.wordmark {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  color: var(--color-text);
+}
+
+.wordmark__mark {
+  width: var(--space-7);
+  height: var(--space-7);
+  display: block;
+  color: var(--color-primary);
+}
+
+.wordmark__text {
+  font-family: var(--font-display);
+  font-size: var(--font-size-5);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: var(--tracking-wide);
+}
+
+.login-card__heading {
+  margin: var(--space-6) 0 var(--space-1);
+  font-family: var(--font-display);
+  font-size: var(--font-size-7);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--leading-tight);
+}
+
+.login-card__subhead {
+  margin: 0 0 var(--space-6);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-3);
+}
+
+/* -----------------------------------------------------------------------------
+ * Form
+ * -------------------------------------------------------------------------- */
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.field__label {
+  font-size: var(--font-size-3);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-strong);
+}
+
+.field__input {
+  width: 100%;
+  padding: var(--space-3) var(--space-4);
+  font-family: var(--font-body);
+  font-size: var(--font-size-4);
+  color: var(--color-text);
+  background: var(--color-surface);
+  border: var(--border-width-1) solid var(--color-border-strong);
+  border-radius: var(--radius-2);
+  transition: border-color var(--motion-fast) var(--ease-standard);
+}
+
+.field__input::placeholder {
+  color: var(--color-text-subtle);
+}
+
+.field__input:hover {
+  border-color: var(--color-primary);
+}
+
+.field__input:focus {
+  border-color: var(--color-primary);
+}
+
+/* Generic inline error region. */
+.login-form__error {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--font-size-3);
+  color: var(--color-danger);
+  background: var(--color-primary-wash);
+  border: var(--border-width-1) solid var(--color-danger);
+  border-radius: var(--radius-2);
+}
+
+.login-form__error[hidden] {
+  display: none;
+}
+
+/* -----------------------------------------------------------------------------
+ * Button
+ * -------------------------------------------------------------------------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: var(--space-9);
+  padding: var(--space-3) var(--space-5);
+  font-family: var(--font-body);
+  font-size: var(--font-size-4);
+  font-weight: var(--font-weight-semibold);
+  border: var(--border-width-1) solid transparent;
+  border-radius: var(--radius-2);
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease-standard);
+}
+
+.btn--primary {
+  margin-top: var(--space-2);
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+}
+
+.btn--primary:hover {
+  background: var(--color-primary-hover);
+}
+
+.btn[disabled] {
+  background: var(--color-text-disabled);
+  cursor: progress;
+}
