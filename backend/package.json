@@ -1,0 +1,15 @@
+{
+  "name": "claimsub-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Claimsub backend — AWS Lambda handlers (API Gateway proxy integration).",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.11.5"
+  }
+}
