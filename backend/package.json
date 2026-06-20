@@ -7,6 +7,9 @@
   "engines": {
     "node": ">=18"
   },
+  "scripts": {
+    "bundle:schema": "node scripts/bundle-schema.js"
+  },
   "dependencies": {
     "bcryptjs": "^2.4.3",
     "jsonwebtoken": "^9.0.2",

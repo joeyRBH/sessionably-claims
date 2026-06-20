@@ -1,5 +1,5 @@
 # =============================================================================
-# LAMBDA — one function per auth handler (register / login / me).
+# LAMBDA - one function per auth handler (register / login / me).
 #
 # Artifact: the entire /backend folder is zipped by the archive_file data source
 # below. You MUST install backend deps first so node_modules is included:

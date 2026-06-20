@@ -1,5 +1,5 @@
 # =============================================================================
-# IAM — least-privilege execution role shared by the three auth Lambdas.
+# IAM - least-privilege execution role shared by the three auth Lambdas.
 #
 # Permissions, scoped as tightly as the services allow:
 #   * VPC ENI management + CloudWatch Logs baseline (AWS managed policy).
@@ -31,7 +31,7 @@ resource "aws_iam_role_policy_attachment" "lambda_vpc" {
 }
 
 data "aws_iam_policy_document" "lambda_runtime" {
-  # SSM Parameter Store — read this stack's parameters only.
+  # SSM Parameter Store - read this stack's parameters only.
   statement {
     sid = "SSMReadClaimsubParams"
     actions = [
@@ -44,7 +44,7 @@ data "aws_iam_policy_document" "lambda_runtime" {
     ]
   }
 
-  # KMS decrypt for SecureString parameters — only when a CMK is configured.
+  # KMS decrypt for SecureString parameters - only when a CMK is configured.
   # (Default SecureStrings use the AWS-managed aws/ssm key, which the parameter
   # owner can decrypt without an explicit grant.)
   dynamic "statement" {

@@ -1,5 +1,5 @@
 # =============================================================================
-# DATABASE — RDS PostgreSQL 16 in the private subnets.
+# DATABASE - RDS PostgreSQL 16 in the private subnets.
 #
 # HIPAA posture: storage_encrypted = true, publicly_accessible = false, automated
 # backups on, deletion protection on. The instance is reachable only from the

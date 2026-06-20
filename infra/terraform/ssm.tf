@@ -1,5 +1,5 @@
 # =============================================================================
-# SSM — SecureString parameters for the Lambda runtime secrets.
+# SSM - SecureString parameters for the Lambda runtime secrets.
 #
 # These are declared WITHOUT real values: Terraform creates each parameter with a
 # one-time placeholder, then `lifecycle.ignore_changes = [value]` makes Terraform
@@ -38,7 +38,7 @@ resource "aws_ssm_parameter" "secure" {
   description = each.value
   type        = "SecureString"
 
-  # Placeholder only — real value is set out-of-band. ignore_changes below means
+  # Placeholder only - real value is set out-of-band. ignore_changes below means
   # Terraform creates this once and never reads or overwrites the live value.
   value = "set-out-of-band-see-README"
 

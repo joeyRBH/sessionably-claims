@@ -1,5 +1,5 @@
 # =============================================================================
-# API — API Gateway HTTP API (v2) fronting the three auth Lambdas.
+# API - API Gateway HTTP API (v2) fronting the three auth Lambdas.
 #
 #   POST /register → register Lambda
 #   POST /login    → login Lambda

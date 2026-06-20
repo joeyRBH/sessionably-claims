@@ -25,6 +25,8 @@ an API Gateway HTTP API, and the ACM cert + custom domain.
 | `ssm.tf`          | SecureString params for `DATABASE_URL`, `JWT_SECRET`, master pw   |
 | `iam.tf`          | Least-privilege Lambda execution role                            |
 | `lambda.tf`       | The three auth functions + log groups + `/backend` zip           |
+| `migrate.tf`      | One-off `claimsub-prod-migrate` Lambda (applies `db/schema.sql`)  |
+| `vpc-endpoints.tf`| Optional SSM interface endpoint (runtime SSM reads, no NAT)       |
 | `api.tf`          | HTTP API, routes, CORS, access logs, invoke permissions          |
 | `api-domain.tf`   | ACM cert request + (phase 2) custom domain + base-path mapping    |
 | `outputs.tf`      | IDs, endpoints, ACM validation records, custom-domain target      |
@@ -166,6 +168,8 @@ terraform apply -target=aws_ssm_parameter.secure
 #      JWT_SECRET, and DATABASE_URL — the last uses `terraform output -raw db_address`).
 
 # 4. LAMBDA — the three functions, log groups, IAM
+#    First: build the backend zip (deps + bundle the schema for the migrate Lambda):
+#      (cd ../../backend && npm install --omit=dev && npm run bundle:schema)
 terraform apply \
   -target=aws_iam_role.lambda_exec \
   -target=aws_iam_role_policy.lambda_runtime \
@@ -221,38 +225,43 @@ Re-run this whenever you rotate the secret or change the connection string.
 ## Apply the database schema to private RDS
 
 RDS is `publicly_accessible = false` and only reachable from inside the VPC, so
-you can't connect from your laptop directly. **Chosen approach: a short-lived
-bastion reached via SSM Session Manager port-forwarding** (no inbound SSH, no
-public IP, no bastion left running).
+you can't connect from your laptop directly. **Chosen approach: the one-off
+`claimsub-prod-migrate` Lambda** (`migrate.tf` / `backend/handlers/migrate.js`) —
+it runs inside the VPC, reads `DATABASE_URL` from SSM at runtime (via the SSM
+interface endpoint in `vpc-endpoints.tf`), and applies `db/schema.sql`. No bastion,
+no public DB access. `schema.sql` is idempotent, so it is safe to invoke repeatedly.
 
-1. Launch a tiny instance in one of the private subnets with the SSM agent and an
-   instance profile that has `AmazonSSMManagedInstanceCore`. (Session Manager
-   needs SSM/SSM-messages/EC2-messages reachability — either add those VPC
-   interface endpoints temporarily, or run the bastion in a subnet with egress.
-   Tear it all down afterward.)
-2. Allow the bastion's SG outbound 5432 to the RDS SG (`terraform output
-   rds_security_group_id`), and add a temporary ingress on the RDS SG from the
-   bastion SG.
-3. Port-forward Postgres to localhost through the bastion:
-   ```bash
-   aws ssm start-session --target i-xxxxxxxx \
-     --document-name AWS-StartPortForwardingSessionToRemoteHost \
-     --parameters "host=$(terraform output -raw db_address),portNumber=5432,localPortNumber=55432"
-   ```
-4. Apply the schema from your machine through the tunnel:
-   ```bash
-   DB_PW="$(aws ssm get-parameter --name /claimsub/prod/DB_MASTER_PASSWORD \
-     --with-decryption --query Parameter.Value --output text)"
-   PGPASSWORD="$DB_PW" psql \
-     "host=localhost port=55432 dbname=claimsub user=claimsub_admin sslmode=require" \
-     -f ../../db/schema.sql
-   ```
-5. End the session and **tear down the bastion, its SG rules, and any temporary
-   VPC endpoints**. Nothing about the bastion is managed by this Terraform — keep
-   it ephemeral.
+Prerequisites (already covered by the apply order above):
 
-> Alternative: run the same `psql -f db/schema.sql` from a one-off Lambda/CodeBuild
-> job inside the VPC. The bastion path above is the documented default.
+- The DB exists and `/claimsub/prod/DATABASE_URL` is seeded (apply steps 2–3).
+- The backend zip was built with the schema bundled in:
+  `(cd ../../backend && npm install --omit=dev && npm run bundle:schema)`.
+- `create_ssm_vpc_endpoint = true` (default) so the Lambda can reach SSM.
+
+Apply the migrate resources, then invoke:
+
+```bash
+# Bring up the SSM endpoint + the migrate Lambda (part of the full apply too):
+terraform apply \
+  -target=aws_vpc_endpoint.ssm \
+  -target=aws_security_group.ssm_endpoint \
+  -target=aws_vpc_security_group_ingress_rule.ssm_endpoint_from_lambda \
+  -target=aws_vpc_security_group_egress_rule.lambda_to_ssm_endpoint \
+  -target=aws_cloudwatch_log_group.migrate \
+  -target=aws_lambda_function.migrate
+
+# Apply the schema (idempotent — safe to re-run):
+aws lambda invoke --function-name claimsub-prod-migrate /tmp/out.json && cat /tmp/out.json
+# -> {"ok":true,"message":"Schema applied successfully."}
+```
+
+A non-`ok` result prints the error in `message`; check the function's CloudWatch
+log group (`/aws/lambda/claimsub-prod-migrate`) for detail. The connection string
+is never logged.
+
+> Cost note: the SSM interface endpoint bills hourly per AZ. Once the schema is
+> applied you may set `create_ssm_vpc_endpoint = false` and re-apply to destroy it;
+> the migrate Lambda then can't reach SSM until you recreate it.
 
 ---
 
@@ -323,8 +332,11 @@ and call `GET /me` with `Authorization: Bearer <token>` to confirm auth round-tr
 ## Security / HIPAA notes
 
 - **PHI isolation** — dedicated VPC + RDS, no peering to Sessionably.
-- **No app internet path** — no IGW, no NAT. The Lambdas reach only RDS (5432).
+- **No app internet path** — no IGW, no NAT. The auth Lambdas reach only RDS (5432).
   CloudWatch Logs delivery doesn't traverse the function ENI, so logging still works.
+  The only other egress is an optional SSM **interface** endpoint (still no NAT, still
+  no internet) the migrate Lambda uses to read `DATABASE_URL`; destroy it after
+  migrating with `create_ssm_vpc_endpoint = false` if you prefer the minimal surface.
 - **Encryption** — RDS `storage_encrypted = true` (default `aws/rds` key or a CMK);
   SSM SecureStrings; in transit via TLS (`sslmode=require` / pg `ssl`).
 - **Least privilege** — RDS SG accepts 5432 only from the Lambda SG; the Lambda role

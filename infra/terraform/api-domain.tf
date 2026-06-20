@@ -1,5 +1,5 @@
 # =============================================================================
-# CUSTOM DOMAIN — api.claimsub.com, modeled in two phases.
+# CUSTOM DOMAIN - api.claimsub.com, modeled in two phases.
 #
 # Terraform REQUESTS a DNS-validated ACM cert and (once gated on) creates the API
 # Gateway custom domain + base-path mapping. It does NOT manage any DNS records:

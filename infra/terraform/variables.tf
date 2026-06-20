@@ -31,7 +31,7 @@ variable "vpc_cidr" {
 }
 
 variable "private_subnet_cidrs" {
-  description = "Two private subnet CIDRs (one per AZ). No public subnets — app path has no internet egress."
+  description = "Two private subnet CIDRs (one per AZ). No public subnets - app path has no internet egress."
   type        = list(string)
   default     = ["10.40.1.0/24", "10.40.2.0/24"]
 
@@ -39,6 +39,17 @@ variable "private_subnet_cidrs" {
     condition     = length(var.private_subnet_cidrs) == 2
     error_message = "Provide exactly two private subnet CIDRs (one per AZ)."
   }
+}
+
+variable "create_ssm_vpc_endpoint" {
+  description = <<-EOT
+    Create an SSM interface endpoint so in-VPC Lambdas can read SSM parameters at
+    runtime with no NAT (used by the one-off migrate Lambda; see migrate.tf and
+    vpc-endpoints.tf). Bills hourly per AZ - you may set false to destroy it once
+    the schema has been applied.
+  EOT
+  type        = bool
+  default     = true
 }
 
 # ─────────────────────────────────────────────────────────────
@@ -83,7 +94,7 @@ variable "db_master_username" {
 
 variable "db_master_password" {
   description = <<-EOT
-    RDS master password. Sourced from SSM out-of-band — NEVER hardcode or commit.
+    RDS master password. Sourced from SSM out-of-band - NEVER hardcode or commit.
     Supply at db-apply time via an environment variable read from the SSM
     SecureString, e.g.:
       export TF_VAR_db_master_password="$(aws ssm get-parameter \
