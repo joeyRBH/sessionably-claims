@@ -197,6 +197,7 @@ create table if not exists insurance_records (
   benefits_checked_at      timestamptz,
   benefits_raw             jsonb,
   is_primary               boolean not null default true,
+  is_hidden                boolean not null default false,
   created_at               timestamptz not null default now(),
   updated_at               timestamptz not null default now()
 );
@@ -210,6 +211,10 @@ drop trigger if exists trg_insurance_records_updated_at on insurance_records;
 create trigger trg_insurance_records_updated_at
   before update on insurance_records
   for each row execute function set_updated_at();
+
+-- Migration (idempotent): add PHI soft-delete to the live insurance_records table.
+alter table insurance_records add column if not exists is_hidden boolean not null default false;
+create index if not exists idx_insurance_records_is_hidden on insurance_records (is_hidden);
 
 -- =============================================================================
 -- 7. sessions — therapy sessions (exist only to attach claims to).
