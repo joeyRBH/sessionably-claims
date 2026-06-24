@@ -8,13 +8,47 @@ locals {
   # Two private subnets, one per AZ (first two AZs in the region).
   azs = slice(data.aws_availability_zones.available.names, 0, 2)
 
-  # The auth surface: one Lambda per handler, each its own API Gateway route.
+  # The API surface: one Lambda per handler. A handler may serve more than one
+  # route (method + path) — e.g. the clients resource is a single Lambda routed
+  # internally by method and the presence of an {id} path parameter.
   # `handler` matches backend/handlers/<name>.handler (the zip root is /backend).
   lambda_functions = {
-    register = { handler = "handlers/register.handler", method = "POST", path = "register" }
-    login    = { handler = "handlers/login.handler", method = "POST", path = "login" }
-    me       = { handler = "handlers/me.handler", method = "GET", path = "me" }
+    register = {
+      handler = "handlers/register.handler"
+      routes  = [{ method = "POST", path = "register" }]
+    }
+    login = {
+      handler = "handlers/login.handler"
+      routes  = [{ method = "POST", path = "login" }]
+    }
+    me = {
+      handler = "handlers/me.handler"
+      routes  = [{ method = "GET", path = "me" }]
+    }
+    clients = {
+      handler = "handlers/clients.handler"
+      routes = [
+        { method = "POST", path = "clients" },
+        { method = "GET", path = "clients" },
+        { method = "GET", path = "clients/{id}" },
+        { method = "PATCH", path = "clients/{id}" },
+        { method = "DELETE", path = "clients/{id}" },
+      ]
+    }
   }
+
+  # Flatten lambda_functions into one entry per (function, route) pair, keyed by a
+  # sanitized string. Routes/integration permissions for_each over this map.
+  api_routes = merge([
+    for fname, fn in local.lambda_functions : {
+      for r in fn.routes :
+      "${fname}-${r.method}-${replace(replace(replace(r.path, "/", "-"), "{", ""), "}", "")}" => {
+        function = fname
+        method   = r.method
+        path     = r.path
+      }
+    }
+  ]...)
 
   common_tags = {
     Project     = var.project_name
