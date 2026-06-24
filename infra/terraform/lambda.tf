@@ -11,8 +11,10 @@
 #
 # Each function is VPC-attached (private subnets + Lambda SG) and reads
 # DATABASE_URL / JWT_SECRET from its environment. Those two values are hydrated
-# OUT-OF-BAND from SSM (see README §Secrets); `ignore_changes = [environment]`
-# keeps Terraform from reverting the hydrated values on later applies.
+# from SSM by `./deploy.sh` (terraform apply, then a decrypt-and-inject pass) —
+# automatically and idempotently, and never written to tfstate. The placeholders
+# below let the functions be created; `ignore_changes = [environment]` keeps
+# Terraform from reverting the hydrated values on later applies. See README §Secrets.
 # =============================================================================
 
 data "archive_file" "backend" {

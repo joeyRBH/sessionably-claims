@@ -30,6 +30,7 @@ an API Gateway HTTP API, and the ACM cert + custom domain.
 | `api.tf`          | HTTP API, routes, CORS, access logs, invoke permissions          |
 | `api-domain.tf`   | ACM cert request + (phase 2) custom domain + base-path mapping    |
 | `outputs.tf`      | IDs, endpoints, ACM validation records, custom-domain target      |
+| `deploy.sh`       | `terraform apply` + automatic Lambda secret hydration from SSM     |
 
 ---
 
@@ -91,6 +92,11 @@ Do **not** put the RDS master password in `terraform.tfvars`. It is supplied via
 Three SecureString parameters are **declared** by `ssm.tf` with placeholder values
 and `ignore_changes = [value]`, so Terraform creates them once and never reads or
 overwrites the live value. **You** set the real values with the AWS CLI:
+
+> SSM is the canonical store. The Lambdas' `DATABASE_URL` / `JWT_SECRET` env vars are
+> hydrated **from** these parameters automatically by `./deploy.sh` (see §Hydrate
+> Lambda env) — the secret values never enter `tfstate`, tfvars, or git.
+
 
 | Parameter                          | Value                                                        |
 | ---------------------------------- | ------------------------------------------------------------ |
@@ -176,7 +182,7 @@ terraform apply \
   -target=aws_iam_role_policy_attachment.lambda_vpc \
   -target=aws_cloudwatch_log_group.lambda \
   -target=aws_lambda_function.auth
-#    → then hydrate each function's env from SSM (see §Hydrate Lambda env)
+#    → env hydration is automatic on the full `./deploy.sh` run below (see §Hydrate Lambda env)
 
 # 5. API — HTTP API, routes, CORS, access logs, invoke permissions
 terraform apply \
@@ -190,12 +196,14 @@ terraform apply \
 # 6. DOMAIN — request the ACM cert (custom domain comes in phase 2; see §DNS repoint)
 terraform apply -target=aws_acm_certificate.api
 
-# Finally, reconcile the whole stack (also keep TF_VAR_db_master_password exported):
-terraform apply
+# Finally, reconcile the whole stack and hydrate the Lambdas from SSM
+# (also keep TF_VAR_db_master_password exported):
+./deploy.sh
 ```
 
 > The `-target` runs are only needed for the **first** bring-up because of the
-> out-of-band secret steps between phases. Day-to-day, just run `terraform apply`.
+> out-of-band secret steps between phases. Day-to-day, just run `./deploy.sh`
+> (it wraps `terraform apply` and hydrates the Lambda env from SSM).
 
 ---
 
@@ -203,22 +211,36 @@ terraform apply
 
 The `/backend` handlers read `process.env.DATABASE_URL` / `process.env.JWT_SECRET`
 directly (do **not** modify `/backend`). Terraform creates each function with
-placeholder env values and `ignore_changes = [environment]`, so you inject the
-real values from SSM out-of-band — Terraform won't revert them:
+placeholder env values and `ignore_changes = [environment]`, so the real values
+have to be injected from SSM after apply — and Terraform won't revert them.
+
+**This is now automatic.** Instead of `terraform apply`, deploy with:
 
 ```bash
-DB_URL="$(aws ssm get-parameter --name /claimsub/prod/DATABASE_URL \
-  --with-decryption --query Parameter.Value --output text)"
-JWT="$(aws ssm get-parameter --name /claimsub/prod/JWT_SECRET \
-  --with-decryption --query Parameter.Value --output text)"
-
-for fn in claimsub-prod-register claimsub-prod-login claimsub-prod-me; do
-  aws lambda update-function-configuration --function-name "$fn" \
-    --environment "Variables={NODE_ENV=production,JWT_EXPIRES_IN=12h,DATABASE_URL=$DB_URL,JWT_SECRET=$JWT}"
-done
+./deploy.sh            # runs `terraform apply`, then hydrates every Lambda from SSM
+# extra args pass straight through to terraform apply, e.g.
+./deploy.sh -auto-approve
 ```
 
-Re-run this whenever you rotate the secret or change the connection string.
+`deploy.sh` runs `terraform apply`, then reads the `lambda_function_names` and
+`ssm_secure_parameter_names` outputs, fetches the decrypted `DATABASE_URL` /
+`JWT_SECRET` from SSM, and writes them into each function's env config. It is
+**idempotent** — a function already holding the current values is skipped — and it
+writes **no secret values to tfstate** (secrets live only in SSM and each
+function's env config). Re-running it after a secret rotation or connection-string
+change re-hydrates every function. It honours `AWS_PROFILE` / `AWS_REGION` (defaults
+`claimsub-prod` / `us-west-2`) and requires `jq`.
+
+The deploy principal needs, in addition to the usual Terraform permissions:
+
+- `ssm:GetParameter` + `kms:Decrypt` — to read the SecureString values (already
+  granted to the Lambda execution role in `iam.tf`; the principal running
+  `deploy.sh` needs them too).
+- `lambda:GetFunctionConfiguration` + `lambda:UpdateFunctionConfiguration` — to read
+  and inject each function's environment.
+
+> The manual `aws lambda update-function-configuration` loop that used to live here is
+> retired — `./deploy.sh` does it for you.
 
 ---
 
