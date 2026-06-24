@@ -1,9 +1,18 @@
 # =============================================================================
-# API - API Gateway HTTP API (v2) fronting the three auth Lambdas.
+# API - API Gateway HTTP API (v2) fronting the backend Lambdas.
 #
-#   POST /register → register Lambda
-#   POST /login    → login Lambda
-#   GET  /me       → me Lambda
+#   POST   /register     → register Lambda
+#   POST   /login        → login Lambda
+#   GET    /me           → me Lambda
+#   POST   /clients      → clients Lambda
+#   GET    /clients      → clients Lambda
+#   GET    /clients/{id} → clients Lambda
+#   PATCH  /clients/{id} → clients Lambda
+#   DELETE /clients/{id} → clients Lambda
+#
+# A single Lambda may serve several routes (see local.api_routes, which flattens
+# local.lambda_functions into one entry per method+path). Routes and invoke
+# permissions for_each over that map; the integration is still one per function.
 #
 # CORS is enforced at the gateway and locked to the two Claimsub browser origins.
 # Because cors_configuration handles OPTIONS preflight automatically, no OPTIONS
@@ -12,12 +21,12 @@
 
 resource "aws_apigatewayv2_api" "http" {
   name          = "${local.prefix}-api"
-  description   = "Claimsub auth HTTP API (register/login/me)."
+  description   = "Claimsub HTTP API (auth + clients)."
   protocol_type = "HTTP"
 
   cors_configuration {
     allow_origins  = var.allowed_origins
-    allow_methods  = ["GET", "POST", "OPTIONS"]
+    allow_methods  = ["GET", "POST", "PATCH", "DELETE", "OPTIONS"]
     allow_headers  = ["content-type", "authorization"]
     expose_headers = ["content-type"]
     max_age        = 300
@@ -37,11 +46,11 @@ resource "aws_apigatewayv2_integration" "auth" {
 }
 
 resource "aws_apigatewayv2_route" "auth" {
-  for_each = local.lambda_functions
+  for_each = local.api_routes
 
   api_id    = aws_apigatewayv2_api.http.id
   route_key = "${each.value.method} /${each.value.path}"
-  target    = "integrations/${aws_apigatewayv2_integration.auth[each.key].id}"
+  target    = "integrations/${aws_apigatewayv2_integration.auth[each.value.function].id}"
 }
 
 resource "aws_apigatewayv2_stage" "default" {
@@ -78,13 +87,15 @@ resource "aws_cloudwatch_log_group" "apigw_access" {
   kms_key_id        = var.logs_kms_key_arn == "" ? null : var.logs_kms_key_arn
 }
 
-# Allow API Gateway to invoke each Lambda, scoped to that function's exact route.
+# Allow API Gateway to invoke each Lambda, scoped to that route's exact method
+# and path. One permission per route so a multi-route Lambda (e.g. clients) is
+# reachable on every route key.
 resource "aws_lambda_permission" "apigw" {
-  for_each = local.lambda_functions
+  for_each = local.api_routes
 
-  statement_id  = "AllowInvokeFromApiGateway"
+  statement_id  = "AllowInvoke-${each.key}"
   action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.auth[each.key].function_name
+  function_name = aws_lambda_function.auth[each.value.function].function_name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_apigatewayv2_api.http.execution_arn}/*/${each.value.method}/${each.value.path}"
 }
