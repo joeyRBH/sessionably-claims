@@ -250,6 +250,10 @@ create trigger trg_sessions_updated_at
   before update on sessions
   for each row execute function set_updated_at();
 
+-- Migration (idempotent): add soft-delete to the live sessions table.
+alter table sessions add column if not exists is_hidden boolean not null default false;
+create index if not exists idx_sessions_is_hidden on sessions (is_hidden);
+
 -- =============================================================================
 -- 8. claims — OON claim records (multiple allowed per session for resubmit/appeal).
 -- =============================================================================

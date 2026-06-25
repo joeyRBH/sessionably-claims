@@ -45,6 +45,16 @@ locals {
         { method = "DELETE", path = "insurance-records/{id}" },
       ]
     }
+    sessions = {
+      handler = "handlers/sessions.handler"
+      routes = [
+        { method = "POST", path = "sessions" },
+        { method = "GET", path = "sessions" },
+        { method = "GET", path = "sessions/{id}" },
+        { method = "PATCH", path = "sessions/{id}" },
+        { method = "DELETE", path = "sessions/{id}" },
+      ]
+    }
   }
 
   # Flatten lambda_functions into one entry per (function, route) pair, keyed by a
