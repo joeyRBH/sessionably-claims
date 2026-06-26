@@ -69,6 +69,14 @@ locals {
         { method = "GET", path = "claims/{id}/events" },
       ]
     }
+    users = {
+      handler = "handlers/users.handler"
+      routes = [
+        { method = "GET", path = "users" },
+        { method = "GET", path = "users/{id}" },
+        { method = "PATCH", path = "users/{id}" },
+      ]
+    }
   }
 
   # Flatten lambda_functions into one entry per (function, route) pair, keyed by a
