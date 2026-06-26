@@ -2,7 +2,7 @@
  * Views must use window.ReddablyAPI and never call fetch() directly.
  *
  * Auth token is stored in localStorage under "reddably_access_token".
- * No PHI is ever placed in URLs or query strings.
+ * No PHI is ever placed in URLs or query strings (ids/status enums only).
  */
 (function (window) {
   'use strict';
@@ -10,10 +10,8 @@
   // API base URL — configurable so the domain can be flipped with zero code edits.
   // Resolution order (first match wins):
   //   1. window.REDDABLY_API_BASE  — global set by an inline/injected bootstrap snippet
-  //   2. <meta name="reddably-api-base" content="https://api.reddably.com">
-  //   3. default below (the current live hostname)
-  // There is no build step (vanilla JS), so this is the static-site equivalent of a
-  // public env var: set the global or the meta tag, no source change required.
+  //   2. <meta name="reddably-api-base" content="https://api.claimsub.com">
+  //   3. default below (the current live, canonical hostname)
   function resolveApiBase() {
     if (window.REDDABLY_API_BASE) return window.REDDABLY_API_BASE;
     try {
@@ -105,10 +103,22 @@
     });
   }
 
+  // Build a "?a=1&b=2" string from a params object, skipping null/undefined/''.
+  // Values are encoded; only non-PHI identifiers/enums are ever passed here.
+  function buildQuery(params) {
+    if (!params) return '';
+    var parts = [];
+    Object.keys(params).forEach(function (key) {
+      var v = params[key];
+      if (v === null || v === undefined || v === '') return;
+      parts.push(encodeURIComponent(key) + '=' + encodeURIComponent(v));
+    });
+    return parts.length ? '?' + parts.join('&') : '';
+  }
+
   // --- auth methods ----------------------------------------------------------
 
   // register(payload) -> POST /register; stores token on success.
-  // payload: { mode: 'new_practice' | 'invitation', ... } per backend.
   function register(payload) {
     return request('POST', '/register', payload).then(function (res) {
       if (res && res.token) setToken(res.token);
@@ -131,10 +141,53 @@
     return request('GET', '/me');
   }
 
-  // TODO(google-oauth): loginWithGoogle(idToken) -> POST /auth/google once Google
-  // client credentials exist.
-  // TODO(magic-link): requestMagicLink(email) / verifyMagicLink(token) once the
-  // /send-email endpoint exists (client/patient portal auth).
+  // --- resource methods ------------------------------------------------------
+  // Each method resolves to the backend's response object as-is, e.g.
+  //   clients.list()        -> { clients: [...] }
+  //   clients.get(id)       -> { client: {...} }
+  //   claims.events(id)     -> { claim_events: [...] }
+  // Views read the named field off the result. Errors reject with an Error whose
+  // .status and .body carry the HTTP status and parsed error payload.
+
+  var clients = {
+    list: function () { return request('GET', '/clients'); },
+    get: function (id) { return request('GET', '/clients/' + id); },
+    create: function (payload) { return request('POST', '/clients', payload); },
+    update: function (id, payload) { return request('PATCH', '/clients/' + id, payload); },
+    remove: function (id) { return request('DELETE', '/clients/' + id); },
+  };
+
+  var insuranceRecords = {
+    // filters: { client_id }
+    list: function (filters) { return request('GET', '/insurance-records' + buildQuery(filters)); },
+    get: function (id) { return request('GET', '/insurance-records/' + id); },
+    create: function (payload) { return request('POST', '/insurance-records', payload); },
+    update: function (id, payload) { return request('PATCH', '/insurance-records/' + id, payload); },
+    remove: function (id) { return request('DELETE', '/insurance-records/' + id); },
+  };
+
+  var sessions = {
+    // filters: { client_id, clinician_id, status }
+    list: function (filters) { return request('GET', '/sessions' + buildQuery(filters)); },
+    get: function (id) { return request('GET', '/sessions/' + id); },
+    create: function (payload) { return request('POST', '/sessions', payload); },
+    update: function (id, payload) { return request('PATCH', '/sessions/' + id, payload); },
+    remove: function (id) { return request('DELETE', '/sessions/' + id); },
+  };
+
+  var claims = {
+    // filters: { session_id, client_id, status }
+    list: function (filters) { return request('GET', '/claims' + buildQuery(filters)); },
+    get: function (id) { return request('GET', '/claims/' + id); },
+    create: function (payload) { return request('POST', '/claims', payload); },
+    update: function (id, payload) { return request('PATCH', '/claims/' + id, payload); },
+    remove: function (id) { return request('DELETE', '/claims/' + id); },
+    // lifecycle actions
+    submit: function (id) { return request('POST', '/claims/' + id + '/submit', {}); },
+    refresh: function (id) { return request('POST', '/claims/' + id + '/refresh', {}); },
+    void: function (id) { return request('POST', '/claims/' + id + '/void', {}); },
+    events: function (id) { return request('GET', '/claims/' + id + '/events'); },
+  };
 
   window.ReddablyAPI = {
     // config
@@ -144,12 +197,18 @@
     setToken: setToken,
     clearToken: clearToken,
     isAuthenticated: isAuthenticated,
-    // low-level (kept available for other ReddablyAPI modules; views use the named methods)
+    // low-level (other modules may use; views use the named resource methods)
     request: request,
+    buildQuery: buildQuery,
     // auth
     register: register,
     login: login,
     logout: logout,
     me: me,
+    // resources
+    clients: clients,
+    insuranceRecords: insuranceRecords,
+    sessions: sessions,
+    claims: claims,
   };
 })(window);
