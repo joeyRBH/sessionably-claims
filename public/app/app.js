@@ -12,9 +12,8 @@
 (function (window, document) {
   'use strict';
 
-  // TODO: flip AUTH_REQUIRED to true once /login.html ships, so an unauthenticated
-  // visitor is redirected instead of seeing the shell. Kept false during dev.
-  var AUTH_REQUIRED = false;
+  // Auth guard: an unauthenticated visitor is redirected to /login.html.
+  var AUTH_REQUIRED = true;
   var LOGIN_URL = '/login.html';
 
   // ---------------------------------------------------------------------------
@@ -151,6 +150,40 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Topbar identity — populate the user + practice from /me (non-blocking).
+  // ---------------------------------------------------------------------------
+  function initials(first, last) {
+    var a = (first || '').trim().charAt(0);
+    var b = (last || '').trim().charAt(0);
+    return (a + b).toUpperCase();
+  }
+
+  function populateTopbar(api) {
+    if (!api.me) return;
+    api.me().then(function (res) {
+      var user = (res && res.user) || res || {};
+      var practice = (res && res.practice) || (user && user.practice) || {};
+
+      // Cache for views (e.g. the dashboard greeting) — no extra /me round-trip.
+      if (window.Reddably) window.Reddably.currentUser = res;
+
+      var first = user.first_name || '';
+      var last = user.last_name || '';
+      var fullName = (first + ' ' + last).trim();
+
+      var nameEl = document.getElementById('user-name');
+      var initialsEl = document.getElementById('user-initials');
+      var practiceEl = document.getElementById('practice-name');
+
+      if (nameEl && fullName) nameEl.textContent = fullName;
+      if (initialsEl && (first || last)) initialsEl.textContent = initials(first, last);
+      if (practiceEl && practice && practice.name) practiceEl.textContent = practice.name;
+    }).catch(function () {
+      /* leave the existing placeholders in place on failure */
+    });
+  }
+
+  // ---------------------------------------------------------------------------
   // Boot
   // ---------------------------------------------------------------------------
   function init() {
@@ -158,6 +191,7 @@
     if (!guard(api)) return; // redirecting — stop here
     initDrawer();
     initUserMenu(api);
+    populateTopbar(api);
   }
 
   if (document.readyState === 'loading') {
