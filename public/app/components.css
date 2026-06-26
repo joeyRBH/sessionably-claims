@@ -492,3 +492,57 @@ textarea.field__control {
   flex-direction: column;
   gap: var(--space-5);
 }
+
+/* =============================== Timeline =============================== */
+/* Vertical status-history list used by the claim detail's events card. A
+ * continuous left rule threads the items; each item carries a dot on the rule. */
+.timeline {
+  display: flex;
+  flex-direction: column;
+}
+
+.timeline__item {
+  position: relative;
+  padding: 0 0 var(--space-4) var(--space-5);
+  border-left: var(--border-width-1) solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.timeline__item:last-child {
+  padding-bottom: 0;
+  border-left-color: transparent;
+}
+
+.timeline__item::before {
+  content: '';
+  position: absolute;
+  left: -5px;
+  top: 4px;
+  width: 9px;
+  height: 9px;
+  border-radius: var(--radius-pill);
+  background: var(--color-primary);
+  border: var(--border-width-2, 2px) solid var(--color-surface);
+}
+
+.timeline__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.timeline__main {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.timeline__time {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-2);
+  white-space: nowrap;
+}
