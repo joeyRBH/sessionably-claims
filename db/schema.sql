@@ -295,6 +295,10 @@ create trigger trg_claims_updated_at
   before update on claims
   for each row execute function set_updated_at();
 
+-- Migration (idempotent): add soft-delete to the live claims table.
+alter table claims add column if not exists is_hidden boolean not null default false;
+create index if not exists idx_claims_is_hidden on claims (is_hidden);
+
 -- =============================================================================
 -- 9. claim_events — status-history log per claim.
 --    Events belong to the claim's lifecycle, so ON DELETE CASCADE.
