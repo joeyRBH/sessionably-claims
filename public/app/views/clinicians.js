@@ -23,7 +23,11 @@
     { name: 'title',      label: 'Title',      type: 'text' },
     { name: 'npi',        label: 'NPI',        type: 'text' },
     { name: 'role',       label: 'Role',       type: 'select',
-      options: ['clinician', 'admin', 'biller'] },
+      options: [
+        { value: 'clinician',      label: 'Clinician' },
+        { value: 'practice_admin', label: 'Practice Admin' },
+        { value: 'billing_staff',  label: 'Billing Staff' },
+      ] },
     { name: 'is_active',  label: 'Active',     type: 'select',
       options: [
         { value: 'true',  label: 'Active' },
