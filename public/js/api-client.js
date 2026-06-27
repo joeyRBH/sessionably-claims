@@ -189,6 +189,13 @@
     events: function (id) { return request('GET', '/claims/' + id + '/events'); },
   };
 
+  var users = {
+    // filters: { role, is_active }
+    list: function (filters) { return request('GET', '/users' + buildQuery(filters)); },
+    get: function (id) { return request('GET', '/users/' + id); },
+    update: function (id, payload) { return request('PATCH', '/users/' + id, payload); },
+  };
+
   window.ReddablyAPI = {
     // config
     API_BASE: API_BASE,
@@ -210,5 +217,6 @@
     insuranceRecords: insuranceRecords,
     sessions: sessions,
     claims: claims,
+    users: users,
   };
 })(window);

@@ -427,13 +427,6 @@
     function sessionsPanel(client, initialSessions) {
       var body = h('div');
 
-      function resolveClinicianId() {
-        if (client.primary_clinician_id) return client.primary_clinician_id;
-        var cu = R.currentUser;
-        var user = cu && cu.user;
-        return (user && user.id) || null;
-      }
-
       function reload() {
         api.sessions.list({ client_id: id }).then(function (res) {
           paint((res && res.sessions) || []);
@@ -444,47 +437,73 @@
       }
 
       function openForm(session) {
-        var clinicianId = resolveClinicianId();
-        if (!clinicianId) {
-          R.toast('No clinician available — set one in Clinicians', 'error');
-          return;
-        }
-
-        var values = {};
-        if (session) {
-          Object.keys(session).forEach(function (k) { values[k] = session[k]; });
-          if (Array.isArray(session.diagnosis_codes)) {
-            values.diagnosis_codes = session.diagnosis_codes.join(', ');
-          }
-        }
-
-        R.formModal({
-          title: session ? 'Edit session' : 'Add session',
-          fields: SESSION_FIELDS,
-          values: values,
-          submitLabel: session ? 'Save changes' : 'Add session',
-        }).then(function (result) {
-          if (!result) return;
-
-          var codes = (result.diagnosis_codes || '')
-            .split(',').map(function (s) { return s.trim(); })
-            .filter(Boolean);
-
-          var payload = compact(result);
-          delete payload.diagnosis_codes;
-          if (codes.length) payload.diagnosis_codes = codes;
-          payload.client_id = id;
-          payload.clinician_id = clinicianId;
-
-          var p = session
-            ? api.sessions.update(session.id, payload)
-            : api.sessions.create(payload);
-          p.then(function () {
-            R.toast(session ? 'Session updated' : 'Session added', 'success');
-            reload();
-          }).catch(function (err) {
-            R.toast(err.message, 'error');
+        // Load the clinician roster first; the picker options are dynamic, so the
+        // clinician_id field is built at call time rather than as a constant.
+        api.users.list({ role: 'clinician' }).then(function (res) {
+          var clinicians = (res && res.users) || [];
+          var clinicianOptions = clinicians.map(function (u) {
+            var label = ((u.first_name || '') + ' ' + (u.last_name || '')).trim()
+              || u.email || ('User ' + u.id);
+            return { value: u.id, label: label };
           });
+
+          // Preselect: client's primary clinician (if in the roster), else the
+          // current user, else the first option.
+          var inList = function (uid) {
+            return clinicianOptions.some(function (o) { return o.value === uid; });
+          };
+          var cu = R.currentUser;
+          var currentUserId = cu && cu.user && cu.user.id;
+          var defaultClinicianId =
+            (client.primary_clinician_id && inList(client.primary_clinician_id)
+              ? client.primary_clinician_id : null) ||
+            currentUserId ||
+            (clinicianOptions[0] && clinicianOptions[0].value) ||
+            '';
+
+          var sessionFields = SESSION_FIELDS.concat([
+            { name: 'clinician_id', label: 'Clinician', type: 'select',
+              required: true, options: clinicianOptions },
+          ]);
+
+          var values = { clinician_id: defaultClinicianId };
+          if (session) {
+            Object.keys(session).forEach(function (k) { values[k] = session[k]; });
+            if (Array.isArray(session.diagnosis_codes)) {
+              values.diagnosis_codes = session.diagnosis_codes.join(', ');
+            }
+          }
+
+          R.formModal({
+            title: session ? 'Edit session' : 'Add session',
+            fields: sessionFields,
+            values: values,
+            submitLabel: session ? 'Save changes' : 'Add session',
+          }).then(function (result) {
+            if (!result) return;
+
+            var codes = (result.diagnosis_codes || '')
+              .split(',').map(function (s) { return s.trim(); })
+              .filter(Boolean);
+
+            var payload = compact(result);
+            delete payload.diagnosis_codes;
+            if (codes.length) payload.diagnosis_codes = codes;
+            payload.client_id = id;
+            payload.clinician_id = result.clinician_id;
+
+            var p = session
+              ? api.sessions.update(session.id, payload)
+              : api.sessions.create(payload);
+            p.then(function () {
+              R.toast(session ? 'Session updated' : 'Session added', 'success');
+              reload();
+            }).catch(function (err) {
+              R.toast(err.message, 'error');
+            });
+          });
+        }).catch(function (err) {
+          R.toast(err.message || 'Could not load clinicians', 'error');
         });
       }
 
