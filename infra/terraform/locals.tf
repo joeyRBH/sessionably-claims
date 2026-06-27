@@ -77,6 +77,14 @@ locals {
         { method = "PATCH", path = "users/{id}" },
       ]
     }
+    invitations = {
+      handler = "handlers/invitations.handler"
+      routes = [
+        { method = "POST", path = "invitations" },
+        { method = "GET", path = "invitations" },
+        { method = "DELETE", path = "invitations/{id}" },
+      ]
+    }
   }
 
   # Flatten lambda_functions into one entry per (function, route) pair, keyed by a

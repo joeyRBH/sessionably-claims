@@ -196,6 +196,12 @@
     update: function (id, payload) { return request('PATCH', '/users/' + id, payload); },
   };
 
+  var invitations = {
+    list: function () { return request('GET', '/invitations'); },
+    create: function (payload) { return request('POST', '/invitations', payload); },
+    revoke: function (id) { return request('DELETE', '/invitations/' + id); },
+  };
+
   window.ReddablyAPI = {
     // config
     API_BASE: API_BASE,
@@ -218,5 +224,6 @@
     sessions: sessions,
     claims: claims,
     users: users,
+    invitations: invitations,
   };
 })(window);

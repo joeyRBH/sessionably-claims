@@ -72,16 +72,82 @@
       : h('span', { class: 'badge badge--neutral' }, 'Inactive');
   }
 
+  function isAdmin() {
+    var cu = R.currentUser;
+    return !!(cu && cu.user && cu.user.role === 'practice_admin');
+  }
+
   // ===========================================================================
   // Clinicians directory (#clinicians)
   // ===========================================================================
   function mountClinicians(root) {
     function load() {
       R.renderLoading(root);
-      api.users.list().then(function (res) {
-        render((res && res.users) || []);
+      Promise.all([api.users.list(), api.invitations.list()]).then(function (res) {
+        render((res[0] && res[0].users) || [], (res[1] && res[1].invitations) || []);
       }).catch(function (err) {
         R.renderError(root, err, load);
+      });
+    }
+
+    // Reload only the invitations panel (after create / revoke) without a full
+    // re-fetch of the clinicians table.
+    function reloadInvitations() {
+      api.invitations.list().then(function (res) {
+        renderInvitations((res && res.invitations) || []);
+      }).catch(function (err) {
+        R.toast(err.message, 'error');
+      });
+    }
+
+    function openInvite() {
+      R.formModal({
+        title: 'Invite a clinician',
+        fields: [
+          { name: 'email', label: 'Email', type: 'email', required: true },
+          { name: 'role', label: 'Role', type: 'select',
+            options: [
+              { value: 'clinician',      label: 'Clinician' },
+              { value: 'practice_admin', label: 'Practice Admin' },
+              { value: 'billing_staff',  label: 'Billing Staff' },
+            ] },
+          { name: 'expires_in_days', label: 'Expires in (days)', type: 'number', placeholder: '7' },
+        ],
+        submitLabel: 'Create invite link',
+      }).then(function (result) {
+        if (!result) return;
+        api.invitations.create(compact(result)).then(function (res) {
+          // Surface the shareable link for the admin to copy and send manually.
+          R.formModal({
+            title: 'Share this invite link',
+            fields: [
+              { name: 'link', label: 'Invite link (copy and share)', type: 'textarea' },
+            ],
+            values: { link: res.link },
+            submitLabel: 'Done',
+          }).then(function () {
+            reloadInvitations();
+          });
+        }).catch(function (err) {
+          R.toast(err.message, 'error');
+        });
+      });
+    }
+
+    function revokeInvite(inv) {
+      R.confirmModal({
+        title: 'Revoke invitation?',
+        body: 'The invite link will stop working.',
+        confirmLabel: 'Revoke',
+        danger: true,
+      }).then(function (ok) {
+        if (!ok) return;
+        api.invitations.revoke(inv.id).then(function () {
+          R.toast('Invitation revoked', 'success');
+          reloadInvitations();
+        }).catch(function (err) {
+          R.toast(err.message, 'error');
+        });
       });
     }
 
@@ -108,48 +174,117 @@
       });
     }
 
-    function render(users) {
-      R.clear(root);
+    // Stable container for the invitations panel, so reloadInvitations() can
+    // repaint just this section after a create / revoke.
+    var invitationsBody = null;
 
-      if (!users.length) {
-        R.renderEmpty(root, {
-          title: 'No clinicians yet',
-          body: 'Users are added during account setup or via invitation.',
-        });
+    // Repaint the pending-invitations table into invitationsBody. Filters to
+    // pending rows only; shows an inline note when there are none.
+    function renderInvitations(invitations) {
+      if (!invitationsBody) return;
+      R.clear(invitationsBody);
+
+      var pending = (invitations || []).filter(function (inv) {
+        return inv.status === 'pending';
+      });
+
+      if (!pending.length) {
+        invitationsBody.appendChild(
+          h('p', { class: 'empty-state__body', style: 'margin:0;padding:var(--space-3) 0' },
+            'No pending invitations.')
+        );
         return;
       }
 
-      var rows = users.map(function (u) {
-        return h('tr', null, [
-          h('td', null, userName(u)),
-          h('td', null, humanize(u.role)),
-          h('td', null, titleNpi(u)),
-          h('td', null, statusBadge(u)),
-          h('td', { class: 'data-table__num' },
-            h('button', { class: 'btn btn--ghost btn--sm', type: 'button',
-              onClick: function () { openEdit(u); } }, 'Edit')),
-        ]);
+      var admin = isAdmin();
+
+      var rows = pending.map(function (inv) {
+        var cells = [
+          h('td', null, inv.email),
+          h('td', null, humanize(inv.role)),
+          h('td', null, R.fmtDate(inv.expires_at)),
+        ];
+        if (admin) {
+          cells.push(
+            h('td', { class: 'data-table__num' },
+              h('button', { class: 'btn btn--ghost btn--sm', type: 'button',
+                onClick: function () { revokeInvite(inv); } }, 'Revoke'))
+          );
+        }
+        return h('tr', null, cells);
       });
 
-      var table = h('table', { class: 'data-table' }, [
-        h('thead', null, h('tr', null, [
-          h('th', null, 'Name'),
-          h('th', null, 'Role'),
-          h('th', null, 'Title / NPI'),
-          h('th', null, 'Status'),
-          h('th', { class: 'data-table__num' }, ''),
-        ])),
-        h('tbody', null, rows),
-      ]);
+      var head = [
+        h('th', null, 'Email'),
+        h('th', null, 'Role'),
+        h('th', null, 'Expires'),
+      ];
+      if (admin) head.push(h('th', { class: 'data-table__num' }, ''));
+
+      invitationsBody.appendChild(
+        h('table', { class: 'data-table' }, [
+          h('thead', null, h('tr', null, head)),
+          h('tbody', null, rows),
+        ])
+      );
+    }
+
+    function render(users, invitations) {
+      R.clear(root);
+
+      var admin = isAdmin();
+
+      var headerChildren = [h('h1', { class: 'page-header__title' }, 'Clinicians')];
+      if (admin) {
+        headerChildren.push(
+          h('button', { class: 'btn btn--primary', type: 'button',
+            onClick: openInvite }, 'Invite clinician')
+        );
+      }
+
+      var cliniciansCard;
+      if (!users.length) {
+        cliniciansCard = h('div', { class: 'card' },
+          h('p', { class: 'empty-state__body', style: 'margin:0' },
+            'No clinicians yet. Users are added during account setup or via invitation.'));
+      } else {
+        var rows = users.map(function (u) {
+          return h('tr', null, [
+            h('td', null, userName(u)),
+            h('td', null, humanize(u.role)),
+            h('td', null, titleNpi(u)),
+            h('td', null, statusBadge(u)),
+            h('td', { class: 'data-table__num' },
+              h('button', { class: 'btn btn--ghost btn--sm', type: 'button',
+                onClick: function () { openEdit(u); } }, 'Edit')),
+          ]);
+        });
+
+        cliniciansCard = h('div', { class: 'card' }, h('table', { class: 'data-table' }, [
+          h('thead', null, h('tr', null, [
+            h('th', null, 'Name'),
+            h('th', null, 'Role'),
+            h('th', null, 'Title / NPI'),
+            h('th', null, 'Status'),
+            h('th', { class: 'data-table__num' }, ''),
+          ])),
+          h('tbody', null, rows),
+        ]));
+      }
+
+      invitationsBody = h('div');
 
       var view = h('div', { class: 'view stack' }, [
+        h('div', { class: 'page-header' }, headerChildren),
+        cliniciansCard,
         h('div', { class: 'page-header' }, [
-          h('h1', { class: 'page-header__title' }, 'Clinicians'),
+          h('h2', { class: 'page-header__title' }, 'Pending invitations'),
         ]),
-        h('div', { class: 'card' }, table),
+        h('div', { class: 'card' }, invitationsBody),
       ]);
 
       root.appendChild(view);
+      renderInvitations(invitations);
     }
 
     load();
