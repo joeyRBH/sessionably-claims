@@ -89,6 +89,16 @@ function parseBool(v) {
   return { ok: false };
 }
 
+// Optional payer id: absent/blank → null; otherwise a trimmed string up to 50
+// chars (the clearinghouse trading-partner / payer id). Returns { ok, value }.
+function parsePayerId(v) {
+  if (v == null) return { ok: true, value: null };
+  const s = String(v).trim();
+  if (s === '') return { ok: true, value: null };
+  if (s.length > 50) return { ok: false };
+  return { ok: true, value: s };
+}
+
 // --- shaping -----------------------------------------------------------------
 
 // Shape an insurance_records row for the API. All fields belong to the caller's
@@ -109,6 +119,7 @@ function shapeRecord(r) {
     oon_deductible_total: r.oon_deductible_total,
     oon_deductible_met: r.oon_deductible_met,
     oon_reimbursement_rate: r.oon_reimbursement_rate,
+    payer_id: r.payer_id,
     benefits_checked_at: r.benefits_checked_at,
     benefits_raw: r.benefits_raw,
     is_primary: r.is_primary,
@@ -172,6 +183,10 @@ async function createRecord(practiceId, body, event) {
   if (!rate.ok) {
     return json(400, { error: 'Invalid oon_reimbursement_rate. Expected a number between 0 and 100.' }, event);
   }
+  const payerId = parsePayerId(body.payer_id);
+  if (!payerId.ok) {
+    return json(400, { error: 'Invalid payer_id. Expected a string up to 50 characters.' }, event);
+  }
 
   let isPrimary = null;
   if ('is_primary' in body) {
@@ -188,8 +203,8 @@ async function createRecord(practiceId, body, event) {
     `insert into insurance_records
        (practice_id, client_id, carrier_name, member_id, group_number, plan_type,
         subscriber_relationship, subscriber_name, subscriber_dob,
-        oon_deductible_total, oon_deductible_met, oon_reimbursement_rate, is_primary)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, coalesce($13, true))
+        oon_deductible_total, oon_deductible_met, oon_reimbursement_rate, payer_id, is_primary)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, coalesce($14, true))
      returning *`,
     [
       practiceId,
@@ -204,6 +219,7 @@ async function createRecord(practiceId, body, event) {
       total.value,
       met.value,
       rate.value,
+      payerId.value,
       isPrimary,
     ]
   );
@@ -308,6 +324,14 @@ async function updateRecord(practiceId, id, body, event) {
       return json(400, { error: 'Invalid oon_reimbursement_rate. Expected a number between 0 and 100.' }, event);
     }
     add('oon_reimbursement_rate', rate.value);
+  }
+
+  if ('payer_id' in body) {
+    const payerId = parsePayerId(body.payer_id);
+    if (!payerId.ok) {
+      return json(400, { error: 'Invalid payer_id. Expected a string up to 50 characters.' }, event);
+    }
+    add('payer_id', payerId.value);
   }
 
   if ('is_primary' in body) {

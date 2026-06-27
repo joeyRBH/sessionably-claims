@@ -14,11 +14,13 @@
 
 const mock = require('./mock');
 const claimMd = require('./claim_md');
+const stedi = require('./stedi');
 
 const ADAPTERS = {
   mock,
   claim_md: claimMd,
 };
+ADAPTERS['stedi'] = stedi;
 
 function getClearinghouse() {
   const name = String(process.env.CLEARINGHOUSE || 'mock').toLowerCase();
