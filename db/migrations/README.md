@@ -35,6 +35,5 @@ done
 
 ## Status
 
-No migrations yet. Core authentication (register/login/me) needed **no** schema change —
-the existing `users`, `practices`, and `invitations` tables already cover it. Add the
-first migration here only when a real schema change is required.
+- `001_add_payer_id_to_insurance_records.sql` — adds `payer_id varchar(50)` to
+  `insurance_records` (clearinghouse trading-partner / payer id, used by the Stedi adapter).

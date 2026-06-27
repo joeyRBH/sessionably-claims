@@ -194,6 +194,7 @@ create table if not exists insurance_records (
   oon_deductible_total     numeric(12,2),
   oon_deductible_met       numeric(12,2),
   oon_reimbursement_rate   numeric(5,2),
+  payer_id                 varchar(50),                         -- clearinghouse trading-partner / payer id
   benefits_checked_at      timestamptz,
   benefits_raw             jsonb,
   is_primary               boolean not null default true,
@@ -215,6 +216,9 @@ create trigger trg_insurance_records_updated_at
 -- Migration (idempotent): add PHI soft-delete to the live insurance_records table.
 alter table insurance_records add column if not exists is_hidden boolean not null default false;
 create index if not exists idx_insurance_records_is_hidden on insurance_records (is_hidden);
+
+-- Migration (idempotent): add clearinghouse payer id to the live insurance_records table.
+alter table insurance_records add column if not exists payer_id varchar(50);
 
 -- =============================================================================
 -- 7. sessions — therapy sessions (exist only to attach claims to).
