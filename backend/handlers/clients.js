@@ -86,6 +86,13 @@ function shapeClient(r) {
     phone: r.phone,
     date_of_birth: r.date_of_birth,
     status: r.status,
+    // Display-only payment-method summary (never the Stripe customer / PM ids).
+    payment_method_brand: r.payment_method_brand,
+    payment_method_last4: r.payment_method_last4,
+    payment_method_exp_month: r.payment_method_exp_month,
+    payment_method_exp_year: r.payment_method_exp_year,
+    payment_method_set_at: r.payment_method_set_at,
+    payment_link_sent_at: r.payment_link_sent_at,
     is_hidden: r.is_hidden,
     created_at: r.created_at,
     updated_at: r.updated_at,

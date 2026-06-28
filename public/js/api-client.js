@@ -155,6 +155,17 @@
     create: function (payload) { return request('POST', '/clients', payload); },
     update: function (id, payload) { return request('PATCH', '/clients/' + id, payload); },
     remove: function (id) { return request('DELETE', '/clients/' + id); },
+    // Text the client an SMS link to securely save a payment method (staff action).
+    sendPaymentLink: function (id) { return request('POST', '/clients/' + id + '/send-payment-link', {}); },
+  };
+
+  // Patient billing (PUBLIC endpoints — used by the standalone card-capture page).
+  // These take a short-lived signed token in the body, not the staff bearer token.
+  var billing = {
+    setupIntent: function (token) { return request('POST', '/setup-intent', { token: token }); },
+    savePaymentMethod: function (token, paymentMethodId) {
+      return request('POST', '/save-payment-method', { token: token, paymentMethodId: paymentMethodId });
+    },
   };
 
   var insuranceRecords = {
@@ -225,5 +236,6 @@
     claims: claims,
     users: users,
     invitations: invitations,
+    billing: billing,
   };
 })(window);

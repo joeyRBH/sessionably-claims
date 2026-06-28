@@ -24,7 +24,8 @@
     { name: 'preferred_name', label: 'Preferred name', type: 'text' },
     { name: 'pronouns',       label: 'Pronouns',       type: 'text' },
     { name: 'email',          label: 'Email',          type: 'email' },
-    { name: 'phone',          label: 'Phone',          type: 'text' },
+    { name: 'phone',          label: 'Mobile Phone',   type: 'text',
+      placeholder: '+1 (303) 555-0100' },
     { name: 'date_of_birth',  label: 'Date of birth',  type: 'date' },
     { name: 'gender',         label: 'Biological Sex', type: 'select', required: true,
       options: [
@@ -309,6 +310,52 @@
       });
     }
 
+    // Send the SMS card-capture link, with a generic success/error toast.
+    function sendPaymentLink(client) {
+      api.clients.sendPaymentLink(client.id).then(function () {
+        R.toast('Payment link sent to ' + (client.phone || 'the client'), 'success');
+      }).catch(function (err) {
+        R.toast(err.message || 'Could not send payment link', 'error');
+      });
+    }
+
+    // Billing row: a saved-card badge (with "Send new link") or a "Send Payment Link"
+    // button. Hidden entirely when there is no phone and no card on file.
+    function billingRow(client) {
+      var hasCard = !!client.payment_method_last4;
+      var hasPhone = !!(client.phone && String(client.phone).trim());
+      if (!hasCard && !hasPhone) return null;
+
+      var children = [];
+
+      if (hasCard) {
+        var brand = client.payment_method_brand || 'card';
+        var exp = (client.payment_method_exp_month && client.payment_method_exp_year)
+          ? ' (exp ' + client.payment_method_exp_month + '/' + client.payment_method_exp_year + ')'
+          : '';
+        children.push(h('span', { class: 'badge badge--success' },
+          '💳 Card on file: ' + brand + ' •••• ' + client.payment_method_last4 + exp));
+        if (hasPhone) {
+          children.push(h('button', {
+            class: 'btn btn--ghost btn--sm', type: 'button',
+            style: 'margin-left:var(--space-3)',
+            onClick: function () { sendPaymentLink(client); },
+          }, 'Send new link'));
+        }
+      } else {
+        children.push(h('button', {
+          class: 'btn btn--ghost btn--sm', type: 'button',
+          onClick: function () { sendPaymentLink(client); },
+        }, 'Send Payment Link'));
+      }
+
+      return h('div', {
+        style: 'display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap;'
+          + 'margin-top:var(--space-3);padding-top:var(--space-3);'
+          + 'border-top:var(--border-width-1) solid var(--color-border)',
+      }, children);
+    }
+
     function headerCard(client) {
       var meta = [];
       if (client.email) meta.push(client.email);
@@ -332,6 +379,7 @@
           ? h('p', { style: 'margin:0;color:var(--color-text-muted);font-size:var(--font-size-3)' },
               meta.join('  ·  '))
           : null,
+        billingRow(client),
       ]);
     }
 

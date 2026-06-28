@@ -88,6 +88,11 @@ create trigger trg_practices_updated_at
   before update on practices
   for each row execute function set_updated_at();
 
+-- Migration (idempotent): ensure the per-claim platform fee percent exists on the
+-- live practices table (already declared above for fresh databases; this keeps a
+-- pre-existing database in sync). See db/migrations/003_add_patient_billing_to_clients.sql.
+alter table practices add column if not exists platform_fee_percent numeric(5,2) not null default 5.00;
+
 -- =============================================================================
 -- 3. practice_subscriptions — a practice's current plan.
 -- =============================================================================
@@ -203,6 +208,20 @@ alter table clients add column if not exists city text;
 alter table clients add column if not exists state text;
 alter table clients add column if not exists postal_code text;
 alter table clients add column if not exists country text not null default 'US';
+
+-- Migration (idempotent): add patient billing (Stripe payment method) to the live
+-- clients table. Reddably charges the patient a per-claim platform fee; staff send
+-- an SMS link to a card-capture page that saves a Stripe PaymentMethod here. The
+-- card-summary columns are display-only — never store a raw PAN/CVC (PCI). See
+-- db/migrations/003_add_patient_billing_to_clients.sql.
+alter table clients add column if not exists stripe_customer_id text;
+alter table clients add column if not exists payment_method_id text;
+alter table clients add column if not exists payment_method_brand text;
+alter table clients add column if not exists payment_method_last4 text;
+alter table clients add column if not exists payment_method_exp_month integer;
+alter table clients add column if not exists payment_method_exp_year integer;
+alter table clients add column if not exists payment_method_set_at timestamptz;
+alter table clients add column if not exists payment_link_sent_at timestamptz;
 
 -- =============================================================================
 -- 6. insurance_records — OON benefit data per client (PHI).

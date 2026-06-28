@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="reddably-api-base" content="https://api.claimsub.com">
+  <title>Save your card · Reddably</title>
+
+  <!-- Authoritative F0 design tokens. No dark mode. -->
+  <link rel="stylesheet" href="./app-foundation/styles/tokens.css">
+
+  <!-- Stripe.js (PCI: card data is entered in Stripe's iframe, never our DOM). -->
+  <script src="https://js.stripe.com/v3/"></script>
+
+  <style>
+    /* Mobile-first standalone page — patients open this on their phone. All colors
+       come from the token layer; no raw hex/px literals here. */
+    *, *::before, *::after { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      background: var(--color-bg);
+      color: var(--color-text);
+      font-family: var(--font-body);
+      font-size: var(--font-size-4);
+      line-height: var(--leading-base);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .wrap {
+      min-height: 100vh;
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      padding: var(--space-6) var(--space-4) var(--space-9);
+    }
+
+    .card {
+      width: 100%;
+      max-width: 26rem;
+      margin-top: var(--space-8);
+      background: var(--color-surface);
+      border: var(--border-width-1) solid var(--color-border);
+      border-radius: var(--radius-4);
+      box-shadow: var(--shadow-2);
+      padding: var(--space-7) var(--space-6);
+    }
+
+    .wordmark {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      color: var(--color-primary);
+      margin-bottom: var(--space-6);
+    }
+    .wordmark__mark { width: var(--space-7); height: var(--space-7); }
+    .wordmark__text {
+      font-family: var(--font-display);
+      font-size: var(--font-size-5);
+      font-weight: var(--font-weight-semibold);
+      color: var(--color-text);
+    }
+
+    h1 {
+      font-family: var(--font-display);
+      font-size: var(--font-size-7);
+      font-weight: var(--font-weight-semibold);
+      line-height: var(--leading-tight);
+      margin: 0 0 var(--space-2);
+    }
+    .subhead {
+      color: var(--color-text-muted);
+      font-size: var(--font-size-3);
+      margin: 0 0 var(--space-6);
+    }
+
+    label {
+      display: block;
+      font-size: var(--font-size-2);
+      font-weight: var(--font-weight-medium);
+      color: var(--color-text-strong);
+      margin-bottom: var(--space-2);
+    }
+
+    /* Stripe Element mounts inside this box; we style the frame, Stripe styles text. */
+    .card-input {
+      background: var(--color-surface);
+      border: var(--border-width-1) solid var(--color-border-strong);
+      border-radius: var(--radius-2);
+      padding: var(--space-3) var(--space-3);
+      transition: border-color var(--motion-fast) var(--ease-standard),
+                  box-shadow var(--motion-fast) var(--ease-standard);
+    }
+    .card-input.is-focused {
+      border-color: var(--color-primary);
+      box-shadow: 0 0 0 var(--focus-ring-width) var(--color-focus-ring);
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      margin-top: var(--space-6);
+      padding: var(--space-3) var(--space-5);
+      font-family: var(--font-body);
+      font-size: var(--font-size-4);
+      font-weight: var(--font-weight-semibold);
+      color: var(--color-on-primary);
+      background: var(--color-primary);
+      border: none;
+      border-radius: var(--radius-2);
+      cursor: pointer;
+      transition: background var(--motion-fast) var(--ease-standard);
+    }
+    .btn:hover { background: var(--color-primary-hover); }
+    .btn:disabled { background: var(--color-text-disabled); cursor: not-allowed; }
+
+    .msg {
+      margin-top: var(--space-4);
+      font-size: var(--font-size-3);
+      padding: var(--space-3) var(--space-4);
+      border-radius: var(--radius-2);
+    }
+    .msg--error {
+      color: var(--color-danger);
+      background: var(--color-surface-sunken);
+    }
+    .msg[hidden] { display: none; }
+
+    .secure-note {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      margin-top: var(--space-5);
+      color: var(--color-text-subtle);
+      font-size: var(--font-size-1);
+    }
+
+    .state-loading, .state-done { color: var(--color-text-muted); }
+    .state-done__title {
+      font-family: var(--font-display);
+      font-size: var(--font-size-6);
+      color: var(--color-text);
+      margin: 0 0 var(--space-2);
+    }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <main class="wrap" role="main">
+    <section class="card" aria-labelledby="cs-heading">
+      <div class="wordmark" aria-label="Reddably">
+        <svg class="wordmark__mark" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <rect x="3" y="3" width="18" height="18" rx="5" fill="currentColor"/>
+          <path d="M16 9.2a4.2 4.2 0 1 0 0 5.6" fill="none" stroke="var(--color-on-primary)"
+                stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        <span class="wordmark__text">Reddably</span>
+      </div>
+
+      <!-- Loading state (while we create the SetupIntent). -->
+      <div id="state-loading" class="state-loading">
+        <p>Loading secure card form…</p>
+      </div>
+
+      <!-- Form state. -->
+      <div id="state-form" hidden>
+        <h1 id="cs-heading">Save your card</h1>
+        <p class="subhead">Your practice will use this to securely collect the platform
+          fee on your insurance claims. You won't be charged anything now.</p>
+
+        <form id="card-form" novalidate>
+          <label for="card-element">Card details</label>
+          <div id="card-element" class="card-input"><!-- Stripe Element mounts here --></div>
+
+          <p id="error" class="msg msg--error" role="alert" aria-live="polite" hidden></p>
+
+          <button id="submit" class="btn" type="submit">
+            <span id="submit-label">Save card securely</span>
+          </button>
+        </form>
+
+        <p class="secure-note">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <rect x="5" y="11" width="14" height="9" rx="2" stroke="currentColor" stroke-width="2"/>
+            <path d="M8 11V8a4 4 0 0 1 8 0v3" stroke="currentColor" stroke-width="2"/>
+          </svg>
+          Encrypted and processed by Stripe. Reddably never sees your full card number.
+        </p>
+      </div>
+
+      <!-- Success state. -->
+      <div id="state-done" class="state-done" hidden>
+        <h2 class="state-done__title">You're all set ✓</h2>
+        <p>Your card has been saved securely. You can close this page.</p>
+      </div>
+
+      <!-- Fatal state (bad/expired link). -->
+      <div id="state-fatal" hidden>
+        <h1>Link unavailable</h1>
+        <p class="subhead" id="fatal-msg">This link is invalid or has expired. Please ask
+          your practice to send a new one.</p>
+      </div>
+    </section>
+  </main>
+
+  <!-- All network calls go through window.ReddablyAPI (no direct fetch). -->
+  <script src="./js/api-client.js"></script>
+  <script>
+    (function (window, document) {
+      'use strict';
+
+      var API = window.ReddablyAPI;
+
+      function $(id) { return document.getElementById(id); }
+      function show(id) { $(id).hidden = false; }
+      function hide(id) { $(id).hidden = true; }
+
+      function showFatal(message) {
+        hide('state-loading'); hide('state-form'); hide('state-done');
+        if (message) $('fatal-msg').textContent = message;
+        show('state-fatal');
+      }
+
+      function showError(message) {
+        var el = $('error');
+        el.textContent = message || 'Something went wrong. Please try again.';
+        el.hidden = false;
+      }
+      function clearError() { $('error').hidden = true; }
+
+      // Read the signed token from the query string (no PHI — opaque token only).
+      function getToken() {
+        try {
+          return new URLSearchParams(window.location.search).get('token');
+        } catch (e) { return null; }
+      }
+
+      // Pull a token color so Stripe's iframe text matches our theme without hardcoding hex.
+      function tokenColor(name, fallback) {
+        try {
+          var v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+          return v || fallback;
+        } catch (e) { return fallback; }
+      }
+
+      var token = getToken();
+      if (!token) { showFatal(); return; }
+      if (!API || !API.billing) { showFatal('This page failed to load. Please try again.'); return; }
+
+      // 1) Create the SetupIntent for this client.
+      API.billing.setupIntent(token).then(function (res) {
+        var clientSecret = res && res.clientSecret;
+        var publishableKey = res && res.publishableKey;
+        if (!clientSecret || !publishableKey || !window.Stripe) {
+          showFatal('Card setup is temporarily unavailable. Please try again later.');
+          return;
+        }
+
+        var stripe = window.Stripe(publishableKey);
+        var elements = stripe.elements();
+        var card = elements.create('card', {
+          style: {
+            base: {
+              color: tokenColor('--color-text', '#1A1718'),
+              fontFamily: tokenColor('--font-body', 'Inter, sans-serif'),
+              fontSize: '15px',
+              '::placeholder': { color: tokenColor('--color-text-subtle', '#8F868A') },
+            },
+            invalid: { color: tokenColor('--color-danger', '#A6443E') },
+          },
+        });
+
+        hide('state-loading');
+        show('state-form');
+        card.mount('#card-element');
+
+        var box = $('card-element');
+        card.on('focus', function () { box.classList.add('is-focused'); });
+        card.on('blur', function () { box.classList.remove('is-focused'); });
+        card.on('change', function (e) {
+          if (e.error) { showError(e.error.message); } else { clearError(); }
+        });
+
+        var submitting = false;
+        $('card-form').addEventListener('submit', function (e) {
+          e.preventDefault();
+          if (submitting) return;
+          submitting = true;
+          clearError();
+          $('submit').disabled = true;
+          $('submit-label').textContent = 'Saving…';
+
+          // 2) Confirm the card with Stripe.js (card data stays in Stripe's iframe).
+          stripe.confirmCardSetup(clientSecret, { payment_method: { card: card } })
+            .then(function (result) {
+              if (result.error) {
+                showError(result.error.message);
+                submitting = false;
+                $('submit').disabled = false;
+                $('submit-label').textContent = 'Save card securely';
+                return;
+              }
+
+              // 3) Persist the payment method against the client.
+              var pmId = result.setupIntent && result.setupIntent.payment_method;
+              API.billing.savePaymentMethod(token, pmId).then(function () {
+                hide('state-form');
+                show('state-done');
+              }).catch(function (err) {
+                showError((err && err.message) || 'Could not save your card. Please try again.');
+                submitting = false;
+                $('submit').disabled = false;
+                $('submit-label').textContent = 'Save card securely';
+              });
+            });
+        });
+      }).catch(function (err) {
+        if (err && (err.status === 401 || err.status === 404)) { showFatal(); return; }
+        showFatal('Card setup is temporarily unavailable. Please try again later.');
+      });
+    })(window, document);
+  </script>
+</body>
+</html>

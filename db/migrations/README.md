@@ -40,3 +40,7 @@ done
 - `002_add_subscriber_demographics_to_clients.sql` — adds `gender` + address columns
   (`address_line1/2`, `city`, `state`, `postal_code`, `country`) to `clients`; required
   by Stedi when the patient is the subscriber (837P SBR-02 = 18).
+- `003_add_patient_billing_to_clients.sql` — adds Stripe payment-method columns
+  (`stripe_customer_id`, `payment_method_*`, `payment_link_sent_at`) + `phone` to
+  `clients`, and `platform_fee_percent` to `practices`; powers patient card capture and
+  the 5% per-claim platform fee charged at claim submission.
