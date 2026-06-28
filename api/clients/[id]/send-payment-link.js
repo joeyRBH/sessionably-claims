@@ -1,33 +1,28 @@
 'use strict';
 
-// POST /clients/{id}/send-payment-link — JWT-authenticated (staff only).
+// POST /clients/:id/send-payment-link — JWT-authenticated Vercel function (staff).
 //
-// Generates a short-lived signed token for the client, builds the patient
-// card-capture URL (APP_BASE_URL/card-setup?token=...), and texts it to the
-// client's phone via Twilio. The client never logs in — this SMS is how they reach
-// the card-capture page. practice_id is always derived from the caller; the client
-// must belong to the caller's practice. Never logs PHI.
-//
-// NOTE: sending requires outbound HTTPS to api.twilio.com. The auth Lambdas run in
-// a VPC without NAT egress (see CLAUDE.md) — reaching Twilio needs a NAT gateway /
-// VPC endpoint or moving this to a Vercel function. Flagged for infra follow-up.
+// On Vercel for outbound access to Twilio; reaches Postgres via DATABASE_URL. Mirrors
+// the path the app already calls (api-client.js → clients.sendPaymentLink). Generates
+// a short-lived signed token, builds APP_BASE_URL/card-setup?token=..., and texts it
+// to the client. practice_id is always derived from the caller; the client must
+// belong to that practice. Never logs PHI.
 
-const db = require('../lib/db');
-const { requireAuth } = require('../lib/auth');
-const { json, preflight } = require('../lib/response');
-const paymentToken = require('../lib/payment_token');
+const db = require('../../../backend/lib/db');
+const { requireAuth } = require('../../../backend/lib/auth');
+const paymentToken = require('../../../backend/lib/payment_token');
+const { ALLOWED_ORIGINS } = require('../../../backend/lib/response');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function httpMethod(event) {
-  if (!event) return '';
-  if (event.httpMethod) return event.httpMethod;
-  const ctx = event.requestContext;
-  return (ctx && ctx.http && ctx.http.method) || '';
-}
-
-function pathId(event) {
-  return event && event.pathParameters ? event.pathParameters.id : undefined;
+function applyCors(req, res) {
+  const origin = req.headers.origin;
+  const allow = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[ALLOWED_ORIGINS.length - 1];
+  res.setHeader('Access-Control-Allow-Origin', allow);
+  res.setHeader('Vary', 'Origin');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Max-Age', '86400');
 }
 
 function isUUID(v) {
@@ -35,11 +30,11 @@ function isUUID(v) {
 }
 
 async function loadPracticeId(userId) {
-  const res = await db.query(
+  const result = await db.query(
     `select practice_id from users where id = $1 and is_active = true limit 1`,
     [userId]
   );
-  return res.rows[0] ? res.rows[0].practice_id : null;
+  return result.rows[0] ? result.rows[0].practice_id : null;
 }
 
 // Send an SMS via the Twilio REST API (basic auth, form-encoded). Throws on failure.
@@ -47,14 +42,12 @@ async function sendSms(to, bodyText) {
   const sid = process.env.TWILIO_ACCOUNT_SID;
   const token = process.env.TWILIO_AUTH_TOKEN;
   const from = process.env.TWILIO_FROM_NUMBER;
-  if (!sid || !token || !from) {
-    throw new Error('Twilio is not configured');
-  }
+  if (!sid || !token || !from) throw new Error('Twilio is not configured');
 
   const auth = Buffer.from(`${sid}:${token}`).toString('base64');
   const form = new URLSearchParams({ To: to, From: from, Body: bodyText }).toString();
 
-  const res = await fetch(
+  const resp = await fetch(
     `https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(sid)}/Messages.json`,
     {
       method: 'POST',
@@ -67,45 +60,44 @@ async function sendSms(to, bodyText) {
     }
   );
 
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    // data.message is Twilio's error text (no PHI); safe to surface generically.
-    const err = new Error((data && data.message) || `Twilio HTTP ${res.status}`);
-    err.statusCode = res.status;
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    const err = new Error((data && data.message) || `Twilio HTTP ${resp.status}`);
+    err.statusCode = resp.status;
     throw err;
   }
   return data;
 }
 
-exports.handler = async (event) => {
-  const method = httpMethod(event);
-  if (method === 'OPTIONS') return preflight(event);
+module.exports = async (req, res) => {
+  applyCors(req, res);
+  if (req.method === 'OPTIONS') return res.status(204).end();
 
   let auth;
   try {
-    auth = requireAuth(event);
-  } catch (err) {
-    return json(err.statusCode || 401, { error: 'Unauthorized' }, event);
+    auth = requireAuth({ headers: req.headers });
+  } catch (_) {
+    return res.status(401).json({ error: 'Unauthorized' });
   }
 
-  if (method !== 'POST') return json(405, { error: 'Method not allowed' }, event);
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   try {
     const practiceId = await loadPracticeId(auth.user.sub);
-    if (!practiceId) return json(401, { error: 'Unauthorized' }, event);
+    if (!practiceId) return res.status(401).json({ error: 'Unauthorized' });
 
-    const id = pathId(event);
-    if (!isUUID(id)) return json(404, { error: 'Not found' }, event);
+    const id = req.query && req.query.id;
+    if (!isUUID(id)) return res.status(404).json({ error: 'Not found' });
 
     const clientRes = await db.query(
       `select * from clients where id = $1 and practice_id = $2 and is_hidden = false limit 1`,
       [id, practiceId]
     );
     const client = clientRes.rows[0];
-    if (!client) return json(404, { error: 'Not found' }, event);
+    if (!client) return res.status(404).json({ error: 'Not found' });
 
     if (!client.phone || String(client.phone).trim() === '') {
-      return json(400, { error: 'This client has no phone number on file.' }, event);
+      return res.status(400).json({ error: 'This client has no phone number on file.' });
     }
 
     const practiceRes = await db.query(`select name from practices where id = $1 limit 1`, [practiceId]);
@@ -114,7 +106,7 @@ exports.handler = async (event) => {
     const appBaseUrl = (process.env.APP_BASE_URL || '').replace(/\/+$/, '');
     if (!appBaseUrl) {
       console.error('send_payment_link error: APP_BASE_URL is not set');
-      return json(500, { error: 'Messaging is not configured.' }, event);
+      return res.status(500).json({ error: 'Messaging is not configured.' });
     }
 
     const token = paymentToken.sign(client.id);
@@ -130,7 +122,7 @@ exports.handler = async (event) => {
       await sendSms(String(client.phone).trim(), message);
     } catch (smsErr) {
       console.error('send_payment_link (twilio) error:', smsErr && smsErr.message);
-      return json(502, { error: 'Could not send the text message. Check the phone number and try again.' }, event);
+      return res.status(502).json({ error: 'Could not send the text message. Check the phone number and try again.' });
     }
 
     await db.query(
@@ -138,9 +130,9 @@ exports.handler = async (event) => {
       [client.id, practiceId]
     );
 
-    return json(200, { ok: true }, event);
+    return res.status(200).json({ ok: true });
   } catch (err) {
     console.error('send_payment_link error:', err && err.message);
-    return json(500, { error: 'Internal server error' }, event);
+    return res.status(500).json({ error: 'Internal server error' });
   }
 };

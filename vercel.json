@@ -1,0 +1,18 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "env": {
+    "DATABASE_URL": "@database_url",
+    "JWT_SECRET": "@jwt_secret",
+    "STRIPE_SECRET_KEY": "@stripe_secret_key",
+    "STRIPE_PUBLISHABLE_KEY": "@stripe_publishable_key",
+    "TWILIO_ACCOUNT_SID": "@twilio_account_sid",
+    "TWILIO_AUTH_TOKEN": "@twilio_auth_token",
+    "TWILIO_FROM_NUMBER": "@twilio_from_number",
+    "APP_BASE_URL": "@app_base_url"
+  },
+  "rewrites": [
+    { "source": "/setup-intent", "destination": "/api/setup-intent" },
+    { "source": "/save-payment-method", "destination": "/api/save-payment-method" },
+    { "source": "/clients/:id/send-payment-link", "destination": "/api/clients/:id/send-payment-link" }
+  ]
+}

@@ -85,22 +85,6 @@ locals {
         { method = "DELETE", path = "invitations/{id}" },
       ]
     }
-    # Patient billing — Stripe card capture (public) + Twilio SMS link (staff).
-    # setup_intent / save_payment_method are PUBLIC (no JWT): the patient card-capture
-    # page calls them with a short-lived signed token in the body, not a bearer token.
-    setup_intent = {
-      handler = "handlers/setup_intent.handler"
-      routes  = [{ method = "POST", path = "setup-intent" }]
-    }
-    save_payment_method = {
-      handler = "handlers/save_payment_method.handler"
-      routes  = [{ method = "POST", path = "save-payment-method" }]
-    }
-    # send_payment_link is JWT-authenticated (staff only).
-    send_payment_link = {
-      handler = "handlers/send_payment_link.handler"
-      routes  = [{ method = "POST", path = "clients/{id}/send-payment-link" }]
-    }
   }
 
   # Flatten lambda_functions into one entry per (function, route) pair, keyed by a

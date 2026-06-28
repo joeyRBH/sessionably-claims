@@ -83,11 +83,6 @@ output "ssm_secure_parameter_names" {
   value       = [for p in aws_ssm_parameter.secure : p.name]
 }
 
-output "ssm_string_parameter_names" {
-  description = "Names of the String (non-secret) parameters whose values are set out-of-band."
-  value       = [for p in aws_ssm_parameter.string : p.name]
-}
-
 # ─────────────────────────────────────────────────────────────
 # Custom domain (ACM + API Gateway)
 # ─────────────────────────────────────────────────────────────

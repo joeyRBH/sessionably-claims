@@ -1,0 +1,14 @@
+{
+  "name": "reddably",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Reddably — static frontend + Vercel serverless functions (/api).",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.11.5"
+  }
+}

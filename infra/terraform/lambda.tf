@@ -64,21 +64,11 @@ resource "aws_lambda_function" "auth" {
     variables = {
       NODE_ENV       = "production"
       JWT_EXPIRES_IN = "12h"
-      # DATABASE_URL / JWT_SECRET and the patient-billing values below are hydrated
-      # out-of-band from SSM by ./deploy.sh (see README §Secrets). Placeholders here
-      # let the function be created; ignore_changes preserves the hydrated values on
-      # subsequent applies.
+      # DATABASE_URL and JWT_SECRET are hydrated out-of-band from SSM (see README).
+      # Placeholders below let the function be created; ignore_changes preserves
+      # the hydrated values on subsequent applies.
       DATABASE_URL = "set-out-of-band-from-ssm"
       JWT_SECRET   = "set-out-of-band-from-ssm"
-
-      # Patient billing — Stripe (platform fee) + Twilio (SMS payment link) + the
-      # public base URL used to build the card-capture link.
-      STRIPE_SECRET_KEY      = "set-out-of-band-from-ssm"
-      STRIPE_PUBLISHABLE_KEY = "set-out-of-band-from-ssm"
-      TWILIO_ACCOUNT_SID     = "set-out-of-band-from-ssm"
-      TWILIO_AUTH_TOKEN      = "set-out-of-band-from-ssm"
-      TWILIO_FROM_NUMBER     = "set-out-of-band-from-ssm"
-      APP_BASE_URL           = "set-out-of-band-from-ssm"
     }
   }
 

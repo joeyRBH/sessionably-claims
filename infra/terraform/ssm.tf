@@ -28,20 +28,6 @@ locals {
     DATABASE_URL       = "Postgres connection string the auth Lambdas read as DATABASE_URL."
     JWT_SECRET         = "HS256 JWT signing secret the auth Lambdas read as JWT_SECRET."
     DB_MASTER_PASSWORD = "RDS master password (canonical home; read into TF_VAR at db-apply time)."
-
-    # Patient billing secrets — Stripe (platform fee) + Twilio (SMS payment link).
-    STRIPE_SECRET_KEY  = "Stripe secret key (sk_...) used to create SetupIntents / PaymentIntents."
-    TWILIO_ACCOUNT_SID = "Twilio Account SID used to send the SMS card-capture link."
-    TWILIO_AUTH_TOKEN  = "Twilio Auth Token paired with the Account SID."
-  }
-
-  # name → human description. Non-secret config that is still set out-of-band so no
-  # real value lands in code/tfstate. Created once, then the value is ignored — same
-  # discipline as the SecureStrings, just a String type (not encrypted).
-  ssm_string_parameters = {
-    STRIPE_PUBLISHABLE_KEY = "Stripe publishable key (pk_...) returned to the patient card-capture page."
-    TWILIO_FROM_NUMBER     = "Twilio sender phone number (E.164) for the SMS payment link."
-    APP_BASE_URL           = "Public base URL for patient-facing pages (e.g. https://reddably.com)."
   }
 }
 
@@ -54,26 +40,6 @@ resource "aws_ssm_parameter" "secure" {
 
   # Placeholder only - real value is set out-of-band. ignore_changes below means
   # Terraform creates this once and never reads or overwrites the live value.
-  value = "set-out-of-band-see-README"
-
-  lifecycle {
-    ignore_changes = [value]
-  }
-
-  tags = {
-    Name = each.key
-  }
-}
-
-resource "aws_ssm_parameter" "string" {
-  for_each = local.ssm_string_parameters
-
-  name        = "${local.ssm_path_prefix}/${each.key}"
-  description = each.value
-  type        = "String"
-
-  # Placeholder only - real value is set out-of-band (same discipline as the
-  # SecureStrings above). ignore_changes means Terraform never overwrites it.
   value = "set-out-of-band-see-README"
 
   lifecycle {
