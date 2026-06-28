@@ -37,3 +37,6 @@ done
 
 - `001_add_payer_id_to_insurance_records.sql` — adds `payer_id varchar(50)` to
   `insurance_records` (clearinghouse trading-partner / payer id, used by the Stedi adapter).
+- `002_add_subscriber_demographics_to_clients.sql` — adds `gender` + address columns
+  (`address_line1/2`, `city`, `state`, `postal_code`, `country`) to `clients`; required
+  by Stedi when the patient is the subscriber (837P SBR-02 = 18).

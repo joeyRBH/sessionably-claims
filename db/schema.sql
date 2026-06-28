@@ -159,6 +159,13 @@ create table if not exists clients (
   email                text,
   phone                text,
   date_of_birth        date,
+  gender               text check (gender in ('female', 'male', 'unknown')),  -- 837 subscriber demographics (PHI)
+  address_line1        text,                                  -- PHI; required by clearinghouses when patient is subscriber
+  address_line2        text,
+  city                 text,
+  state                text,
+  postal_code          text,
+  country              text not null default 'US',
   status               text not null default 'awaiting_info'
                          check (status in ('active', 'awaiting_info', 'ready', 'inactive')),
   is_hidden            boolean not null default false,
@@ -176,6 +183,26 @@ drop trigger if exists trg_clients_updated_at on clients;
 create trigger trg_clients_updated_at
   before update on clients
   for each row execute function set_updated_at();
+
+-- Migration (idempotent): add subscriber demographics + address to the live clients
+-- table. Clearinghouses (Stedi) require the subscriber's gender and address when the
+-- patient is the subscriber (837P SBR-02 = 18 / self).
+alter table clients add column if not exists gender text;
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'clients_gender_check'
+  ) then
+    alter table clients add constraint clients_gender_check
+      check (gender in ('female', 'male', 'unknown'));
+  end if;
+end $$;
+alter table clients add column if not exists address_line1 text;
+alter table clients add column if not exists address_line2 text;
+alter table clients add column if not exists city text;
+alter table clients add column if not exists state text;
+alter table clients add column if not exists postal_code text;
+alter table clients add column if not exists country text not null default 'US';
 
 -- =============================================================================
 -- 6. insurance_records — OON benefit data per client (PHI).

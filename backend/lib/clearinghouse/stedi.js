@@ -22,6 +22,12 @@ const BASE =
   process.env.STEDI_BASE_URL ||
   'https://healthcare.us.stedi.com/2024-04-01/change/medicalnetwork';
 
+// Submitter contact (837P loop 1000A). Reddably is the submitter/clearinghouse
+// intermediary, so this is a platform constant rather than per-practice data.
+// Stedi requires at least one of phone / email / fax on the submitter contact.
+const SUBMITTER_CONTACT_EMAIL =
+  process.env.STEDI_SUBMITTER_EMAIL || 'billing@reddably.com';
+
 function apiKey() {
   const k = process.env.STEDI_API_KEY;
   if (!k) {
@@ -36,6 +42,18 @@ function ymd(d) {
   const iso = d instanceof Date ? d.toISOString().slice(0, 10) : String(d).slice(0, 10);
   const digits = iso.replace(/-/g, '');
   return /^\d{8}$/.test(digits) ? digits : null;
+}
+
+// Map a clients.gender value to the 837 demographic code (M / F / U).
+function genderCode(g) {
+  switch (g) {
+    case 'female':
+      return 'F';
+    case 'male':
+      return 'M';
+    default:
+      return 'U';
+  }
 }
 
 // Parse a finite number out of an adjudication field, else null.
@@ -61,17 +79,38 @@ async function submitClaim(ctx) {
   const billingNpi = practice.npi || clinician.npi || null;
 
   const claimInformation = {
-    claimFilingCode: 'CI', // commercial / OON default
-    totalClaimChargeAmount: claim.billed_amount != null ? String(claim.billed_amount) : undefined,
+    claimFilingCode: 'CI',           // commercial / OON default
+    claimFrequencyCode: '1',         // original claim
+    placeOfServiceCode: '11',        // office (default; can be overridden per session)
+    claimChargeAmount: claim.billed_amount != null ? String(claim.billed_amount) : undefined,
+    patientControlNumber: String(claim.id), // echoed back in 277CA / 835 ERA for reconciliation
+    benefitsAssignmentCertificationIndicator: 'N',
+    releaseInformationCode: 'Y',
+    signatureIndicator: 'Y',         // provider signature on file
+    planParticipationCode: 'C',      // not assigned — OON: payer reimburses the client directly
+    // Diagnosis code — required by Stedi. Use the ICD-10 code from the session if present,
+    // otherwise fall back to a placeholder so the adapter doesn't hard-fail on missing data.
+    healthCareCodeInformation: [
+      {
+        diagnosisTypeCode: 'ABK', // principal diagnosis
+        diagnosisCode: session.diagnosis_codes?.[0] || 'F329', // F329 = unspecified depressive episode
+      },
+    ],
   };
+
   // Only attach a service line when we have a CPT code; otherwise omit serviceLines.
   if (session.cpt_code) {
     claimInformation.serviceLines = [
       {
+        serviceDate: ymd(session.session_date) || undefined,
         professionalService: {
-          procedureIdentifier: 'HC', // HCPCS/CPT qualifier
+          procedureIdentifier: 'HC',
           procedureCode: session.cpt_code,
           lineItemChargeAmount: claim.billed_amount != null ? String(claim.billed_amount) : undefined,
+          measurementUnit: 'UN',     // units of service
+          serviceUnitCount: '1',     // one unit per claim line (standard for OON psychotherapy CPT codes)
+          // Point this service line at the principal diagnosis declared above (index 1).
+          compositeDiagnosisCodePointers: { diagnosisCodePointers: ['1'] },
         },
       },
     ];
@@ -79,17 +118,43 @@ async function submitClaim(ctx) {
 
   const body = {
     tradingPartnerServiceId,
-    externalPatientId: claim.id, // echoed back for reconciliation
-    billing: {
-      npi: billingNpi || undefined,
-      taxId: practice.tax_id || undefined,
+    submitter: {
       organizationName: practice.name || undefined,
+      contactInformation: {
+        name: practice.name || undefined,
+        email: SUBMITTER_CONTACT_EMAIL,
+      },
+    },
+    receiver: {
+      organizationName: insurance.carrier_name || undefined,
+    },
+    billing: {
+      providerType: 'BillingProvider',
+      npi: billingNpi || undefined,
+      employerId: practice.tax_id || undefined,   // was taxId — Stedi field is employerId
+      organizationName: practice.name || undefined,
+      address: {
+        address1: practice.address_line1 || undefined,
+        address2: practice.address_line2 || undefined,
+        city: practice.city || undefined,
+        state: practice.state || undefined,
+        postalCode: practice.postal_code || undefined,
+      },
     },
     subscriber: {
+      paymentResponsibilityLevelCode: 'P',        // primary payer
       memberId: insurance.member_id || undefined,
       firstName: client.first_name || undefined,
       lastName: client.last_name || undefined,
       dateOfBirth: ymd(client.date_of_birth) || undefined,
+      gender: genderCode(client.gender),          // 837 requires demographics when patient is subscriber
+      address: {
+        address1: client.address_line1 || undefined,
+        address2: client.address_line2 || undefined,
+        city: client.city || undefined,
+        state: client.state || undefined,
+        postalCode: client.postal_code || undefined,
+      },
     },
     claimInformation,
   };
