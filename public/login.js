@@ -11,7 +11,7 @@
 (function (window, document) {
   'use strict';
 
-  var APP_URL = './app/app.html';
+  var APP_URL = '/app';
   var GENERIC_ERROR = 'Invalid email or password';
 
   var api = window.ReddablyAPI;

@@ -12,7 +12,7 @@
 (function (window, document) {
   'use strict';
 
-  var APP_URL = './app/app.html';
+  var APP_URL = '/app';
   var GENERIC_ERROR = 'Could not create your account. Please try again.';
 
   var api = window.ReddablyAPI;

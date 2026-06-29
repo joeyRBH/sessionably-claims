@@ -13,6 +13,11 @@
   "rewrites": [
     { "source": "/setup-intent", "destination": "/api/setup-intent" },
     { "source": "/save-payment-method", "destination": "/api/save-payment-method" },
-    { "source": "/clients/:id/send-payment-link", "destination": "/api/clients/:id/send-payment-link" }
+    { "source": "/clients/:id/send-payment-link", "destination": "/api/clients/:id/send-payment-link" },
+    { "source": "/", "destination": "/index.html" },
+    { "source": "/login", "destination": "/public/login.html" },
+    { "source": "/signup", "destination": "/public/signup.html" },
+    { "source": "/app", "destination": "/public/app/app.html" },
+    { "source": "/app/(.*)", "destination": "/public/app/$1" }
   ]
 }
