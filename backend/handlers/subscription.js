@@ -1,30 +1,21 @@
 'use strict';
 
-// Subscription / billing resource — one Lambda, two routes:
+// Subscription / billing resource — one Lambda, one route:
 //
-//   GET  /subscription/status        → the caller's practice plan + VOB usage.
-//   POST /subscription/vob/activate  → start a Stripe Checkout Session for the
-//                                      $25/month Instant VOB add-on.
+//   GET /subscription/status  → the caller's practice plan + VOB usage.
 //
-// The webhook that actually flips the plan on payment lives as a Vercel function
-// (api/vob-webhook.js), because a Stripe webhook needs a public, egress-capable
-// endpoint. Activation returns a checkoutUrl; the browser redirects the user there.
+// This route is DB-only (no outbound calls), so it stays on the VPC Lambda API.
+// The two Stripe-facing pieces live on Vercel instead, because the VPC Lambdas
+// have no NAT egress to Stripe (see CLAUDE.md / lib/stripe.js):
+//   * POST /subscription/vob/activate → api/vob-activate.js (Checkout Session)
+//   * POST /subscription/vob/webhook  → api/vob-webhook.js  (plan flip on payment)
 //
-// NOTE (infra): the VPC Lambdas have no NAT egress (see CLAUDE.md / lib/stripe.js),
-// so the /subscription/vob/activate call to Stripe requires a NAT gateway or an
-// api.stripe.com VPC endpoint — otherwise this route must move to Vercel like the
-// other Stripe calls. The handler logic is identical either way.
-//
-// Security: practice_id / plan / role are derived from the authenticated user's
-// active row, never trusted from the body. Activation is restricted to admins.
+// Security: practice_id / plan come from the authenticated user's active row,
+// never trusted from the request.
 
 const db = require('../lib/db');
 const { requireAuth } = require('../lib/auth');
 const { json, preflight } = require('../lib/response');
-const stripe = require('../lib/stripe');
-
-const VOB_PRICE_CENTS = 2500; // $25.00 / month
-const APP_BASE_URL = process.env.APP_BASE_URL || 'https://app.reddably.com';
 
 // --- request helpers ---------------------------------------------------------
 
@@ -35,8 +26,8 @@ function httpMethod(event) {
   return (ctx && ctx.http && ctx.http.method) || '';
 }
 
-// Path tail after "subscription/" so one Lambda can serve both routes regardless
-// of API Gateway payload format. E.g. "status" or "vob/activate".
+// Path tail after "subscription/" so routing is payload-format agnostic (e.g.
+// "status"). Tolerates a leading slash / stage prefix.
 function subPath(event) {
   const raw =
     (event && event.rawPath) ||
@@ -50,18 +41,11 @@ function subPath(event) {
 
 // --- practice scoping --------------------------------------------------------
 
-async function loadContext(userId) {
+async function loadStatus(userId) {
   const res = await db.query(
-    `select u.role         as role,
-            u.email        as email,
-            u.first_name   as first_name,
-            u.last_name    as last_name,
-            p.id           as practice_id,
-            p.name         as practice_name,
-            p.plan         as plan,
+    `select p.plan             as plan,
             p.vob_checks_used  as vob_checks_used,
-            p.vob_period_start as vob_period_start,
-            p.stripe_customer_id as stripe_customer_id
+            p.vob_period_start as vob_period_start
        from users u
        join practices p on p.id = u.practice_id
       where u.id = $1 and u.is_active = true
@@ -69,79 +53,6 @@ async function loadContext(userId) {
     [userId]
   );
   return res.rows[0] || null;
-}
-
-// --- routes ------------------------------------------------------------------
-
-function getStatus(ctx, event) {
-  return json(
-    200,
-    {
-      plan: ctx.plan,
-      vob_checks_used: ctx.vob_checks_used,
-      vob_period_start: ctx.vob_period_start,
-    },
-    event
-  );
-}
-
-async function activateVob(ctx, event) {
-  // Billing changes are an admin action.
-  if (ctx.role !== 'practice_admin') {
-    return json(403, { error: 'Only a practice admin can change billing.' }, event);
-  }
-  if (ctx.plan === 'founder') {
-    return json(400, { error: 'Founder plan already includes Instant VOB.' }, event);
-  }
-  if (ctx.plan === 'vob') {
-    return json(400, { error: 'The Instant VOB add-on is already active.' }, event);
-  }
-
-  const params = {
-    mode: 'subscription',
-    success_url: `${APP_BASE_URL}/app#vob-activated`,
-    cancel_url: `${APP_BASE_URL}/app#vob-cancelled`,
-    // Index-keyed object → line_items[0][...] (see lib/stripe.createCheckoutSession).
-    line_items: {
-      0: {
-        quantity: 1,
-        price_data: {
-          currency: 'usd',
-          unit_amount: VOB_PRICE_CENTS,
-          recurring: { interval: 'month' },
-          product_data: {
-            name: 'Reddably Instant VOB',
-            description: 'Reddably Instant VOB — $25/month',
-          },
-        },
-      },
-    },
-    // practice_id on both the session and the resulting subscription so either
-    // webhook event can resolve the practice.
-    metadata: { practice_id: ctx.practice_id },
-    subscription_data: { metadata: { practice_id: ctx.practice_id } },
-  };
-
-  // Reuse the practice's Stripe customer when we have one; otherwise let Stripe
-  // create one from the admin's email.
-  if (ctx.stripe_customer_id) {
-    params.customer = ctx.stripe_customer_id;
-  } else if (ctx.email) {
-    params.customer_email = ctx.email;
-  }
-
-  let session;
-  try {
-    session = await stripe.createCheckoutSession(params);
-  } catch (err) {
-    console.error('subscription activate (stripe) error:', err && err.message);
-    return json(502, { error: 'Could not start checkout.' }, event);
-  }
-
-  if (!session || !session.url) {
-    return json(502, { error: 'Could not start checkout.' }, event);
-  }
-  return json(200, { checkoutUrl: session.url }, event);
 }
 
 // --- entrypoint --------------------------------------------------------------
@@ -160,14 +71,22 @@ exports.handler = async (event) => {
   }
 
   try {
-    const ctx = await loadContext(auth.user.sub);
-    if (!ctx) {
-      return json(401, { error: 'Unauthorized' }, event);
-    }
-
     const path = subPath(event);
-    if (method === 'GET' && path === 'status') return getStatus(ctx, event);
-    if (method === 'POST' && path === 'vob/activate') return await activateVob(ctx, event);
+    if (method === 'GET' && path === 'status') {
+      const status = await loadStatus(auth.user.sub);
+      if (!status) {
+        return json(401, { error: 'Unauthorized' }, event);
+      }
+      return json(
+        200,
+        {
+          plan: status.plan,
+          vob_checks_used: status.vob_checks_used,
+          vob_period_start: status.vob_period_start,
+        },
+        event
+      );
+    }
 
     return json(404, { error: 'Not found' }, event);
   } catch (err) {

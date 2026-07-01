@@ -29,9 +29,9 @@ JWT_VAL=$("${AWS[@]}" ssm get-parameter --name "$JWT_PARAM" --with-decryption --
 case "$DB_VAL" in ""|"set-out-of-band-see-README") echo "ERROR: DATABASE_URL not set in SSM yet."; exit 1;; esac
 case "$JWT_VAL" in ""|"set-out-of-band-see-README") echo "ERROR: JWT_SECRET not set in SSM yet."; exit 1;; esac
 
-# Optional secrets: hydrated only when their SSM parameter exists AND holds a real
+# Optional secret: hydrated only when its SSM parameter exists AND holds a real
 # value (not the placeholder). Missing/placeholder → left as-is, so a stack without
-# Stedi/Stripe configured still deploys. Fetch a single optional SecureString.
+# Stedi configured still deploys. (Stripe secrets live in Vercel env, not here.)
 fetch_optional() {
   # $1 = parameter-name suffix (e.g. /STEDI_API_KEY)
   local PARAM VAL
@@ -42,9 +42,7 @@ fetch_optional() {
 }
 
 STEDI_VAL=$(fetch_optional "/STEDI_API_KEY")
-STRIPE_VAL=$(fetch_optional "/STRIPE_SECRET_KEY")
-[ -n "$STEDI_VAL" ]  && echo ">> STEDI_API_KEY present in SSM; will hydrate"     || echo ">> STEDI_API_KEY not set in SSM; skipping"
-[ -n "$STRIPE_VAL" ] && echo ">> STRIPE_SECRET_KEY present in SSM; will hydrate" || echo ">> STRIPE_SECRET_KEY not set in SSM; skipping"
+[ -n "$STEDI_VAL" ] && echo ">> STEDI_API_KEY present in SSM; will hydrate" || echo ">> STEDI_API_KEY not set in SSM; skipping"
 
 for FN in $FUNCS; do
   "${AWS[@]}" lambda wait function-updated --function-name "$FN"
@@ -53,20 +51,17 @@ for FN in $FUNCS; do
   CUR_DB=$(printf '%s' "$CUR" | jq -r '.DATABASE_URL // ""')
   CUR_JWT=$(printf '%s' "$CUR" | jq -r '.JWT_SECRET // ""')
   CUR_STEDI=$(printf '%s' "$CUR" | jq -r '.STEDI_API_KEY // ""')
-  CUR_STRIPE=$(printf '%s' "$CUR" | jq -r '.STRIPE_SECRET_KEY // ""')
   if [ "$CUR_DB" = "$DB_VAL" ] && [ "$CUR_JWT" = "$JWT_VAL" ] \
-     && { [ -z "$STEDI_VAL" ]  || [ "$CUR_STEDI" = "$STEDI_VAL" ]; } \
-     && { [ -z "$STRIPE_VAL" ] || [ "$CUR_STRIPE" = "$STRIPE_VAL" ]; }; then
+     && { [ -z "$STEDI_VAL" ] || [ "$CUR_STEDI" = "$STEDI_VAL" ]; }; then
     echo ">> $FN already hydrated, skipping"
     continue
   fi
   echo ">> hydrating $FN"
-  # Merge db/jwt (required) plus stedi/stripe only when we have real values.
+  # Merge db/jwt (required) plus stedi only when we have a real value.
   ENVJSON=$(printf '%s' "$CUR" | jq \
-    --arg db "$DB_VAL" --arg jwt "$JWT_VAL" --arg stedi "$STEDI_VAL" --arg stripe "$STRIPE_VAL" '
+    --arg db "$DB_VAL" --arg jwt "$JWT_VAL" --arg stedi "$STEDI_VAL" '
       (. + {DATABASE_URL:$db, JWT_SECRET:$jwt})
-      | (if $stedi  != "" then . + {STEDI_API_KEY:$stedi}      else . end)
-      | (if $stripe != "" then . + {STRIPE_SECRET_KEY:$stripe} else . end)
+      | (if $stedi != "" then . + {STEDI_API_KEY:$stedi} else . end)
       | {Variables: .}')
   TMP=$(mktemp)
   printf '%s' "$ENVJSON" > "$TMP"

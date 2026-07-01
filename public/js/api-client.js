@@ -268,12 +268,14 @@
     revoke: function (id) { return request('DELETE', '/invitations/' + id); },
   };
 
-  // Subscription / plan (Instant VOB add-on). Runs on the Lambda API.
-  //   status()      -> { plan, vob_checks_used, vob_period_start }
-  //   activateVob() -> { checkoutUrl }  (redirect the browser there)
+  // Subscription / plan (Instant VOB add-on).
+  //   status()      -> { plan, vob_checks_used, vob_period_start }  (Lambda API; DB-only)
+  //   activateVob() -> { checkoutUrl }  (Vercel function; Stripe egress) — redirect there
   var subscription = {
     status: function () { return request('GET', '/subscription/status'); },
-    activateVob: function () { return request('POST', '/subscription/vob/activate', {}); },
+    activateVob: function () {
+      return request('POST', '/subscription/vob/activate', {}, VERCEL_BASE);
+    },
   };
 
   // Instant VOB benefit check (gated by plan; see subscription). Runs on the
