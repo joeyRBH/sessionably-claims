@@ -438,6 +438,175 @@
         });
       }
 
+      // --- Instant VOB (Verification of Benefits) --------------------------
+      // Gate on the cached plan (window.ReddablyPlan). Free practices get an
+      // upgrade prompt; vob/founder practices open the benefit-check flow.
+      function verifyBenefits(record) {
+        var P = window.ReddablyPlan;
+        function decide(plan) {
+          if (plan === 'vob' || plan === 'founder') openVobModal(record);
+          else openUpgradeModal();
+        }
+        if (P && P.state && P.state.loaded) {
+          decide(P.get());
+        } else if (P && typeof P.refresh === 'function') {
+          // Plan not cached yet — fetch once, then gate.
+          P.refresh().then(function () { decide(P.get()); }).catch(function () { decide('free'); });
+        } else {
+          decide('free');
+        }
+      }
+
+      function openUpgradeModal() {
+        var pitch = h('div', { class: 'stack', style: 'gap:var(--space-2)' }, [
+          h('p', { style: 'margin:0' }, 'Unlock Instant VOB for $25/month.'),
+          h('p', { style: 'margin:0;color:var(--color-text-muted)' },
+            "Know your client's OON benefits before the first session."),
+        ]);
+        R.confirmModal({
+          title: 'Instant VOB',
+          body: pitch,
+          confirmLabel: 'Activate for $25/mo',
+          cancelLabel: 'Not now',
+        }).then(function (ok) {
+          if (!ok) return;
+          api.subscription.activateVob().then(function (res) {
+            if (res && res.checkoutUrl) {
+              window.location.assign(res.checkoutUrl);
+            } else {
+              R.toast('Could not start checkout.', 'error');
+            }
+          }).catch(function (err) {
+            R.toast(err.message || 'Could not start checkout.', 'error');
+          });
+        });
+      }
+
+      function dateOnly(v) {
+        return v ? String(v).slice(0, 10) : '';
+      }
+
+      function openVobModal(record) {
+        var fields = [
+          { name: 'member_id',     label: 'Member ID',     type: 'text', required: true },
+          { name: 'payer_id',      label: 'Payer ID',      type: 'text', required: true },
+          { name: 'first_name',    label: 'First name',    type: 'text', required: true },
+          { name: 'last_name',     label: 'Last name',     type: 'text', required: true },
+          { name: 'date_of_birth', label: 'Date of birth', type: 'date', required: true },
+        ];
+        var values = {
+          member_id: record.member_id || '',
+          payer_id: record.payer_id || '',
+          first_name: client.first_name || '',
+          last_name: client.last_name || '',
+          date_of_birth: dateOnly(client.date_of_birth) || dateOnly(record.subscriber_dob),
+        };
+        R.formModal({
+          title: 'Verify benefits',
+          fields: fields,
+          values: values,
+          submitLabel: 'Check Now',
+        }).then(function (v) {
+          if (!v) return;
+          R.toast('Checking benefits…', '');
+          api.vob.check({
+            memberId: v.member_id,
+            payerId: v.payer_id,
+            firstName: v.first_name,
+            lastName: v.last_name,
+            dateOfBirth: v.date_of_birth,
+            insurance_record_id: record.id,
+          }).then(function (res) {
+            showVobResult(res);
+            reload();
+          }).catch(function (err) {
+            if (err && err.status === 403 && err.body && err.body.upgrade) {
+              openUpgradeModal();
+              return;
+            }
+            R.toast(err.message || 'Benefit check failed.', 'error');
+          });
+        });
+      }
+
+      // A labeled "met / total" progress bar built from design tokens only.
+      function meter(label, met, total) {
+        var pct = (total != null && total > 0 && met != null)
+          ? Math.max(0, Math.min(100, (met / total) * 100))
+          : 0;
+        return h('div', { class: 'stack', style: 'gap:var(--space-1)' }, [
+          h('div', { style: 'display:flex;justify-content:space-between;font-size:var(--font-size-2)' }, [
+            h('span', null, label),
+            h('span', { style: 'color:var(--color-text-muted)' },
+              (met != null ? R.fmtMoney(met) : '—') + ' / ' + (total != null ? R.fmtMoney(total) : '—')),
+          ]),
+          h('div', {
+            style: 'height:8px;border-radius:var(--radius-pill);'
+              + 'background:var(--color-surface-sunken);overflow:hidden',
+          }, h('div', {
+            style: 'height:100%;width:' + pct + '%;background:var(--color-primary)',
+          })),
+        ]);
+      }
+
+      function showVobResult(res) {
+        res = res || {};
+        var ded = res.deductible || {};
+        var oop = res.outOfPocket || {};
+
+        var children = [
+          h('div', { style: 'display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap' }, [
+            res.active
+              ? h('span', { class: 'badge badge--success' }, 'Active coverage')
+              : h('span', { class: 'badge badge--danger' }, 'Inactive'),
+            res.planName ? h('span', { style: 'font-weight:var(--font-weight-medium)' }, res.planName) : null,
+          ]),
+        ];
+
+        var facts = [];
+        if (res.groupNumber) facts.push('Group ' + res.groupNumber);
+        if (res.oonBenefits) facts.push('OON benefits');
+        if (res.oonCoinsurance != null) facts.push('OON coinsurance ' + res.oonCoinsurance + '%');
+        if (facts.length) {
+          children.push(h('p', {
+            style: 'margin:0;color:var(--color-text-muted);font-size:var(--font-size-3)',
+          }, facts.join('  ·  ')));
+        }
+
+        children.push(meter('Deductible (individual)', ded.met, ded.individual));
+        children.push(meter('Out-of-pocket (individual)', oop.met, oop.individual));
+
+        var bodyNode = h('div', { class: 'stack', style: 'gap:var(--space-4)' }, children);
+        R.confirmModal({
+          title: 'Benefits',
+          body: bodyNode,
+          confirmLabel: 'Done',
+          cancelLabel: 'Close',
+        });
+      }
+
+      // A per-row action cell: Verify / Edit / Delete.
+      function insuranceRowActions(record) {
+        return h('td', { class: 'data-table__num' }, [
+          h('button', {
+            class: 'btn btn--ghost btn--sm', type: 'button',
+            onClick: function (e) { e.stopPropagation(); verifyBenefits(record); },
+          }, 'Verify'),
+          ' ',
+          h('button', {
+            class: 'btn btn--ghost btn--sm', type: 'button',
+            style: 'margin-left:var(--space-2)',
+            onClick: function (e) { e.stopPropagation(); openForm(record); },
+          }, 'Edit'),
+          ' ',
+          h('button', {
+            class: 'btn btn--danger btn--sm', type: 'button',
+            style: 'margin-left:var(--space-2)',
+            onClick: function (e) { e.stopPropagation(); openDeleteRecord(record); },
+          }, 'Delete'),
+        ]);
+      }
+
       function paint(records) {
         R.clear(body);
         if (!records.length) {
@@ -454,10 +623,7 @@
             h('td', null, r.oon_reimbursement_rate != null
               ? r.oon_reimbursement_rate + '%'
               : '—'),
-            rowActions(
-              function () { openForm(r); },
-              function () { openDeleteRecord(r); }
-            ),
+            insuranceRowActions(r),
           ]);
         });
         body.appendChild(h('table', { class: 'data-table' }, [

@@ -28,6 +28,8 @@ locals {
     DATABASE_URL       = "Postgres connection string the auth Lambdas read as DATABASE_URL."
     JWT_SECRET         = "HS256 JWT signing secret the auth Lambdas read as JWT_SECRET."
     DB_MASTER_PASSWORD = "RDS master password (canonical home; read into TF_VAR at db-apply time)."
+    STEDI_API_KEY      = "Stedi Healthcare API key the VOB (eligibility) + claims handlers read as STEDI_API_KEY."
+    STRIPE_SECRET_KEY  = "Stripe secret key the subscription (Checkout) handler reads as STRIPE_SECRET_KEY."
   }
 }
 

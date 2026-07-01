@@ -102,6 +102,13 @@ function createPaymentIntent(params) {
   return stripeRequest('POST', '/payment_intents', params);
 }
 
+// Create a Checkout Session. `params` follows Stripe's shape; nested arrays are
+// expressed as index-keyed objects (e.g. line_items: { 0: {...} }) so the shared
+// encodeForm produces line_items[0][price_data][...] without needing array support.
+function createCheckoutSession(params) {
+  return stripeRequest('POST', '/checkout/sessions', params);
+}
+
 module.exports = {
   publishableKey,
   stripeRequest,
@@ -111,4 +118,5 @@ module.exports = {
   retrievePaymentMethod,
   setDefaultPaymentMethod,
   createPaymentIntent,
+  createCheckoutSession,
 };

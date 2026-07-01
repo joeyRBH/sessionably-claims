@@ -44,3 +44,8 @@ done
   (`stripe_customer_id`, `payment_method_*`, `payment_link_sent_at`) + `phone` to
   `clients`, and `platform_fee_percent` to `practices`; powers patient card capture and
   the 5% per-claim platform fee charged at claim submission.
+- `004_add_vob_plan_to_practices.sql` — adds `plan` (`free` | `vob` | `founder`, with a
+  `practices_plan_check` CHECK), `vob_checks_used`, `vob_period_start`, and
+  `stripe_subscription_id` to `practices`; gates the $25/month Instant VOB add-on and the
+  permanent founder plan, and flags the BigRedd account (`joseph@riverstonebehavioral.com`)
+  as `founder`.

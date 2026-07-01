@@ -72,8 +72,12 @@ create table if not exists practices (
   country              text not null default 'US',
   default_fee_payer    text not null default 'client' check (default_fee_payer in ('client', 'practice')),
   platform_fee_percent numeric(5,2) not null default 5.00,
+  plan                 varchar(20) not null default 'free',   -- 'free' | 'vob' | 'founder' (see practices_plan_check below)
+  vob_checks_used      integer not null default 0,            -- Instant VOB usage counter (analytics)
+  vob_period_start     date,                                  -- start of the current VOB add-on billing period
   stripe_account_id    text,                                  -- Stripe Connect account
   stripe_customer_id   text,
+  stripe_subscription_id text,                                -- Stripe subscription for the VOB add-on
   is_active            boolean not null default true,
   created_at           timestamptz not null default now(),
   updated_at           timestamptz not null default now()
@@ -92,6 +96,21 @@ create trigger trg_practices_updated_at
 -- live practices table (already declared above for fresh databases; this keeps a
 -- pre-existing database in sync). See db/migrations/003_add_patient_billing_to_clients.sql.
 alter table practices add column if not exists platform_fee_percent numeric(5,2) not null default 5.00;
+
+-- Migration (idempotent): subscription plan flag + Instant VOB usage tracking +
+-- Stripe subscription handle. Powers the $25/month Instant VOB add-on and the
+-- permanent founder plan. See db/migrations/004_add_vob_plan_to_practices.sql.
+alter table practices add column if not exists plan varchar(20) not null default 'free';
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'practices_plan_check') then
+    alter table practices add constraint practices_plan_check
+      check (plan in ('free', 'vob', 'founder'));
+  end if;
+end $$;
+alter table practices add column if not exists vob_checks_used integer not null default 0;
+alter table practices add column if not exists vob_period_start date;
+alter table practices add column if not exists stripe_subscription_id text;
 
 -- =============================================================================
 -- 3. practice_subscriptions — a practice's current plan.
@@ -576,6 +595,21 @@ create index if not exists idx_audit_log_actor_user_id on audit_log (actor_user_
 create index if not exists idx_audit_log_action on audit_log (action);
 create index if not exists idx_audit_log_entity on audit_log (entity_type, entity_id);
 create index if not exists idx_audit_log_created_at on audit_log (created_at);
+
+-- =============================================================================
+-- Post-migration data: designate founder accounts (permanent free full access).
+-- =============================================================================
+-- Runs here (after `users` exists) rather than in the practices section, since it
+-- references `users`. Keyed by login email — the users table has no username
+-- column. No-op when the account is absent (fresh database), so it is safe on
+-- every idempotent apply. See db/migrations/004_add_vob_plan_to_practices.sql.
+update practices set plan = 'founder'
+ where id = (
+   select practice_id from users
+    where lower(email) = lower('joseph@riverstonebehavioral.com')
+    limit 1
+ )
+   and plan <> 'founder';
 
 -- =============================================================================
 -- End of schema.

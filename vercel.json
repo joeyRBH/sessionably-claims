@@ -4,6 +4,7 @@
     { "source": "/setup-intent", "destination": "/api/setup-intent" },
     { "source": "/save-payment-method", "destination": "/api/save-payment-method" },
     { "source": "/clients/:id/send-payment-link", "destination": "/api/clients/:id/send-payment-link" },
+    { "source": "/subscription/vob/webhook", "destination": "/api/vob-webhook" },
     { "source": "/card-setup", "destination": "/card-setup.html" }
   ]
 }

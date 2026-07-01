@@ -85,6 +85,19 @@ locals {
         { method = "DELETE", path = "invitations/{id}" },
       ]
     }
+    vob = {
+      handler = "handlers/vob.handler"
+      routes = [
+        { method = "POST", path = "vob/check" },
+      ]
+    }
+    subscription = {
+      handler = "handlers/subscription.handler"
+      routes = [
+        { method = "GET", path = "subscription/status" },
+        { method = "POST", path = "subscription/vob/activate" },
+      ]
+    }
   }
 
   # Flatten lambda_functions into one entry per (function, route) pair, keyed by a

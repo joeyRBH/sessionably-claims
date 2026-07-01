@@ -286,4 +286,55 @@ async function getStatus({ control_number, claim }) {
   };
 }
 
-module.exports = { name, submitClaim, getStatus, mapStatus, firstStatus };
+// -----------------------------------------------------------------------------
+// Eligibility / VOB (270/271) — real-time benefit check. Powers the Instant VOB
+// add-on (handlers/vob.js). Same base + raw-key auth as submitClaim; the endpoint
+// is {base}/eligibility/v3. Returns Stedi's parsed 271 response verbatim; the
+// handler normalizes it for the UI and keeps the full payload as `raw`.
+// -----------------------------------------------------------------------------
+async function checkEligibility(params) {
+  const p = params || {};
+
+  const tradingPartnerServiceId = p.payerId;
+  if (!tradingPartnerServiceId) {
+    throw new Error('Stedi eligibility requires payerId (tradingPartnerServiceId).');
+  }
+
+  // Provider: Stedi requires an organizationName or a first/last name, plus the NPI.
+  const provider = {};
+  if (p.organizationName) provider.organizationName = p.organizationName;
+  if (p.npi) provider.npi = p.npi;
+
+  const body = {
+    tradingPartnerServiceId,
+    provider,
+    subscriber: {
+      memberId: p.memberId || undefined,
+      firstName: p.firstName || undefined,
+      lastName: p.lastName || undefined,
+      dateOfBirth: ymd(p.dateOfBirth) || undefined,
+    },
+    // Service type 30 = Health Benefit Plan Coverage (general benefits) by default.
+    encounter: {
+      serviceTypeCodes: [p.serviceType ? String(p.serviceType) : '30'],
+    },
+  };
+
+  const res = await fetch(`${BASE}/eligibility/v3`, {
+    method: 'POST',
+    headers: {
+      Authorization: apiKey(),
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(`Stedi eligibility failed (HTTP ${res.status}): ${JSON.stringify(data)}`);
+  }
+  return data;
+}
+
+module.exports = { name, submitClaim, getStatus, checkEligibility, mapStatus, firstStatus };
