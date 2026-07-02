@@ -285,6 +285,12 @@
     check: function (payload) { return request('POST', '/vob/check', payload); },
   };
 
+  // Payer directory search (type-ahead). q is a free-text payer-name fragment —
+  // no PHI. search(q) -> { payers: [{ name, payer_id, stedi_id }] }.
+  var payers = {
+    search: function (q) { return request('GET', '/payers/search' + buildQuery({ q: q })); },
+  };
+
   window.ReddablyAPI = {
     // config
     API_BASE: API_BASE,
@@ -312,5 +318,6 @@
     billing: billing,
     subscription: subscription,
     vob: vob,
+    payers: payers,
   };
 })(window);

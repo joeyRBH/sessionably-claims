@@ -91,6 +91,14 @@ locals {
         { method = "POST", path = "vob/check" },
       ]
     }
+    payers = {
+      handler = "handlers/payers.handler"
+      # Read-only type-ahead payer lookup backed by Stedi's Search Payers API.
+      # No PHI: the only input is a free-text payer-name fragment.
+      routes = [
+        { method = "GET", path = "payers/search" },
+      ]
+    }
     subscription = {
       handler = "handlers/subscription.handler"
       # DB-only status route stays on the Lambda API. The Stripe-facing

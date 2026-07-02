@@ -70,6 +70,34 @@ async function stediPost(path, body, extraHeaders) {
   }
 }
 
+// GET counterpart to stediPost for the read-only endpoints that live outside the
+// medical-network base (e.g. the payer-search API). Takes a full URL so the caller
+// owns the path + query string. Reuses the exact same 15s AbortController bound and
+// PHI-safe timeout message — the URL is never echoed in the error, since a query
+// string could in principle carry sensitive terms.
+async function stediGet(url, extraHeaders) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), STEDI_TIMEOUT_MS);
+  try {
+    return await fetch(url, {
+      method: 'GET',
+      headers: {
+        Authorization: apiKey(),
+        Accept: 'application/json',
+        ...(extraHeaders || {}),
+      },
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (err && err.name === 'AbortError') {
+      throw new Error(`Stedi GET request timed out after ${STEDI_TIMEOUT_MS}ms`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Format a date (pg `date` → JS Date or 'YYYY-MM-DD' string) as YYYYMMDD, or null.
 function ymd(d) {
   if (d == null || d === '') return null;
@@ -348,4 +376,50 @@ async function checkEligibility(params) {
   return data;
 }
 
-module.exports = { name, submitClaim, getStatus, checkEligibility, mapStatus, firstStatus };
+// -----------------------------------------------------------------------------
+// Payer search — type-ahead lookup against Stedi's payer directory. Powers the
+// payer picker in the Verify Benefits / insurance forms (handlers/payers.js).
+// This endpoint lives at the healthcare API root, NOT under the medical-network
+// base, so it carries its own URL. No PHI: the only input is a free-text payer
+// name fragment and the response is public payer-directory data.
+// -----------------------------------------------------------------------------
+const SEARCH_URL =
+  process.env.STEDI_SEARCH_URL ||
+  'https://healthcare.us.stedi.com/2024-04-01/payers/search';
+
+async function searchPayers(query) {
+  const q = query == null ? '' : String(query);
+  const url =
+    `${SEARCH_URL}?query=${encodeURIComponent(q)}` +
+    '&eligibilityCheck=SUPPORTED&pageSize=10';
+
+  const res = await stediGet(url);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    // No PHI in a payer-name search; keep the message terse regardless.
+    throw new Error(`Stedi payer search failed (HTTP ${res.status})`);
+  }
+
+  const items = Array.isArray(data && data.items) ? data.items : [];
+  return items
+    .map((it) => {
+      // Stedi wraps each hit as { score, payer: {...} }; tolerate a flat shape too.
+      const p = (it && it.payer) || it || {};
+      return {
+        name: p.displayName || null,
+        payer_id: p.primaryPayerId || null,
+        stedi_id: p.stediId || null,
+      };
+    })
+    .filter((p) => p.payer_id);
+}
+
+module.exports = {
+  name,
+  submitClaim,
+  getStatus,
+  checkEligibility,
+  searchPayers,
+  mapStatus,
+  firstStatus,
+};
