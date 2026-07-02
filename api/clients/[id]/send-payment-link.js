@@ -103,11 +103,11 @@ module.exports = async (req, res) => {
     const practiceRes = await db.query(`select name from practices where id = $1 limit 1`, [practiceId]);
     const practiceName = (practiceRes.rows[0] && practiceRes.rows[0].name) || 'Your practice';
 
-    const appBaseUrl = (process.env.APP_BASE_URL || '').replace(/\/+$/, '');
-    if (!appBaseUrl) {
-      console.error('send_payment_link error: APP_BASE_URL is not set');
-      return res.status(500).json({ error: 'Messaging is not configured.' });
-    }
+    // card-setup.html is served by this Vercel project at reddably.com/card-setup
+    // (it 404s on app.reddably.com), so fall back to reddably.com — matching
+    // api-client's VERCEL_BASE and invitations.js, NOT vob-activate's app.* base.
+    // Without a fallback a missing Vercel env var 500s the whole request.
+    const appBaseUrl = (process.env.APP_BASE_URL || 'https://reddably.com').replace(/\/+$/, '');
 
     const token = paymentToken.sign(client.id);
     const url = `${appBaseUrl}/card-setup?token=${encodeURIComponent(token)}`;
