@@ -47,8 +47,8 @@
     { name: 'member_id',               label: 'Member ID',              type: 'text' },
     { name: 'group_number',            label: 'Group number',           type: 'text' },
     { name: 'plan_type',               label: 'Plan type',              type: 'text' },
-    { name: 'payer_id',                label: 'Payer ID',               type: 'text',
-      placeholder: 'e.g. 00431' },
+    { name: 'payer_id',                label: 'Payer ID',               type: 'payer',
+      placeholder: 'Search payer name or enter a Payer ID…' },
     { name: 'subscriber_relationship', label: 'Subscriber relationship', type: 'select',
       options: ['self', 'spouse', 'child', 'other'] },
     { name: 'subscriber_name',         label: 'Subscriber name',        type: 'text' },
@@ -489,7 +489,8 @@
       function openVobModal(record) {
         var fields = [
           { name: 'member_id',     label: 'Member ID',     type: 'text', required: true },
-          { name: 'payer_id',      label: 'Payer ID',      type: 'text', required: true },
+          { name: 'payer_id',      label: 'Payer ID',      type: 'payer', required: true,
+            placeholder: 'Search payer name or enter a Payer ID…' },
           { name: 'first_name',    label: 'First name',    type: 'text', required: true },
           { name: 'last_name',     label: 'Last name',     type: 'text', required: true },
           { name: 'date_of_birth', label: 'Date of birth', type: 'date', required: true },
@@ -518,7 +519,15 @@
             insurance_record_id: record.id,
           }).then(function (res) {
             showVobResult(res);
-            reload();
+            // Persist the payer id used for this check back onto the record when
+            // it had none — closes the gap where a payer id typed only in the VOB
+            // modal was never saved. Best-effort; failure just skips the write.
+            if (!record.payer_id && v.payer_id) {
+              api.insuranceRecords.update(record.id, { payer_id: v.payer_id })
+                .then(reload, reload);
+            } else {
+              reload();
+            }
           }).catch(function (err) {
             if (err && err.status === 403 && err.body && err.body.upgrade) {
               openUpgradeModal();

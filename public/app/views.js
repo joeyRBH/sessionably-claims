@@ -249,9 +249,158 @@
     });
   }
 
+  // ---------------------------------------------------------------------------
+  // Payer type-ahead picker — reusable across the Verify Benefits + insurance
+  // forms. A visible search box calls the payer-search API (debounced 300ms) and
+  // lists "Name — PAYERID" matches beneath it; selecting one fills a hidden
+  // control with the payer_id while showing the chosen name. Typing a raw payer
+  // id and submitting without selecting still works — the hidden control mirrors
+  // the raw text on every keystroke. Responses for a superseded query are ignored.
+  //
+  // Returns { node, control } where `node` is the composite element to render and
+  // `control` is a hidden <input> whose .value is the payer_id to submit, so the
+  // existing formModal collect()/required-validation path works unchanged.
+  function createPayerPicker(opts) {
+    opts = opts || {};
+    var initial = opts.initial || '';
+
+    var hidden = h('input', { type: 'hidden', name: opts.name || 'payer_id', value: initial });
+    var input = h('input', {
+      class: 'field__control',
+      type: 'text',
+      autocomplete: 'off',
+      spellcheck: 'false',
+      value: initial,
+      placeholder: opts.placeholder || 'Search payer name or enter a Payer ID…',
+      role: 'combobox',
+      'aria-autocomplete': 'list',
+      'aria-expanded': 'false',
+    });
+    var results = h('div', { class: 'payer-picker__results', role: 'listbox', hidden: 'hidden' });
+    var node = h('div', { class: 'payer-picker' }, [input, results, hidden]);
+
+    var seq = 0;            // id of the most recently issued request (stale-guard)
+    var timer = null;
+    var currentList = [];
+    var activeIndex = -1;
+
+    function openResults() {
+      results.hidden = false;
+      input.setAttribute('aria-expanded', 'true');
+    }
+    function closeResults() {
+      results.hidden = true;
+      input.setAttribute('aria-expanded', 'false');
+      activeIndex = -1;
+    }
+
+    function showStatus(text) {
+      clear(results);
+      results.appendChild(h('div', { class: 'payer-picker__status' }, text));
+      openResults();
+    }
+
+    function paintActive() {
+      var optionEls = results.querySelectorAll('.payer-picker__option');
+      Array.prototype.forEach.call(optionEls, function (el, i) {
+        el.classList.toggle('is-active', i === activeIndex);
+      });
+      if (activeIndex >= 0 && optionEls[activeIndex]) {
+        optionEls[activeIndex].scrollIntoView({ block: 'nearest' });
+      }
+    }
+
+    function choose(p) {
+      if (!p) return;
+      hidden.value = p.payer_id;
+      input.value = p.name ? (p.name + ' (' + p.payer_id + ')') : p.payer_id;
+      closeResults();
+    }
+
+    function renderResults(list) {
+      currentList = list || [];
+      activeIndex = -1;
+      clear(results);
+      if (!currentList.length) {
+        results.appendChild(h('div', { class: 'payer-picker__status' }, 'No payers found'));
+        openResults();
+        return;
+      }
+      currentList.forEach(function (p, i) {
+        var opt = h('div', { class: 'payer-picker__option', role: 'option' }, [
+          h('span', { class: 'payer-picker__option-name' }, p.name || '(unnamed payer)'),
+          h('span', { class: 'payer-picker__option-id' }, p.payer_id),
+        ]);
+        // mousedown (not click) so the pick runs before the input's blur fires.
+        opt.addEventListener('mousedown', function (e) {
+          e.preventDefault();
+          choose(currentList[i]);
+        });
+        opt.addEventListener('mouseenter', function () { activeIndex = i; paintActive(); });
+        results.appendChild(opt);
+      });
+      openResults();
+    }
+
+    function runSearch(q) {
+      var mySeq = ++seq;
+      showStatus('Searching…');
+      api.payers.search(q).then(function (res) {
+        if (mySeq !== seq) return;   // a newer query superseded this response
+        renderResults((res && res.payers) || []);
+      }).catch(function (err) {
+        if (mySeq !== seq) return;   // stale error — ignore
+        closeResults();
+        toast((err && err.message) || 'Payer search failed', 'error');
+      });
+    }
+
+    input.addEventListener('input', function () {
+      var q = input.value.trim();
+      hidden.value = q;              // raw passthrough: submit whatever is typed
+      if (timer) { window.clearTimeout(timer); timer = null; }
+      if (q.length < 2) { seq++; closeResults(); return; }  // too short: invalidate + hide
+      timer = window.setTimeout(function () { runSearch(q); }, 300);
+    });
+
+    input.addEventListener('keydown', function (e) {
+      if (results.hidden) return;
+      var optionEls = results.querySelectorAll('.payer-picker__option');
+      if (e.key === 'ArrowDown') {
+        if (!optionEls.length) return;
+        e.preventDefault();
+        activeIndex = Math.min(optionEls.length - 1, activeIndex + 1);
+        paintActive();
+      } else if (e.key === 'ArrowUp') {
+        if (!optionEls.length) return;
+        e.preventDefault();
+        activeIndex = Math.max(0, activeIndex - 1);
+        paintActive();
+      } else if (e.key === 'Enter') {
+        // Only intercept Enter to pick a highlighted option; otherwise let the
+        // form submit with whatever raw value is present.
+        if (activeIndex >= 0 && activeIndex < currentList.length) {
+          e.preventDefault();
+          choose(currentList[activeIndex]);
+        }
+      } else if (e.key === 'Escape') {
+        // Close the dropdown without closing the modal.
+        e.stopPropagation();
+        closeResults();
+      }
+    });
+
+    // Hide the list when focus leaves, after a tick so an option mousedown lands.
+    input.addEventListener('blur', function () {
+      window.setTimeout(closeResults, 150);
+    });
+
+    return { node: node, control: hidden };
+  }
+
   // formModal({ title, fields, values, submitLabel }) -> Promise<values|null>
   //   fields: [{ name, label, type, required, options, placeholder }]
-  //   types: text | email | date | number | select | textarea (default text)
+  //   types: text | email | date | number | select | textarea | payer (default text)
   function formModal(opts) {
     opts = opts || {};
     var fields = opts.fields || [];
@@ -278,6 +427,7 @@
         if (initial === null || initial === undefined) initial = '';
 
         var control;
+        var display;   // node rendered in the field (usually the control itself)
         if (type === 'select') {
           control = h('select', { class: 'field__control', name: f.name },
             (f.options || []).map(function (opt) {
@@ -288,12 +438,22 @@
               return h('option', attrs, label);
             })
           );
+          display = control;
         } else if (type === 'textarea') {
           control = h('textarea', {
             class: 'field__control',
             name: f.name,
             placeholder: f.placeholder || '',
           }, String(initial));
+          display = control;
+        } else if (type === 'payer') {
+          var picker = createPayerPicker({
+            name: f.name,
+            initial: String(initial),
+            placeholder: f.placeholder,
+          });
+          control = picker.control;   // hidden input carrying the payer_id
+          display = picker.node;      // composite search box + results list
         } else {
           control = h('input', {
             class: 'field__control',
@@ -302,6 +462,7 @@
             value: String(initial),
             placeholder: f.placeholder || '',
           });
+          display = control;
         }
 
         controls[f.name] = control;
@@ -313,7 +474,7 @@
         var fieldEl = h('label', { class: 'field' }, [
           h('span', { class: 'field__label' },
             f.required ? [labelText, ' ', h('span', { 'aria-hidden': 'true' }, '*')] : labelText),
-          control,
+          display,
           errorEl,
         ]);
         fieldEls[f.name] = fieldEl;
@@ -526,6 +687,7 @@
     toast: toast,
     confirmModal: confirmModal,
     formModal: formModal,
+    createPayerPicker: createPayerPicker,
     // formatting
     fmtMoney: fmtMoney,
     fmtDate: fmtDate,

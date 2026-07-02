@@ -231,6 +231,67 @@ textarea.field__control {
   margin-top: 0;
 }
 
+/* ========================== Payer type-ahead ============================ */
+/* A search box (.field__control) with an overlaid results list. The wrapper is
+   position:relative so the list can float over the fields below it. */
+.payer-picker {
+  position: relative;
+}
+
+.payer-picker__results {
+  position: absolute;
+  top: calc(100% + var(--space-1));
+  left: 0;
+  right: 0;
+  z-index: var(--zone-3);
+  max-height: 15rem;
+  overflow-y: auto;
+  background: var(--color-surface);
+  border: var(--border-width-1) solid var(--color-border);
+  border-radius: var(--radius-2);
+  box-shadow: var(--shadow-2);
+}
+
+.payer-picker__results[hidden] {
+  display: none;
+}
+
+.payer-picker__status {
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--font-size-3);
+  color: var(--color-text-muted);
+}
+
+.payer-picker__option {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+}
+
+.payer-picker__option + .payer-picker__option {
+  border-top: var(--border-width-1) solid var(--color-border);
+}
+
+.payer-picker__option.is-active,
+.payer-picker__option:hover {
+  background: var(--color-surface-sunken);
+}
+
+.payer-picker__option-name {
+  font-size: var(--font-size-3);
+  color: var(--color-text);
+}
+
+.payer-picker__option-id {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2);
+  color: var(--color-text-muted);
+}
+
 /* ============================= Data table =============================== */
 .data-table {
   width: 100%;
