@@ -41,11 +41,34 @@ fetch_optional() {
   case "$VAL" in ""|"set-out-of-band-see-README"|"set-out-of-band-from-ssm") printf '';; *) printf '%s' "$VAL";; esac
 }
 
+# Same as fetch_optional but addressed by FULL parameter name rather than by the
+# terraform-managed ssm_secure_parameter_names output. Used for CLEARINGHOUSE, a
+# non-secret config value set out-of-band in SSM but NOT declared as a terraform
+# placeholder param (see the CLEARINGHOUSE fetch below).
+fetch_optional_name() {
+  # $1 = full SSM parameter name (e.g. /claimsub/prod/CLEARINGHOUSE)
+  local VAL
+  VAL=$("${AWS[@]}" ssm get-parameter --name "$1" --with-decryption --query 'Parameter.Value' --output text 2>/dev/null || printf '')
+  case "$VAL" in ""|"set-out-of-band-see-README"|"set-out-of-band-from-ssm") printf '';; *) printf '%s' "$VAL";; esac
+}
+
 STEDI_VAL=$(fetch_optional "/STEDI_API_KEY")
 [ -n "$STEDI_VAL" ] && echo ">> STEDI_API_KEY present in SSM; will hydrate" || echo ">> STEDI_API_KEY not set in SSM; skipping"
 
 WEBHOOK_VAL=$(fetch_optional "/STRIPE_VOB_WEBHOOK_SECRET")
 [ -n "$WEBHOOK_VAL" ] && echo ">> STRIPE_VOB_WEBHOOK_SECRET present in SSM; will hydrate" || echo ">> STRIPE_VOB_WEBHOOK_SECRET not set in SSM; skipping (vob_billing webhook will reject until set)"
+
+# CLEARINGHOUSE selects the claims adapter (backend/lib/clearinghouse/index.js);
+# absent → the code defaults to the 'mock' adapter, so prod must carry the real
+# value. It is a plain (non-secret) config param set out-of-band in SSM under the
+# same path prefix as the secrets — e.g. /claimsub/prod/CLEARINGHOUSE = "stedi".
+# It is intentionally NOT a terraform-managed placeholder param (see PR notes), so
+# derive the SSM path prefix from the DATABASE_URL param we already resolved and
+# address CLEARINGHOUSE by full name. Hydrated into every handler Lambda uniformly,
+# exactly like the secret values below.
+SSM_PREFIX="${DB_PARAM%/DATABASE_URL}"
+CLEARINGHOUSE_VAL=$(fetch_optional_name "$SSM_PREFIX/CLEARINGHOUSE")
+[ -n "$CLEARINGHOUSE_VAL" ] && echo ">> CLEARINGHOUSE present in SSM (=$CLEARINGHOUSE_VAL); will hydrate" || echo ">> CLEARINGHOUSE not set in SSM; skipping (handlers fall back to the 'mock' adapter)"
 
 for FN in $FUNCS; do
   "${AWS[@]}" lambda wait function-updated --function-name "$FN"
@@ -55,19 +78,23 @@ for FN in $FUNCS; do
   CUR_JWT=$(printf '%s' "$CUR" | jq -r '.JWT_SECRET // ""')
   CUR_STEDI=$(printf '%s' "$CUR" | jq -r '.STEDI_API_KEY // ""')
   CUR_WEBHOOK=$(printf '%s' "$CUR" | jq -r '.STRIPE_VOB_WEBHOOK_SECRET // ""')
+  CUR_CLEARINGHOUSE=$(printf '%s' "$CUR" | jq -r '.CLEARINGHOUSE // ""')
   if [ "$CUR_DB" = "$DB_VAL" ] && [ "$CUR_JWT" = "$JWT_VAL" ] \
      && { [ -z "$STEDI_VAL" ] || [ "$CUR_STEDI" = "$STEDI_VAL" ]; } \
-     && { [ -z "$WEBHOOK_VAL" ] || [ "$CUR_WEBHOOK" = "$WEBHOOK_VAL" ]; }; then
+     && { [ -z "$WEBHOOK_VAL" ] || [ "$CUR_WEBHOOK" = "$WEBHOOK_VAL" ]; } \
+     && { [ -z "$CLEARINGHOUSE_VAL" ] || [ "$CUR_CLEARINGHOUSE" = "$CLEARINGHOUSE_VAL" ]; }; then
     echo ">> $FN already hydrated, skipping"
     continue
   fi
   echo ">> hydrating $FN"
-  # Merge db/jwt (required) plus stedi + stripe webhook only when we have real values.
+  # Merge db/jwt (required) plus stedi + stripe webhook + clearinghouse only when we
+  # have real values.
   ENVJSON=$(printf '%s' "$CUR" | jq \
-    --arg db "$DB_VAL" --arg jwt "$JWT_VAL" --arg stedi "$STEDI_VAL" --arg webhook "$WEBHOOK_VAL" '
+    --arg db "$DB_VAL" --arg jwt "$JWT_VAL" --arg stedi "$STEDI_VAL" --arg webhook "$WEBHOOK_VAL" --arg clearinghouse "$CLEARINGHOUSE_VAL" '
       (. + {DATABASE_URL:$db, JWT_SECRET:$jwt})
       | (if $stedi != "" then . + {STEDI_API_KEY:$stedi} else . end)
       | (if $webhook != "" then . + {STRIPE_VOB_WEBHOOK_SECRET:$webhook} else . end)
+      | (if $clearinghouse != "" then . + {CLEARINGHOUSE:$clearinghouse} else . end)
       | {Variables: .}')
   TMP=$(mktemp)
   printf '%s' "$ENVJSON" > "$TMP"
