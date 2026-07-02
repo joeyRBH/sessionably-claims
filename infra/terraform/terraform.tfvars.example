@@ -11,6 +11,12 @@ environment  = "prod"
 vpc_cidr             = "10.40.0.0/16"
 private_subnet_cidrs = ["10.40.1.0/24", "10.40.2.0/24"]
 
+# Outbound egress for the in-VPC Lambdas (Stedi clearinghouse). Creates a NAT
+# Gateway (~$35/month). Set false to remove it — VOB / claim submission will 502
+# again until re-enabled. See nat.tf.
+enable_nat_gateway = true
+public_subnet_cidr = "10.40.0.0/24"
+
 # ─── Database ───────────────────────────────────────────────
 db_engine_version        = "16"
 db_instance_class        = "db.t4g.micro"

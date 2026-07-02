@@ -41,6 +41,27 @@ variable "private_subnet_cidrs" {
   }
 }
 
+variable "enable_nat_gateway" {
+  description = <<-EOT
+    Create outbound internet egress for the in-VPC Lambdas: an Internet Gateway, a
+    single public subnet, and one NAT Gateway (with an Elastic IP), plus the
+    0.0.0.0/0 → NAT route on the private route table and the Lambda SG's HTTPS
+    egress rule. Required by the clearinghouse (Stedi) calls in the VOB and claims
+    handlers, which must reach the public internet - without it those invocations
+    stall ~10s and return HTTP 502. Bills ~$35/month (NAT hourly + per-GB data
+    processing). Set false to remove it; VOB and claim submission will 502 again
+    until it is re-enabled. See nat.tf.
+  EOT
+  type        = bool
+  default     = true
+}
+
+variable "public_subnet_cidr" {
+  description = "CIDR for the single public subnet that hosts the NAT Gateway. Must fit inside vpc_cidr and not overlap private_subnet_cidrs. Only used when enable_nat_gateway is true."
+  type        = string
+  default     = "10.40.0.0/24"
+}
+
 variable "create_ssm_vpc_endpoint" {
   description = <<-EOT
     Create an SSM interface endpoint so in-VPC Lambdas can read SSM parameters at

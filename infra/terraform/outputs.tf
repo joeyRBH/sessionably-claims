@@ -142,3 +142,12 @@ output "api_custom_domain_hosted_zone_id_reddably" {
   description = "Hosted zone ID of the Reddably API Gateway regional endpoint (for a Route53 ALIAS record). Null until Phase 2."
   value       = var.create_api_custom_domain ? aws_apigatewayv2_domain_name.api_reddably[0].domain_name_configuration[0].hosted_zone_id : null
 }
+
+# ─────────────────────────────────────────────────────────────
+# NAT egress (Stedi clearinghouse)
+# ─────────────────────────────────────────────────────────────
+
+output "nat_gateway_public_ip" {
+  description = "Public egress IP (NAT Elastic IP) the in-VPC Lambdas present to Stedi and other HTTPS APIs. Null when enable_nat_gateway = false."
+  value       = var.enable_nat_gateway ? aws_eip.nat[0].public_ip : null
+}

@@ -36,6 +36,40 @@ function apiKey() {
   return k;
 }
 
+// Bound every Stedi call with a hard timeout. global fetch has no default
+// timeout, so a network-path failure (e.g. no egress route to the public API)
+// leaves the socket hanging until the Lambda is killed — ~10s of dead air that
+// surfaces to the user as an opaque 502. An AbortController fails fast instead,
+// with a clear "timed out" error the handler can log. All three Stedi endpoints
+// share the same POST + raw-key-auth shape, so they route through here.
+const STEDI_TIMEOUT_MS = Number(process.env.STEDI_TIMEOUT_MS || 15000);
+
+async function stediPost(path, body, extraHeaders) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), STEDI_TIMEOUT_MS);
+  try {
+    return await fetch(`${BASE}${path}`, {
+      method: 'POST',
+      headers: {
+        Authorization: apiKey(),
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        ...(extraHeaders || {}),
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (err && err.name === 'AbortError') {
+      // Never include the request body — it can carry PHI (member id, name, DOB).
+      throw new Error(`Stedi request to ${path} timed out after ${STEDI_TIMEOUT_MS}ms`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Format a date (pg `date` → JS Date or 'YYYY-MM-DD' string) as YYYYMMDD, or null.
 function ymd(d) {
   if (d == null || d === '') return null;
@@ -159,15 +193,8 @@ async function submitClaim(ctx) {
     claimInformation,
   };
 
-  const res = await fetch(`${BASE}/professionalclaims/v3/submission`, {
-    method: 'POST',
-    headers: {
-      Authorization: apiKey(),
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-      'Idempotency-Key': String(claim.id || ''),
-    },
-    body: JSON.stringify(body),
+  const res = await stediPost('/professionalclaims/v3/submission', body, {
+    'Idempotency-Key': String(claim.id || ''),
   });
 
   const data = await res.json().catch(() => ({}));
@@ -238,18 +265,10 @@ async function getStatus({ control_number, claim }) {
   const provider = {};
   if (billingNpi) provider.npi = billingNpi;
 
-  const res = await fetch(`${BASE}/claimstatus/v3/status`, {
-    method: 'POST',
-    headers: {
-      Authorization: apiKey(),
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    },
-    body: JSON.stringify({
-      tradingPartnerServiceId,
-      controlNumber: control_number,
-      provider,
-    }),
+  const res = await stediPost('/claimstatus/v3/status', {
+    tradingPartnerServiceId,
+    controlNumber: control_number,
+    provider,
   });
 
   const data = await res.json().catch(() => ({}));
@@ -320,15 +339,7 @@ async function checkEligibility(params) {
     },
   };
 
-  const res = await fetch(`${BASE}/eligibility/v3`, {
-    method: 'POST',
-    headers: {
-      Authorization: apiKey(),
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
+  const res = await stediPost('/eligibility/v3', body);
 
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
