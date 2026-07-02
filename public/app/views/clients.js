@@ -666,13 +666,23 @@
       function openForm(session) {
         // Load the clinician roster first; the picker options are dynamic, so the
         // clinician_id field is built at call time rather than as a constant.
-        api.users.list({ role: 'clinician' }).then(function (res) {
+        // Fetch ALL active users (not just role 'clinician'): the backend accepts
+        // any active practice member as a session's clinician, and solo-practice
+        // owners are role practice_admin — a role filter would return an empty roster.
+        api.users.list({ active: true }).then(function (res) {
           var clinicians = (res && res.users) || [];
           var clinicianOptions = clinicians.map(function (u) {
             var label = ((u.first_name || '') + ' ' + (u.last_name || '')).trim()
               || u.email || ('User ' + u.id);
             return { value: u.id, label: label };
           });
+
+          // Guard the empty case: never open a form whose required clinician_id
+          // select has no options (session creation would fail silently).
+          if (clinicianOptions.length === 0) {
+            R.toast('No active clinicians in this practice', 'error');
+            return;
+          }
 
           // Preselect: client's primary clinician (if in the roster), else the
           // current user, else the first option.
