@@ -100,6 +100,41 @@ locals {
         { method = "GET", path = "subscription/status" },
       ]
     }
+
+    # ── DB side of the /api Vercel functions ──────────────────────────────────
+    # The Vercel functions have outbound egress (Stripe/Twilio) but cannot reach
+    # the VPC-private RDS. These VPC Lambdas own the DB access; the Vercel adapters
+    # call them over HTTPS and keep only the third-party call. See the handlers.
+    card_setup = {
+      handler = "handlers/card_setup.handler"
+      routes = [
+        { method = "POST", path = "card-setup/context" },
+        { method = "POST", path = "card-setup/save-customer" },
+        { method = "POST", path = "card-setup/save-payment-method" },
+      ]
+    }
+    payment_link = {
+      handler = "handlers/payment_link.handler"
+      routes = [
+        { method = "POST", path = "clients/{id}/payment-link" },
+      ]
+    }
+    claim_fee = {
+      handler = "handlers/claim_fee.handler"
+      routes = [
+        { method = "POST", path = "claims/{id}/charge-fee/context" },
+        { method = "POST", path = "claims/{id}/charge-fee/record" },
+      ]
+    }
+    vob_billing = {
+      handler = "handlers/vob_billing.handler"
+      # checkout-context is staff-authed (called by api/vob-activate.js); webhook is
+      # Stripe-signature-authed and fully replaces api/vob-webhook.js (no egress needed).
+      routes = [
+        { method = "POST", path = "subscription/vob/checkout-context" },
+        { method = "POST", path = "subscription/vob/webhook" },
+      ]
+    }
   }
 
   # Flatten lambda_functions into one entry per (function, route) pair, keyed by a

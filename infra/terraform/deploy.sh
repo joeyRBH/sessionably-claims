@@ -44,6 +44,9 @@ fetch_optional() {
 STEDI_VAL=$(fetch_optional "/STEDI_API_KEY")
 [ -n "$STEDI_VAL" ] && echo ">> STEDI_API_KEY present in SSM; will hydrate" || echo ">> STEDI_API_KEY not set in SSM; skipping"
 
+WEBHOOK_VAL=$(fetch_optional "/STRIPE_VOB_WEBHOOK_SECRET")
+[ -n "$WEBHOOK_VAL" ] && echo ">> STRIPE_VOB_WEBHOOK_SECRET present in SSM; will hydrate" || echo ">> STRIPE_VOB_WEBHOOK_SECRET not set in SSM; skipping (vob_billing webhook will reject until set)"
+
 for FN in $FUNCS; do
   "${AWS[@]}" lambda wait function-updated --function-name "$FN"
   CUR=$("${AWS[@]}" lambda get-function-configuration --function-name "$FN" --query 'Environment.Variables' --output json)
@@ -51,17 +54,20 @@ for FN in $FUNCS; do
   CUR_DB=$(printf '%s' "$CUR" | jq -r '.DATABASE_URL // ""')
   CUR_JWT=$(printf '%s' "$CUR" | jq -r '.JWT_SECRET // ""')
   CUR_STEDI=$(printf '%s' "$CUR" | jq -r '.STEDI_API_KEY // ""')
+  CUR_WEBHOOK=$(printf '%s' "$CUR" | jq -r '.STRIPE_VOB_WEBHOOK_SECRET // ""')
   if [ "$CUR_DB" = "$DB_VAL" ] && [ "$CUR_JWT" = "$JWT_VAL" ] \
-     && { [ -z "$STEDI_VAL" ] || [ "$CUR_STEDI" = "$STEDI_VAL" ]; }; then
+     && { [ -z "$STEDI_VAL" ] || [ "$CUR_STEDI" = "$STEDI_VAL" ]; } \
+     && { [ -z "$WEBHOOK_VAL" ] || [ "$CUR_WEBHOOK" = "$WEBHOOK_VAL" ]; }; then
     echo ">> $FN already hydrated, skipping"
     continue
   fi
   echo ">> hydrating $FN"
-  # Merge db/jwt (required) plus stedi only when we have a real value.
+  # Merge db/jwt (required) plus stedi + stripe webhook only when we have real values.
   ENVJSON=$(printf '%s' "$CUR" | jq \
-    --arg db "$DB_VAL" --arg jwt "$JWT_VAL" --arg stedi "$STEDI_VAL" '
+    --arg db "$DB_VAL" --arg jwt "$JWT_VAL" --arg stedi "$STEDI_VAL" --arg webhook "$WEBHOOK_VAL" '
       (. + {DATABASE_URL:$db, JWT_SECRET:$jwt})
       | (if $stedi != "" then . + {STEDI_API_KEY:$stedi} else . end)
+      | (if $webhook != "" then . + {STRIPE_VOB_WEBHOOK_SECRET:$webhook} else . end)
       | {Variables: .}')
   TMP=$(mktemp)
   printf '%s' "$ENVJSON" > "$TMP"

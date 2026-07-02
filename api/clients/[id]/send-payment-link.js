@@ -1,19 +1,16 @@
 'use strict';
 
-// POST /clients/:id/send-payment-link — JWT-authenticated Vercel function (staff).
+// POST /clients/:id/send-payment-link — Vercel adapter (staff JWT), Twilio egress.
 //
-// On Vercel for outbound access to Twilio; reaches Postgres via DATABASE_URL. Mirrors
-// the path the app already calls (api-client.js → clients.sendPaymentLink). Generates
-// a short-lived signed token, builds APP_BASE_URL/card-setup?token=..., and texts it
-// to the client. practice_id is always derived from the caller; the client must
-// belong to that practice. Never logs PHI.
+// The VPC-private RDS is unreachable from Vercel, so all DB work lives on the Lambda
+// API: this adapter forwards the caller's staff Bearer token to
+//   POST {LAMBDA_API_BASE}/clients/:id/payment-link
+// which loads the client + practice, signs the card-setup token, records
+// payment_link_sent_at, and returns { to, body }. This function then only sends that
+// SMS via Twilio (the one thing that needs outbound internet). Never logs PHI.
 
-const db = require('../../../backend/lib/db');
-const { requireAuth } = require('../../../backend/lib/auth');
-const paymentToken = require('../../../backend/lib/payment_token');
+const { callLambda } = require('../../../backend/lib/lambda_api');
 const { ALLOWED_ORIGINS } = require('../../../backend/lib/response');
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function applyCors(req, res) {
   const origin = req.headers.origin;
@@ -23,18 +20,6 @@ function applyCors(req, res) {
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   res.setHeader('Access-Control-Max-Age', '86400');
-}
-
-function isUUID(v) {
-  return typeof v === 'string' && UUID_RE.test(v.trim());
-}
-
-async function loadPracticeId(userId) {
-  const result = await db.query(
-    `select practice_id from users where id = $1 and is_active = true limit 1`,
-    [userId]
-  );
-  return result.rows[0] ? result.rows[0].practice_id : null;
 }
 
 // Send an SMS via the Twilio REST API (basic auth, form-encoded). Throws on failure.
@@ -72,67 +57,39 @@ async function sendSms(to, bodyText) {
 module.exports = async (req, res) => {
   applyCors(req, res);
   if (req.method === 'OPTIONS') return res.status(204).end();
-
-  let auth;
-  try {
-    auth = requireAuth({ headers: req.headers });
-  } catch (_) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
+  const id = req.query && req.query.id;
+
+  // DB work + message assembly happen in the VPC Lambda (auth is enforced there).
+  let prep;
   try {
-    const practiceId = await loadPracticeId(auth.user.sub);
-    if (!practiceId) return res.status(401).json({ error: 'Unauthorized' });
-
-    const id = req.query && req.query.id;
-    if (!isUUID(id)) return res.status(404).json({ error: 'Not found' });
-
-    const clientRes = await db.query(
-      `select * from clients where id = $1 and practice_id = $2 and is_hidden = false limit 1`,
-      [id, practiceId]
-    );
-    const client = clientRes.rows[0];
-    if (!client) return res.status(404).json({ error: 'Not found' });
-
-    if (!client.phone || String(client.phone).trim() === '') {
-      return res.status(400).json({ error: 'This client has no phone number on file.' });
-    }
-
-    const practiceRes = await db.query(`select name from practices where id = $1 limit 1`, [practiceId]);
-    const practiceName = (practiceRes.rows[0] && practiceRes.rows[0].name) || 'Your practice';
-
-    // card-setup.html is served by this Vercel project at reddably.com/card-setup
-    // (it 404s on app.reddably.com), so fall back to reddably.com — matching
-    // api-client's VERCEL_BASE and invitations.js, NOT vob-activate's app.* base.
-    // Without a fallback a missing Vercel env var 500s the whole request.
-    const appBaseUrl = (process.env.APP_BASE_URL || 'https://reddably.com').replace(/\/+$/, '');
-
-    const token = paymentToken.sign(client.id);
-    const url = `${appBaseUrl}/card-setup?token=${encodeURIComponent(token)}`;
-
-    const message =
-      `Hi ${client.first_name || 'there'}, ${practiceName} has invited you to securely ` +
-      `save a payment method for your insurance claim submissions. Tap here to add your card:\n` +
-      `${url}\n\n` +
-      `This link expires in 24 hours. Reply STOP to opt out.`;
-
-    try {
-      await sendSms(String(client.phone).trim(), message);
-    } catch (smsErr) {
-      console.error('send_payment_link (twilio) error:', smsErr && smsErr.message);
-      return res.status(502).json({ error: 'Could not send the text message. Check the phone number and try again.' });
-    }
-
-    await db.query(
-      `update clients set payment_link_sent_at = now() where id = $1 and practice_id = $2 and is_hidden = false`,
-      [client.id, practiceId]
-    );
-
-    return res.status(200).json({ ok: true });
+    prep = await callLambda(`/clients/${encodeURIComponent(id || '')}/payment-link`, {
+      method: 'POST',
+      token: req.headers.authorization,
+      body: {},
+    });
   } catch (err) {
-    console.error('send_payment_link error:', err && err.message);
-    return res.status(500).json({ error: 'Internal server error' });
+    console.error('send_payment_link (lambda) error:', err && err.message);
+    return res.status(502).json({ error: 'Service is temporarily unavailable. Please try again.' });
   }
+
+  // Relay the Lambda's own 401/404/400 verbatim (auth failure, no client, no phone).
+  if (prep.status !== 200) {
+    return res.status(prep.status).json(prep.data || { error: 'Could not send the payment link.' });
+  }
+
+  const { to, body } = prep.data || {};
+  if (!to || !body) {
+    return res.status(502).json({ error: 'Could not build the message. Please try again.' });
+  }
+
+  try {
+    await sendSms(to, body);
+  } catch (smsErr) {
+    console.error('send_payment_link (twilio) error:', smsErr && smsErr.message);
+    return res.status(502).json({ error: 'Could not send the text message. Check the phone number and try again.' });
+  }
+
+  return res.status(200).json({ ok: true });
 };
