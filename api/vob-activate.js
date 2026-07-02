@@ -1,21 +1,17 @@
 'use strict';
 
-// POST /subscription/vob/activate — Vercel serverless function, STAFF JWT-authenticated.
+// POST /subscription/vob/activate — Vercel adapter (staff JWT), Stripe egress.
 //
-// Starts a Stripe Checkout Session for the $25/month Instant VOB add-on. It lives
-// on Vercel (not Lambda) because the VPC Lambdas have no NAT egress to Stripe (see
-// CLAUDE.md / lib/stripe.js), same as the other Stripe calls (setup-intent,
-// charge-fee). The browser already holds the staff session JWT and forwards it as a
-// Bearer token; this function verifies it with JWT_SECRET (shared lib/auth), derives
-// the practice + plan from the DB, and returns { checkoutUrl } for the browser to
-// redirect to. The webhook (api/vob-webhook.js) flips the plan once payment lands.
-//
-// Security: practice_id / plan / role come from the authenticated user's active row,
-// never the body. Activation is admin-only. Never logs PHI.
+// The VPC-private RDS is unreachable from Vercel, so the gated DB context lives on
+// the Lambda API: this adapter forwards the caller's staff Bearer token to
+//   POST {LAMBDA_API_BASE}/subscription/vob/checkout-context
+// which validates (admin-only; rejects founder/already-active) and returns
+// { practice_id, stripe_customer_id, email }. This function then opens the Stripe
+// Checkout Session (the part that needs outbound internet) and returns { checkoutUrl }.
+// The webhook (Lambda: /subscription/vob/webhook) flips the plan once payment lands.
 
-const db = require('../backend/lib/db');
 const stripe = require('../backend/lib/stripe');
-const { requireAuth } = require('../backend/lib/auth');
+const { callLambda } = require('../backend/lib/lambda_api');
 const { ALLOWED_ORIGINS } = require('../backend/lib/response');
 
 const VOB_PRICE_CENTS = 2500; // $25.00 / month
@@ -31,51 +27,31 @@ function applyCors(req, res) {
   res.setHeader('Access-Control-Max-Age', '86400');
 }
 
-async function loadContext(userId) {
-  const r = await db.query(
-    `select u.role         as role,
-            u.email        as email,
-            p.id           as practice_id,
-            p.name         as practice_name,
-            p.plan         as plan,
-            p.stripe_customer_id as stripe_customer_id
-       from users u
-       join practices p on p.id = u.practice_id
-      where u.id = $1 and u.is_active = true
-      limit 1`,
-    [userId]
-  );
-  return r.rows[0] || null;
-}
-
 module.exports = async (req, res) => {
   applyCors(req, res);
   if (req.method === 'OPTIONS') return res.status(204).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  // Authenticate the staff session JWT (forwarded from the browser).
-  let auth;
+  // Gated DB context comes from the VPC Lambda (auth + admin/plan checks there).
+  let ctxRes;
   try {
-    auth = requireAuth({ headers: req.headers });
-  } catch (_) {
-    return res.status(401).json({ error: 'Unauthorized' });
+    ctxRes = await callLambda('/subscription/vob/checkout-context', {
+      method: 'POST',
+      token: req.headers.authorization,
+      body: {},
+    });
+  } catch (err) {
+    console.error('vob-activate (lambda) error:', err && err.message);
+    return res.status(502).json({ error: 'Could not start checkout.' });
   }
 
+  // Relay the Lambda's own 401/403/400 verbatim (unauth, non-admin, already active).
+  if (ctxRes.status !== 200) {
+    return res.status(ctxRes.status).json(ctxRes.data || { error: 'Could not start checkout.' });
+  }
+  const ctx = ctxRes.data || {};
+
   try {
-    const ctx = await loadContext(auth.user.sub);
-    if (!ctx) return res.status(401).json({ error: 'Unauthorized' });
-
-    // Billing changes are an admin action.
-    if (ctx.role !== 'practice_admin') {
-      return res.status(403).json({ error: 'Only a practice admin can change billing.' });
-    }
-    if (ctx.plan === 'founder') {
-      return res.status(400).json({ error: 'Founder plan already includes Instant VOB.' });
-    }
-    if (ctx.plan === 'vob') {
-      return res.status(400).json({ error: 'The Instant VOB add-on is already active.' });
-    }
-
     const params = {
       mode: 'subscription',
       success_url: `${APP_BASE_URL}/app#vob-activated`,

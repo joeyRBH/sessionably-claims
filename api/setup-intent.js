@@ -1,20 +1,18 @@
 'use strict';
 
-// POST /setup-intent — PUBLIC Vercel serverless function (no JWT). Called by the
+// POST /setup-intent — PUBLIC Vercel adapter (no JWT), Stripe egress. Called by the
 // patient card-capture page (public/card-setup.html).
 //
-// This lives on Vercel (not Lambda) so it has free outbound internet to Stripe,
-// while still reaching Postgres via DATABASE_URL. It reuses the shared backend libs
-// (db, stripe, payment_token) so the logic stays identical to the rest of the app.
-//
-// Body: { token } — short-lived signed token (lib/payment_token) carrying client_id.
-// Verify it, find the client, ensure a Stripe Customer exists, and return a
-// SetupIntent client_secret + publishable key for Stripe.js. No card data touches
-// this function (PCI: collected by Stripe.js); never log PHI.
+// The VPC-private RDS is unreachable from Vercel, so DB access lives on the Lambda
+// API. This adapter resolves the client behind the signed token via
+//   POST {LAMBDA_API_BASE}/card-setup/context   { token }
+// ensures a Stripe Customer exists (creating one on Stripe and persisting it via
+//   POST {LAMBDA_API_BASE}/card-setup/save-customer  { token, stripe_customer_id }),
+// then returns a SetupIntent client_secret + publishable key for Stripe.js.
+// No card data touches this function (PCI: collected by Stripe.js); never log PHI.
 
-const db = require('../backend/lib/db');
 const stripe = require('../backend/lib/stripe');
-const paymentToken = require('../backend/lib/payment_token');
+const { callLambda } = require('../backend/lib/lambda_api');
 const { ALLOWED_ORIGINS } = require('../backend/lib/response');
 
 function applyCors(req, res) {
@@ -37,14 +35,6 @@ function parseBody(req) {
   }
 }
 
-async function loadClient(clientId) {
-  const result = await db.query(
-    `select * from clients where id = $1 and is_hidden = false limit 1`,
-    [clientId]
-  );
-  return result.rows[0] || null;
-}
-
 module.exports = async (req, res) => {
   applyCors(req, res);
   if (req.method === 'OPTIONS') return res.status(204).end();
@@ -52,16 +42,14 @@ module.exports = async (req, res) => {
 
   try {
     const body = parseBody(req);
+    const token = body.token;
 
-    let clientId;
-    try {
-      ({ client_id: clientId } = paymentToken.verify(body.token));
-    } catch (_) {
-      return res.status(401).json({ error: 'Invalid or expired link.' });
+    // Resolve the client (DB) via the Lambda API; it verifies the token.
+    const ctxRes = await callLambda('/card-setup/context', { method: 'POST', body: { token } });
+    if (ctxRes.status !== 200) {
+      return res.status(ctxRes.status).json(ctxRes.data || { error: 'Could not start card setup.' });
     }
-
-    const client = await loadClient(clientId);
-    if (!client) return res.status(404).json({ error: 'Not found' });
+    const client = ctxRes.data || {};
 
     // Create the Stripe Customer once, then reuse it on subsequent visits.
     let customerId = client.stripe_customer_id;
@@ -69,13 +57,14 @@ module.exports = async (req, res) => {
       const customer = await stripe.createCustomer({
         name: `${client.first_name || ''} ${client.last_name || ''}`.trim() || undefined,
         email: client.email || undefined,
-        metadata: { client_id: client.id, practice_id: client.practice_id },
+        metadata: { client_id: client.client_id, practice_id: client.practice_id },
       });
       customerId = customer.id;
-      await db.query(
-        `update clients set stripe_customer_id = $1 where id = $2 and is_hidden = false`,
-        [customerId, client.id]
-      );
+      // Persist via the Lambda API (first-writer-wins on the client row).
+      await callLambda('/card-setup/save-customer', {
+        method: 'POST',
+        body: { token, stripe_customer_id: customerId },
+      });
     }
 
     const setupIntent = await stripe.createSetupIntent({ customer: customerId });

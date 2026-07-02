@@ -25,10 +25,11 @@
 locals {
   # name → human description. Values are set out-of-band; never here.
   ssm_secure_parameters = {
-    DATABASE_URL       = "Postgres connection string the auth Lambdas read as DATABASE_URL."
-    JWT_SECRET         = "HS256 JWT signing secret the auth Lambdas read as JWT_SECRET."
-    DB_MASTER_PASSWORD = "RDS master password (canonical home; read into TF_VAR at db-apply time)."
-    STEDI_API_KEY      = "Stedi Healthcare API key the VOB (eligibility) + claims handlers read as STEDI_API_KEY."
+    DATABASE_URL              = "Postgres connection string the auth Lambdas read as DATABASE_URL."
+    JWT_SECRET                = "HS256 JWT signing secret the auth Lambdas read as JWT_SECRET."
+    DB_MASTER_PASSWORD        = "RDS master password (canonical home; read into TF_VAR at db-apply time)."
+    STEDI_API_KEY             = "Stedi Healthcare API key the VOB (eligibility) + claims handlers read as STEDI_API_KEY."
+    STRIPE_VOB_WEBHOOK_SECRET = "Stripe webhook signing secret the vob_billing Lambda verifies (whsec_...). Same value as the Vercel env."
   }
 }
 

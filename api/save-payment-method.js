@@ -1,18 +1,18 @@
 'use strict';
 
-// POST /save-payment-method — PUBLIC Vercel serverless function (no JWT). Called by
-// the patient card-capture page after Stripe.js confirms the SetupIntent.
+// POST /save-payment-method — PUBLIC Vercel adapter (no JWT), Stripe egress. Called
+// by the patient card-capture page after Stripe.js confirms the SetupIntent.
 //
-// On Vercel for outbound access to Stripe; reaches Postgres via DATABASE_URL. Reuses
-// the shared backend libs so behavior matches the rest of the app.
-//
-// Body: { token, paymentMethodId }. Verify the token, attach the PaymentMethod to the
-// client's Stripe Customer, set it as the customer default, and persist the
-// display-only card summary. NEVER store a raw PAN/CVC (PCI); never log PHI.
+// The VPC-private RDS is unreachable from Vercel, so DB access lives on the Lambda
+// API. This adapter resolves the client behind the signed token via
+//   POST {LAMBDA_API_BASE}/card-setup/context   { token }
+// attaches the PaymentMethod to the client's Stripe Customer and sets it default
+// (Stripe egress), then persists the display-only card summary via
+//   POST {LAMBDA_API_BASE}/card-setup/save-payment-method { token, paymentMethodId, ... }
+// NEVER store a raw PAN/CVC (PCI); never log PHI.
 
-const db = require('../backend/lib/db');
 const stripe = require('../backend/lib/stripe');
-const paymentToken = require('../backend/lib/payment_token');
+const { callLambda } = require('../backend/lib/lambda_api');
 const { ALLOWED_ORIGINS } = require('../backend/lib/response');
 
 function applyCors(req, res) {
@@ -35,14 +35,6 @@ function parseBody(req) {
   }
 }
 
-async function loadClient(clientId) {
-  const result = await db.query(
-    `select * from clients where id = $1 and is_hidden = false limit 1`,
-    [clientId]
-  );
-  return result.rows[0] || null;
-}
-
 module.exports = async (req, res) => {
   applyCors(req, res);
   if (req.method === 'OPTIONS') return res.status(204).end();
@@ -50,50 +42,45 @@ module.exports = async (req, res) => {
 
   try {
     const body = parseBody(req);
-
-    let clientId;
-    try {
-      ({ client_id: clientId } = paymentToken.verify(body.token));
-    } catch (_) {
-      return res.status(401).json({ error: 'Invalid or expired link.' });
-    }
+    const token = body.token;
 
     const paymentMethodId = body.paymentMethodId;
     if (!paymentMethodId || typeof paymentMethodId !== 'string') {
       return res.status(400).json({ error: 'Missing paymentMethodId.' });
     }
 
-    const client = await loadClient(clientId);
-    if (!client) return res.status(404).json({ error: 'Not found' });
+    // Resolve the client (DB) via the Lambda API; it verifies the token.
+    const ctxRes = await callLambda('/card-setup/context', { method: 'POST', body: { token } });
+    if (ctxRes.status !== 200) {
+      return res.status(ctxRes.status).json(ctxRes.data || { error: 'Could not save your card. Please try again.' });
+    }
+    const client = ctxRes.data || {};
     if (!client.stripe_customer_id) {
       return res.status(409).json({ error: 'Card setup was not started. Reload the link and try again.' });
     }
 
-    // Attach → read details → set as default.
+    // Attach → read details → set as default (Stripe egress).
     await stripe.attachPaymentMethod(paymentMethodId, client.stripe_customer_id);
     const pm = await stripe.retrievePaymentMethod(paymentMethodId);
     await stripe.setDefaultPaymentMethod(client.stripe_customer_id, paymentMethodId);
 
     const card = (pm && pm.card) || {};
 
-    await db.query(
-      `update clients
-          set payment_method_id = $1,
-              payment_method_brand = $2,
-              payment_method_last4 = $3,
-              payment_method_exp_month = $4,
-              payment_method_exp_year = $5,
-              payment_method_set_at = now()
-        where id = $6 and is_hidden = false`,
-      [
+    // Persist the display-only summary via the Lambda API.
+    const saveRes = await callLambda('/card-setup/save-payment-method', {
+      method: 'POST',
+      body: {
+        token,
         paymentMethodId,
-        card.brand || null,
-        card.last4 || null,
-        card.exp_month != null ? card.exp_month : null,
-        card.exp_year != null ? card.exp_year : null,
-        client.id,
-      ]
-    );
+        brand: card.brand || null,
+        last4: card.last4 || null,
+        exp_month: card.exp_month != null ? card.exp_month : null,
+        exp_year: card.exp_year != null ? card.exp_year : null,
+      },
+    });
+    if (saveRes.status !== 200) {
+      return res.status(saveRes.status).json(saveRes.data || { error: 'Could not save your card. Please try again.' });
+    }
 
     return res.status(200).json({ ok: true });
   } catch (err) {
