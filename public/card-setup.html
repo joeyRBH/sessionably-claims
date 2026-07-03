@@ -117,6 +117,49 @@
     .btn:hover { background: var(--color-primary-hover); }
     .btn:disabled { background: var(--color-text-disabled); cursor: not-allowed; }
 
+    /* Subtle link-style action (e.g. "Skip for now"). */
+    .btn-link {
+      display: block;
+      width: 100%;
+      margin-top: var(--space-4);
+      padding: var(--space-2);
+      font-family: var(--font-body);
+      font-size: var(--font-size-3);
+      font-weight: var(--font-weight-medium);
+      color: var(--color-text-muted);
+      background: none;
+      border: none;
+      border-radius: var(--radius-2);
+      cursor: pointer;
+      text-align: center;
+      transition: color var(--motion-fast) var(--ease-standard);
+    }
+    .btn-link:hover { color: var(--color-text); }
+    .btn-link:disabled { color: var(--color-text-disabled); cursor: not-allowed; }
+
+    /* Text inputs / selects for the insurance step. Frame matches .card-input;
+       Stripe styles its own iframe text, but these are native controls. */
+    .field { margin-bottom: var(--space-5); }
+    .field:last-of-type { margin-bottom: 0; }
+    .input {
+      width: 100%;
+      padding: var(--space-3) var(--space-3);
+      font-family: var(--font-body);
+      font-size: var(--font-size-4);
+      color: var(--color-text);
+      background: var(--color-surface);
+      border: var(--border-width-1) solid var(--color-border-strong);
+      border-radius: var(--radius-2);
+      transition: border-color var(--motion-fast) var(--ease-standard),
+                  box-shadow var(--motion-fast) var(--ease-standard);
+    }
+    .input:focus {
+      outline: none;
+      border-color: var(--color-primary);
+      box-shadow: 0 0 0 var(--focus-ring-width) var(--color-focus-ring);
+    }
+    select.input { appearance: none; -webkit-appearance: none; background-image: none; }
+
     .msg {
       margin-top: var(--space-4);
       font-size: var(--font-size-3);
@@ -190,6 +233,63 @@
         </p>
       </div>
 
+      <!-- Insurance state (shown after the card saves, before "all set"). -->
+      <div id="state-insurance" hidden>
+        <h1>Add your insurance</h1>
+        <p class="subhead">This helps your practice submit your out-of-network claims.
+          You can skip and add it later if you don't have it handy.</p>
+
+        <form id="insurance-form" novalidate>
+          <div class="field">
+            <label for="ins-carrier">Insurance company</label>
+            <input id="ins-carrier" class="input" type="text" autocomplete="off"
+                   maxlength="200" placeholder="e.g. Aetna">
+          </div>
+
+          <div class="field">
+            <label for="ins-member">Member ID</label>
+            <input id="ins-member" class="input" type="text" autocomplete="off"
+                   maxlength="200" placeholder="The ID on your insurance card">
+          </div>
+
+          <div class="field">
+            <label for="ins-group">Group number <span aria-hidden="true">(optional)</span></label>
+            <input id="ins-group" class="input" type="text" autocomplete="off"
+                   maxlength="200" placeholder="Optional">
+          </div>
+
+          <div class="field">
+            <label for="ins-relationship">Who is the policyholder?</label>
+            <select id="ins-relationship" class="input">
+              <option value="self">Myself</option>
+              <option value="spouse">Spouse</option>
+              <option value="child">Parent</option>
+              <option value="other">Other</option>
+            </select>
+          </div>
+
+          <!-- Shown only when the policyholder is not the patient. -->
+          <div id="ins-holder-fields" hidden>
+            <div class="field">
+              <label for="ins-holder-name">Policyholder name</label>
+              <input id="ins-holder-name" class="input" type="text" autocomplete="off"
+                     maxlength="200" placeholder="Full name on the policy">
+            </div>
+            <div class="field">
+              <label for="ins-holder-dob">Policyholder date of birth</label>
+              <input id="ins-holder-dob" class="input" type="date">
+            </div>
+          </div>
+
+          <p id="ins-error" class="msg msg--error" role="alert" aria-live="polite" hidden></p>
+
+          <button id="ins-submit" class="btn" type="submit">
+            <span id="ins-submit-label">Save insurance</span>
+          </button>
+          <button id="ins-skip" class="btn-link" type="button">Skip for now</button>
+        </form>
+      </div>
+
       <!-- Success state. -->
       <div id="state-done" class="state-done" hidden>
         <h2 class="state-done__title">You're all set ✓</h2>
@@ -249,6 +349,66 @@
       if (!token) { showFatal(); return; }
       if (!API || !API.billing) { showFatal('This page failed to load. Please try again.'); return; }
 
+      // --- Insurance step (shown after the card saves) --------------------------
+      // Bound once at load; the elements exist in the DOM from the start.
+      (function setupInsuranceStep() {
+        var relationship = $('ins-relationship');
+        var holderFields = $('ins-holder-fields');
+
+        function showInsError(message) {
+          var el = $('ins-error');
+          el.textContent = message || 'Something went wrong. Please try again.';
+          el.hidden = false;
+        }
+        function clearInsError() { $('ins-error').hidden = true; }
+
+        // Policyholder name/DOB only apply when the patient is NOT the policyholder.
+        function syncHolderFields() {
+          holderFields.hidden = relationship.value === 'self';
+        }
+        relationship.addEventListener('change', syncHolderFields);
+        syncHolderFields();
+
+        function finishInsurance() { hide('state-insurance'); show('state-done'); }
+
+        $('ins-skip').addEventListener('click', function () { finishInsurance(); });
+
+        var saving = false;
+        $('insurance-form').addEventListener('submit', function (e) {
+          e.preventDefault();
+          if (saving) return;
+          clearInsError();
+
+          var isSelf = relationship.value === 'self';
+          var fields = {
+            carrier_name: $('ins-carrier').value.trim(),
+            member_id: $('ins-member').value.trim(),
+            group_number: $('ins-group').value.trim(),
+            subscriber_relationship: relationship.value,
+          };
+          if (!isSelf) {
+            fields.subscriber_name = $('ins-holder-name').value.trim();
+            fields.subscriber_dob = $('ins-holder-dob').value.trim();
+          }
+
+          if (!fields.carrier_name) { showInsError('Please enter your insurance company.'); return; }
+          if (!fields.member_id) { showInsError('Please enter your member ID.'); return; }
+
+          saving = true;
+          $('ins-submit').disabled = true;
+          $('ins-submit-label').textContent = 'Saving…';
+
+          API.billing.saveInsurance(token, fields).then(function () {
+            finishInsurance();
+          }).catch(function (err) {
+            showInsError((err && err.message) || 'Could not save your insurance. Please try again.');
+            saving = false;
+            $('ins-submit').disabled = false;
+            $('ins-submit-label').textContent = 'Save insurance';
+          });
+        });
+      })();
+
       // 1) Create the SetupIntent for this client.
       API.billing.setupIntent(token).then(function (res) {
         var clientSecret = res && res.clientSecret;
@@ -306,8 +466,9 @@
               // 3) Persist the payment method against the client.
               var pmId = result.setupIntent && result.setupIntent.payment_method;
               API.billing.savePaymentMethod(token, pmId).then(function () {
+                // Card saved — move to the insurance step (which can be skipped).
                 hide('state-form');
-                show('state-done');
+                show('state-insurance');
               }).catch(function (err) {
                 showError((err && err.message) || 'Could not save your card. Please try again.');
                 submitting = false;
