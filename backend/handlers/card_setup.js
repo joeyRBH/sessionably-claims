@@ -9,6 +9,8 @@
 //   POST /card-setup/save-customer        → persist a newly created Stripe customer id
 //   POST /card-setup/save-payment-method  → persist the display-only card summary
 //   POST /card-setup/save-insurance       → persist the patient's OON insurance info
+//   POST /card-setup/payer-search         → type-ahead payer lookup (Stedi) for the
+//                                           patient's insurance-company field
 //
 // Auth: the short-lived signed payment token (lib/payment_token) carried in the
 // body as { token } — the same credential the Vercel functions verified before.
@@ -20,6 +22,7 @@ const db = require('../lib/db');
 const paymentToken = require('../lib/payment_token');
 const { json, preflight } = require('../lib/response');
 const { parseBody } = require('../lib/util');
+const stedi = require('../lib/clearinghouse/stedi');
 
 function httpMethod(event) {
   if (!event) return '';
@@ -137,16 +140,38 @@ exports.handler = async (event) => {
       return json(200, { ok: true }, event);
     }
 
+    // Type-ahead payer lookup for the patient's insurance-company field. The
+    // token is the credential (verified above); no requireAuth. The only input
+    // is a free-text payer-name fragment (a payer-name fragment is not PHI) and
+    // the response is public payer-directory data, so nothing is persisted here.
+    if (path === 'payer-search') {
+      const q = cleanField(body.q);
+      if (q.length < 2 || q.length > 200) {
+        return json(400, { error: 'Query must be between 2 and 200 characters.' }, event);
+      }
+      try {
+        const payers = await stedi.searchPayers(q);
+        return json(200, { payers }, event);
+      } catch (err) {
+        // No PHI in a payer-name search; log only the message.
+        console.error('card_setup payer-search error:', err && err.message);
+        return json(502, { error: 'Could not search payers.' }, event);
+      }
+    }
+
     if (path === 'save-insurance') {
       // Patient-supplied OON insurance info. Required: carrier_name, member_id.
       // Optional: group_number, subscriber_relationship, subscriber_name,
-      // subscriber_dob. Trim everything; reject anything over 200 chars.
+      // subscriber_dob, payer_id. Trim everything; reject anything over 200 chars.
       const carrierName = cleanField(body.carrier_name);
       const memberId = cleanField(body.member_id);
       const groupNumber = cleanField(body.group_number);
       const subscriberRelationship = cleanField(body.subscriber_relationship);
       const subscriberName = cleanField(body.subscriber_name);
       const subscriberDob = cleanField(body.subscriber_dob);
+      // payer_id maps to insurance_records.payer_id varchar(50). Optional — a
+      // patient who free-types a carrier that isn't matched submits none.
+      const payerId = cleanField(body.payer_id);
 
       if (!carrierName) return json(400, { error: 'Insurance company is required.' }, event);
       if (!memberId) return json(400, { error: 'Member ID is required.' }, event);
@@ -154,6 +179,7 @@ exports.handler = async (event) => {
       for (const v of [carrierName, memberId, groupNumber, subscriberRelationship, subscriberName, subscriberDob]) {
         if (v.length > MAX_FIELD_LEN) return json(400, { error: 'One of the fields is too long.' }, event);
       }
+      if (payerId.length > 50) return json(400, { error: 'One of the fields is too long.' }, event);
       if (subscriberRelationship && !['self', 'spouse', 'child', 'other'].includes(subscriberRelationship)) {
         return json(400, { error: 'Invalid policyholder relationship.' }, event);
       }
@@ -183,16 +209,17 @@ exports.handler = async (event) => {
               group_number            = coalesce(nullif($3, ''), group_number),
               subscriber_relationship = coalesce(nullif($4, ''), subscriber_relationship),
               subscriber_name         = coalesce(nullif($5, ''), subscriber_name),
-              subscriber_dob          = coalesce(nullif($6, '')::date, subscriber_dob)
-            where id = $7`,
-          [carrierName, memberId, groupNumber, subscriberRelationship, subscriberName, subscriberDob, existing.rows[0].id]
+              subscriber_dob          = coalesce(nullif($6, '')::date, subscriber_dob),
+              payer_id                = coalesce(nullif($7, ''), payer_id)
+            where id = $8`,
+          [carrierName, memberId, groupNumber, subscriberRelationship, subscriberName, subscriberDob, payerId, existing.rows[0].id]
         );
       } else {
         await db.query(
           `insert into insurance_records
              (practice_id, client_id, carrier_name, member_id, group_number,
-              subscriber_relationship, subscriber_name, subscriber_dob, is_primary)
-           values ($1, $2, $3, $4, nullif($5, ''), nullif($6, ''), nullif($7, ''), nullif($8, '')::date, true)`,
+              subscriber_relationship, subscriber_name, subscriber_dob, payer_id, is_primary)
+           values ($1, $2, $3, $4, nullif($5, ''), nullif($6, ''), nullif($7, ''), nullif($8, '')::date, nullif($9, ''), true)`,
           [
             client.practice_id,
             clientId,
@@ -202,6 +229,7 @@ exports.handler = async (event) => {
             subscriberRelationship,
             subscriberName,
             subscriberDob,
+            payerId,
           ]
         );
       }

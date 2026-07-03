@@ -200,6 +200,13 @@
       Object.keys(fields || {}).forEach(function (k) { payload[k] = fields[k]; });
       return request('POST', '/card-setup/save-insurance', payload);
     },
+    // Type-ahead payer lookup for the insurance step. The signed token is the
+    // credential (in the body, not the staff bearer). q is a free-text
+    // payer-name fragment — no PHI. Hits the Lambda API (card_setup handler)
+    // directly, like saveInsurance. -> { payers: [{ name, payer_id, stedi_id }] }.
+    searchPayers: function (token, q) {
+      return request('POST', '/card-setup/payer-search', { token: token, q: q });
+    },
   };
 
   var insuranceRecords = {

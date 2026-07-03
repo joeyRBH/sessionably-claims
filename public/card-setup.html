@@ -160,6 +160,53 @@
     }
     select.input { appearance: none; -webkit-appearance: none; background-image: none; }
 
+    /* Payer type-ahead (insurance-company field). Results drop below the input;
+       free-text always still works. Mobile-first: comfortable tap targets. */
+    .payer-picker { position: relative; }
+    .payer-picker__results {
+      list-style: none;
+      margin: var(--space-1) 0 0;
+      padding: var(--space-1);
+      background: var(--color-surface);
+      border: var(--border-width-1) solid var(--color-border-strong);
+      border-radius: var(--radius-2);
+      box-shadow: var(--shadow-2);
+      max-height: 15rem;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    .payer-picker__results[hidden] { display: none; }
+    .payer-picker__option {
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-1);
+      padding: var(--space-3) var(--space-3);
+      min-height: var(--space-9); /* comfortable touch target */
+      justify-content: center;
+      border-radius: var(--radius-1);
+      cursor: pointer;
+      transition: background var(--motion-fast) var(--ease-standard);
+    }
+    .payer-picker__option:hover,
+    .payer-picker__option.is-active {
+      background: var(--color-surface-sunken);
+    }
+    .payer-picker__option-name {
+      font-size: var(--font-size-3);
+      font-weight: var(--font-weight-medium);
+      color: var(--color-text-strong);
+    }
+    .payer-picker__option-id {
+      font-family: var(--font-mono);
+      font-size: var(--font-size-1);
+      color: var(--color-text-muted);
+    }
+    .payer-picker__status {
+      padding: var(--space-3) var(--space-3);
+      font-size: var(--font-size-2);
+      color: var(--color-text-muted);
+    }
+
     .msg {
       margin-top: var(--space-4);
       font-size: var(--font-size-3);
@@ -242,8 +289,16 @@
         <form id="insurance-form" novalidate>
           <div class="field">
             <label for="ins-carrier">Insurance company</label>
-            <input id="ins-carrier" class="input" type="text" autocomplete="off"
-                   maxlength="200" placeholder="e.g. Aetna">
+            <div class="payer-picker">
+              <input id="ins-carrier" class="input" type="text" autocomplete="off"
+                     spellcheck="false" maxlength="200" placeholder="Start typing, e.g. Aetna"
+                     role="combobox" aria-autocomplete="list" aria-expanded="false"
+                     aria-controls="ins-carrier-results">
+              <div id="ins-carrier-results" class="payer-picker__results"
+                   role="listbox" hidden></div>
+            </div>
+            <!-- Filled only when the patient picks a match; free-text leaves it blank. -->
+            <input id="ins-payer-id" type="hidden" value="">
           </div>
 
           <div class="field">
@@ -355,6 +410,131 @@
         var relationship = $('ins-relationship');
         var holderFields = $('ins-holder-fields');
 
+        // --- Payer type-ahead (insurance company) -----------------------------
+        // Debounced (300ms) search of the payer directory with a stale-request
+        // guard. Picking a result fills the hidden payer_id and shows
+        // "Name (PAYERID)"; editing the input clears the stored id. Free-text
+        // always works — if nothing is picked, carrier_name submits as typed with
+        // no payer_id, and a search failure never blocks saving.
+        (function setupPayerPicker() {
+          var input = $('ins-carrier');
+          var results = $('ins-carrier-results');
+          var payerIdField = $('ins-payer-id');
+          var seq = 0;            // id of the most recent request (stale-guard)
+          var timer = null;
+          var currentList = [];
+          var activeIndex = -1;
+
+          function openResults() {
+            results.hidden = false;
+            input.setAttribute('aria-expanded', 'true');
+          }
+          function closeResults() {
+            results.hidden = true;
+            input.setAttribute('aria-expanded', 'false');
+            activeIndex = -1;
+          }
+          function showStatus(text) {
+            results.textContent = '';
+            var s = document.createElement('div');
+            s.className = 'payer-picker__status';
+            s.textContent = text;
+            results.appendChild(s);
+            openResults();
+          }
+          function paintActive() {
+            var optionEls = results.querySelectorAll('.payer-picker__option');
+            Array.prototype.forEach.call(optionEls, function (el, i) {
+              el.classList.toggle('is-active', i === activeIndex);
+            });
+            if (activeIndex >= 0 && optionEls[activeIndex]) {
+              optionEls[activeIndex].scrollIntoView({ block: 'nearest' });
+            }
+          }
+          function choose(p) {
+            if (!p) return;
+            payerIdField.value = p.payer_id || '';
+            input.value = p.name ? (p.name + ' (' + p.payer_id + ')') : (p.payer_id || '');
+            closeResults();
+          }
+          function renderResults(list) {
+            currentList = list || [];
+            activeIndex = -1;
+            results.textContent = '';
+            if (!currentList.length) {
+              // Quiet fallback — free-text still submits.
+              showStatus('No matches — you can still type your insurance company name');
+              return;
+            }
+            currentList.forEach(function (p, i) {
+              var opt = document.createElement('div');
+              opt.className = 'payer-picker__option';
+              opt.setAttribute('role', 'option');
+              var nameEl = document.createElement('span');
+              nameEl.className = 'payer-picker__option-name';
+              nameEl.textContent = p.name || '(unnamed payer)';
+              var idEl = document.createElement('span');
+              idEl.className = 'payer-picker__option-id';
+              idEl.textContent = p.payer_id;
+              opt.appendChild(nameEl);
+              opt.appendChild(idEl);
+              // mousedown/touch: run the pick before the input's blur fires.
+              opt.addEventListener('mousedown', function (e) {
+                e.preventDefault();
+                choose(currentList[i]);
+              });
+              opt.addEventListener('mouseenter', function () { activeIndex = i; paintActive(); });
+              results.appendChild(opt);
+            });
+            openResults();
+          }
+          function runSearch(q) {
+            var mySeq = ++seq;
+            showStatus('Searching…');
+            API.billing.searchPayers(token, q).then(function (res) {
+              if (mySeq !== seq) return;   // superseded by a newer query
+              renderResults((res && res.payers) || []);
+            }).catch(function () {
+              if (mySeq !== seq) return;   // stale error — ignore
+              // Search failure must never block saving; just hide the list.
+              closeResults();
+            });
+          }
+
+          input.addEventListener('input', function () {
+            payerIdField.value = '';       // editing invalidates any prior pick
+            var q = input.value.trim();
+            if (timer) { window.clearTimeout(timer); timer = null; }
+            if (q.length < 2) { seq++; closeResults(); return; }  // too short: invalidate + hide
+            timer = window.setTimeout(function () { runSearch(q); }, 300);
+          });
+
+          input.addEventListener('keydown', function (e) {
+            if (results.hidden) return;
+            var optionEls = results.querySelectorAll('.payer-picker__option');
+            if (e.key === 'ArrowDown') {
+              if (!optionEls.length) return;
+              e.preventDefault();
+              activeIndex = Math.min(optionEls.length - 1, activeIndex + 1);
+              paintActive();
+            } else if (e.key === 'ArrowUp') {
+              if (!optionEls.length) return;
+              e.preventDefault();
+              activeIndex = Math.max(0, activeIndex - 1);
+              paintActive();
+            } else if (e.key === 'Enter') {
+              if (activeIndex >= 0 && currentList[activeIndex]) {
+                e.preventDefault();      // pick the highlighted row, don't submit
+                choose(currentList[activeIndex]);
+              }
+            } else if (e.key === 'Escape') {
+              closeResults();
+            }
+          });
+
+          input.addEventListener('blur', function () { closeResults(); });
+        })();
+
         function showInsError(message) {
           var el = $('ins-error');
           el.textContent = message || 'Something went wrong. Please try again.';
@@ -386,6 +566,10 @@
             group_number: $('ins-group').value.trim(),
             subscriber_relationship: relationship.value,
           };
+          // Set only when the patient picked a directory match; free-text leaves
+          // it blank so carrier_name still saves on its own.
+          var payerId = $('ins-payer-id').value.trim();
+          if (payerId) fields.payer_id = payerId;
           if (!isSelf) {
             fields.subscriber_name = $('ins-holder-name').value.trim();
             fields.subscriber_dob = $('ins-holder-dob').value.trim();
