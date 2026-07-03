@@ -191,6 +191,15 @@
     savePaymentMethod: function (token, paymentMethodId) {
       return request('POST', '/save-payment-method', { token: token, paymentMethodId: paymentMethodId }, VERCEL_BASE);
     },
+    // Persist the patient's OON insurance info. No Stripe/Twilio egress needed, so
+    // this hits the Lambda API (card_setup handler) directly — not a Vercel function.
+    // fields: { carrier_name, member_id, group_number?, subscriber_relationship?,
+    //           subscriber_name?, subscriber_dob? }
+    saveInsurance: function (token, fields) {
+      var payload = { token: token };
+      Object.keys(fields || {}).forEach(function (k) { payload[k] = fields[k]; });
+      return request('POST', '/card-setup/save-insurance', payload);
+    },
   };
 
   var insuranceRecords = {

@@ -84,7 +84,8 @@ exports.handler = async (event) => {
 
     const messageBody =
       `Hi ${client.first_name || 'there'}, ${practiceName} has invited you to securely ` +
-      `save a payment method for your insurance claim submissions. Tap here to add your card:\n` +
+      `save a payment method and your insurance information for your claim submissions. ` +
+      `Tap here to get started:\n` +
       `${url}\n\n` +
       `This link expires in 24 hours. Reply STOP to opt out.`;
 

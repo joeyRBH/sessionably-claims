@@ -119,6 +119,7 @@ locals {
         { method = "POST", path = "card-setup/context" },
         { method = "POST", path = "card-setup/save-customer" },
         { method = "POST", path = "card-setup/save-payment-method" },
+        { method = "POST", path = "card-setup/save-insurance" },
       ]
     }
     payment_link = {

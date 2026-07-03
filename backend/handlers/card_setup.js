@@ -8,6 +8,7 @@
 //   POST /card-setup/context              → resolve the client behind the token
 //   POST /card-setup/save-customer        → persist a newly created Stripe customer id
 //   POST /card-setup/save-payment-method  → persist the display-only card summary
+//   POST /card-setup/save-insurance       → persist the patient's OON insurance info
 //
 // Auth: the short-lived signed payment token (lib/payment_token) carried in the
 // body as { token } — the same credential the Vercel functions verified before.
@@ -52,6 +53,13 @@ async function loadClient(clientId) {
     [clientId]
   );
   return r.rows[0] || null;
+}
+
+// Trim to a string, capping length. Returns '' for non-strings / null.
+const MAX_FIELD_LEN = 200;
+function cleanField(v) {
+  if (typeof v !== 'string') return '';
+  return v.trim();
 }
 
 exports.handler = async (event) => {
@@ -126,6 +134,77 @@ exports.handler = async (event) => {
           clientId,
         ]
       );
+      return json(200, { ok: true }, event);
+    }
+
+    if (path === 'save-insurance') {
+      // Patient-supplied OON insurance info. Required: carrier_name, member_id.
+      // Optional: group_number, subscriber_relationship, subscriber_name,
+      // subscriber_dob. Trim everything; reject anything over 200 chars.
+      const carrierName = cleanField(body.carrier_name);
+      const memberId = cleanField(body.member_id);
+      const groupNumber = cleanField(body.group_number);
+      const subscriberRelationship = cleanField(body.subscriber_relationship);
+      const subscriberName = cleanField(body.subscriber_name);
+      const subscriberDob = cleanField(body.subscriber_dob);
+
+      if (!carrierName) return json(400, { error: 'Insurance company is required.' }, event);
+      if (!memberId) return json(400, { error: 'Member ID is required.' }, event);
+
+      for (const v of [carrierName, memberId, groupNumber, subscriberRelationship, subscriberName, subscriberDob]) {
+        if (v.length > MAX_FIELD_LEN) return json(400, { error: 'One of the fields is too long.' }, event);
+      }
+      if (subscriberRelationship && !['self', 'spouse', 'child', 'other'].includes(subscriberRelationship)) {
+        return json(400, { error: 'Invalid policyholder relationship.' }, event);
+      }
+      if (subscriberDob && !/^\d{4}-\d{2}-\d{2}$/.test(subscriberDob)) {
+        return json(400, { error: 'Date of birth must be YYYY-MM-DD.' }, event);
+      }
+
+      const client = await loadClient(clientId);
+      if (!client) return json(404, { error: 'Not found' }, event);
+
+      // Find an existing primary (non-hidden) record to update in place.
+      const existing = await db.query(
+        `select id from insurance_records
+          where client_id = $1 and is_primary = true and is_hidden = false
+          order by created_at asc limit 1`,
+        [clientId]
+      );
+
+      if (existing.rows[0]) {
+        // Update only the fields the patient actually provided — never null out
+        // existing data. coalesce(nullif($n, ''), col) keeps the current value
+        // when the incoming field is blank.
+        await db.query(
+          `update insurance_records set
+              carrier_name            = coalesce(nullif($1, ''), carrier_name),
+              member_id               = coalesce(nullif($2, ''), member_id),
+              group_number            = coalesce(nullif($3, ''), group_number),
+              subscriber_relationship = coalesce(nullif($4, ''), subscriber_relationship),
+              subscriber_name         = coalesce(nullif($5, ''), subscriber_name),
+              subscriber_dob          = coalesce(nullif($6, '')::date, subscriber_dob)
+            where id = $7`,
+          [carrierName, memberId, groupNumber, subscriberRelationship, subscriberName, subscriberDob, existing.rows[0].id]
+        );
+      } else {
+        await db.query(
+          `insert into insurance_records
+             (practice_id, client_id, carrier_name, member_id, group_number,
+              subscriber_relationship, subscriber_name, subscriber_dob, is_primary)
+           values ($1, $2, $3, $4, nullif($5, ''), nullif($6, ''), nullif($7, ''), nullif($8, '')::date, true)`,
+          [
+            client.practice_id,
+            clientId,
+            carrierName,
+            memberId,
+            groupNumber,
+            subscriberRelationship,
+            subscriberName,
+            subscriberDob,
+          ]
+        );
+      }
       return json(200, { ok: true }, event);
     }
 
