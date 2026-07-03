@@ -80,6 +80,11 @@
       shell.classList.toggle('is-drawer-open', open);
       toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
       if (backdrop) backdrop.hidden = !open;
+      // Move focus into the drawer on open so keyboard/SR users land on the nav.
+      if (open && sidebar) {
+        var firstLink = sidebar.querySelector('.nav-link');
+        if (firstLink) firstLink.focus();
+      }
     }
 
     toggle.addEventListener('click', function () {

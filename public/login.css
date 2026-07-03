@@ -187,3 +187,22 @@ body {
   background: var(--color-text-disabled);
   cursor: progress;
 }
+
+/* -----------------------------------------------------------------------------
+ * Responsive — tighten the frame on small screens so the card doesn't feel
+ * cramped edge-to-edge on a phone. Additive: desktop rendering is unchanged.
+ * -------------------------------------------------------------------------- */
+@media (max-width: 480px) {
+  .login {
+    padding: var(--space-4);
+    align-items: flex-start;
+  }
+
+  .login-card {
+    padding: var(--space-6);
+  }
+
+  .login-card__heading {
+    font-size: var(--font-size-6);
+  }
+}

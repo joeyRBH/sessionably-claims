@@ -368,11 +368,29 @@ body {
     display: inline-flex;
   }
 
-  .practice-name {
+  /* Tighten the bar and drop non-essential text so the topbar never overflows. */
+  .topbar {
+    padding: 0 var(--space-4);
+  }
+
+  .practice-name,
+  .user-menu__name {
     display: none;
   }
 
-  /* Sidebar slides in from the left as an overlay panel. */
+  /* Main content goes full-width with calmer padding on small screens. */
+  .content {
+    padding: var(--space-5);
+  }
+
+  /* Touch target: nav links comfortably tappable (>= 44px). */
+  .nav-link {
+    min-height: var(--space-9);
+  }
+
+  /* Sidebar slides in from the left as an overlay panel. It must sit ABOVE the
+     backdrop — both are zone-2, and the backdrop comes later in the DOM, so bump
+     the drawer a step higher or the backdrop would cover (and swallow taps on) it. */
   .sidebar {
     position: fixed;
     top: var(--topbar-height);
@@ -380,7 +398,7 @@ body {
     left: 0;
     width: var(--rail-width);
     max-width: 86vw;
-    z-index: var(--zone-2);
+    z-index: calc(var(--zone-2) + 1);
     transform: translateX(-100%);
     box-shadow: var(--shadow-3);
     transition: transform var(--motion-base) var(--ease-standard);

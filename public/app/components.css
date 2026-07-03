@@ -607,3 +607,60 @@ textarea.field__control {
   font-size: var(--font-size-2);
   white-space: nowrap;
 }
+
+/* =============================================================================
+ * Responsive — small screens (mobile / tablet-portrait)
+ * =============================================================================
+ * Additive only: every rule below is gated behind the drawer breakpoint so
+ * desktop rendering stays pixel-identical. Matches the shell breakpoint in
+ * app.css (900px) so the whole app crosses into "mobile" at one width.
+ * ========================================================================== */
+@media (max-width: 900px) {
+  /* --------------------------- Cards & buttons --------------------------- */
+  /* A touch more breathing room for content on a narrow viewport. */
+  .card {
+    padding: var(--space-4);
+  }
+
+  /* Touch targets: any button is comfortably tappable (>= 44px tall). This
+     covers primary/ghost actions and the small row-action buttons in tables. */
+  .btn {
+    min-height: var(--space-9);
+  }
+
+  /* -------------------------------- Tables ------------------------------- */
+  /* Keep tables intact (no card-ification in this PR) but let them scroll
+     horizontally within their card instead of forcing the page to overflow.
+     display:block turns the table into its own horizontal scroll container;
+     nowrap stops columns collapsing so the scroll actually engages. */
+  .data-table {
+    display: block;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    white-space: nowrap;
+  }
+
+  /* -------------------------------- Modals ------------------------------- */
+  /* Near-full-screen sheet: edge-to-edge, its own scroll, footer buttons
+     reachable by scrolling above the on-screen keyboard. */
+  .modal__backdrop {
+    padding: 0;
+    align-items: stretch;
+  }
+
+  .modal__panel {
+    width: 100%;
+    max-width: none;
+    min-height: 100vh;
+    max-height: 100vh;
+    border-radius: 0;
+  }
+
+  /* -------------------------------- Toasts ------------------------------- */
+  /* Span the width so toasts don't crowd into a narrow column on a phone. */
+  .toast-host {
+    left: var(--space-4);
+    right: var(--space-4);
+    max-width: none;
+  }
+}
