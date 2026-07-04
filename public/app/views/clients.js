@@ -563,14 +563,32 @@
         var ded = res.deductible || {};
         var oop = res.outOfPocket || {};
 
+        // A payer rejection (AAA error) is not the same as inactive coverage: the
+        // payer refused the request, so the status is unknown, not "Inactive".
+        var rejection = (res.rejected && res.rejections && res.rejections[0]) || null;
+        var statusBadge = res.rejected
+          ? h('span', { class: 'badge badge--warning' }, 'Could not verify')
+          : (res.active
+            ? h('span', { class: 'badge badge--success' }, 'Active coverage')
+            : h('span', { class: 'badge badge--danger' }, 'Inactive'));
+
         var children = [
           h('div', { style: 'display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap' }, [
-            res.active
-              ? h('span', { class: 'badge badge--success' }, 'Active coverage')
-              : h('span', { class: 'badge badge--danger' }, 'Inactive'),
+            statusBadge,
             res.planName ? h('span', { style: 'font-weight:var(--font-weight-medium)' }, res.planName) : null,
           ]),
         ];
+
+        if (rejection) {
+          var detail = [rejection.description, rejection.followupAction]
+            .filter(function (s) { return s != null && String(s).trim() !== ''; })
+            .join(' — ');
+          if (detail) {
+            children.push(h('p', {
+              style: 'margin:0;color:var(--color-text-muted);font-size:var(--font-size-2)',
+            }, detail));
+          }
+        }
 
         var facts = [];
         if (res.groupNumber) facts.push('Group ' + res.groupNumber);
