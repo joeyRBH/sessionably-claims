@@ -42,6 +42,17 @@ function isUUID(v) {
   return typeof v === 'string' && UUID_RE.test(v.trim());
 }
 
+// Normalize a member ID for the payer: strip ALL whitespace and drop a leading
+// "(80840)" / "80840" magic-number prefix (the 271 mag-stripe ID card prefix)
+// when present. Hyphens and other characters are preserved — some payers use them
+// legitimately. Returns null for empty input.
+function sanitizeMemberId(v) {
+  if (v == null) return null;
+  let s = String(v).replace(/\s+/g, '');
+  s = s.replace(/^\(80840\)/, '').replace(/^80840/, '');
+  return s === '' ? null : s;
+}
+
 function isValidDate(s) {
   if (!ISO_DATE.test(s)) return false;
   const d = new Date(`${s}T00:00:00Z`);
@@ -75,6 +86,22 @@ function num(v) {
   if (v == null || v === '') return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Codes 42 (Unable to Respond at Current Time) and 80 (No Response Received —
+// Transaction Terminated) are transient payer-connectivity errors per Stedi docs,
+// so they're safe to retry. Any other rejection code is a hard reject: no retry.
+const RETRYABLE_AAA_CODES = new Set(['42', '80']);
+
+// True only when the response is rejected AND every rejection code is retryable.
+function isRetryableRejection(normalized) {
+  if (!normalized || !normalized.rejected) return false;
+  const codes = (normalized.rejections || []).map((r) => r && r.code);
+  return codes.length > 0 && codes.every((c) => RETRYABLE_AAA_CODES.has(String(c)));
 }
 
 function benefitsArray(data) {
@@ -142,12 +169,54 @@ function firstNonEmpty(values) {
   return null;
 }
 
+// Collect payer rejections (AAA errors) from a Stedi 271 payload. Stedi surfaces
+// these in a top-level `errors` array (and can nest them under `aaaErrors`); when
+// present they mean the payer refused the request, which is NOT the same as
+// inactive coverage. Null-safe; capped at 5 entries. See:
+// https://www.stedi.com/docs/healthcare/eligibility-troubleshooting#payer-aaa-errors
+function collectRejections(data) {
+  const raw = [];
+  if (data && Array.isArray(data.errors)) raw.push(...data.errors);
+  if (data && Array.isArray(data.aaaErrors)) raw.push(...data.aaaErrors);
+  return raw
+    .filter((e) => e && typeof e === 'object')
+    .slice(0, 5)
+    .map((e) => ({
+      code: e.code != null ? String(e.code) : null,
+      description: e.description != null ? String(e.description) : null,
+      followupAction: e.followupAction != null ? String(e.followupAction) : null,
+      possibleResolutions: e.possibleResolutions != null ? e.possibleResolutions : null,
+    }));
+}
+
 // Turn a Stedi 271 payload into the compact shape the UI renders. Everything is
 // best-effort and null-safe; the untouched payload is returned as `raw`.
 function normalizeEligibility(data, requestMemberId) {
   const subscriber = (data && data.subscriber) || {};
   const planInformation = (data && data.planInformation) || {};
   const benefits = benefitsArray(data);
+
+  // Payer rejection (AAA errors) short-circuits active detection: the payer never
+  // told us whether coverage is active, so `active` is unknown (null), not false.
+  const rejections = collectRejections(data);
+  if (rejections.length) {
+    const codes = rejections.map((r) => r.code).filter(Boolean).join(', ');
+    const mode = (data && data.meta && data.meta.applicationMode) || 'unknown';
+    console.log(`vob check rejected: AAA ${codes}, mode=${mode}`);
+    return {
+      active: null,
+      rejected: true,
+      rejections,
+      planName: null,
+      groupNumber: null,
+      memberId: firstNonEmpty([subscriber.memberId, requestMemberId]),
+      deductible: { individual: null, met: null },
+      outOfPocket: { individual: null, met: null },
+      oonBenefits: false,
+      oonCoinsurance: null,
+      raw: data,
+    };
+  }
 
   const oonCoinsurance = (function () {
     // Co-insurance is code 'A'; prefer the out-of-network entry.
@@ -182,7 +251,7 @@ async function runCheck(ctx, body, event) {
     return json(403, { error: 'VOB add-on required', upgrade: true }, event);
   }
 
-  const memberId = cleanText(body.memberId);
+  const memberId = sanitizeMemberId(cleanText(body.memberId));
   const payerId = cleanText(body.payerId);
   if (!memberId || !payerId) {
     return json(400, { error: 'Missing required fields: memberId, payerId' }, event);
@@ -212,25 +281,38 @@ async function runCheck(ctx, body, event) {
   // NPI: prefer the request, then the practice NPI, then the calling user's NPI.
   const npi = cleanText(body.npi) || ctx.practice_npi || ctx.user_npi || null;
 
-  let stediResponse;
-  try {
-    stediResponse = await stedi.checkEligibility({
-      memberId,
-      payerId,
-      firstName: cleanText(body.firstName),
-      lastName: cleanText(body.lastName),
-      dateOfBirth,
-      npi,
-      organizationName: ctx.practice_name || undefined,
-      serviceType: cleanText(body.serviceType) || undefined,
-    });
-  } catch (err) {
-    // Never log PHI — Stedi errors can echo the request (names, member id).
-    console.error('vob check (stedi) error');
-    return json(502, { error: 'Could not verify benefits with the payer.' }, event);
-  }
+  const stediRequest = {
+    memberId,
+    payerId,
+    firstName: cleanText(body.firstName),
+    lastName: cleanText(body.lastName),
+    dateOfBirth,
+    npi,
+    organizationName: ctx.practice_name || undefined,
+    serviceType: cleanText(body.serviceType) || undefined,
+  };
 
-  const normalized = normalizeEligibility(stediResponse, memberId);
+  // Try the check, retrying up to 2 more times (3s apart) when the payer returns
+  // ONLY transient connectivity rejections (AAA 42 / 80). Any other outcome —
+  // success, a hard reject, or a thrown transport error — stops immediately.
+  const MAX_ATTEMPTS = 3;
+  let stediResponse;
+  let normalized;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      stediResponse = await stedi.checkEligibility(stediRequest);
+    } catch (err) {
+      // Never log PHI — Stedi errors can echo the request (names, member id).
+      console.error('vob check (stedi) error');
+      return json(502, { error: 'Could not verify benefits with the payer.' }, event);
+    }
+    normalized = normalizeEligibility(stediResponse, memberId);
+    if (attempt < MAX_ATTEMPTS && isRetryableRejection(normalized)) {
+      await sleep(3000);
+      continue;
+    }
+    break;
+  }
 
   // Persist the raw benefits payload on the insurance record, if one was given.
   if (insuranceRecordId) {
@@ -262,6 +344,10 @@ async function runCheck(ctx, body, event) {
 
   return json(200, normalized, event);
 }
+
+// Exported for unit-style verification of the 271 normalization (no PHI, no DB).
+exports.normalizeEligibility = normalizeEligibility;
+exports.sanitizeMemberId = sanitizeMemberId;
 
 exports.handler = async (event) => {
   const method = httpMethod(event);
