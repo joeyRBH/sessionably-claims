@@ -17,10 +17,17 @@
 // caller's practice. Sessions hold billing data only (no clinical notes); error
 // logs stay generic and never include ids, diagnosis codes, or notes.
 
+const crypto = require('crypto');
 const db = require('../lib/db');
 const { requireAuth } = require('../lib/auth');
 const { json, preflight } = require('../lib/response');
 const { parseBody } = require('../lib/util');
+const { generateOccurrenceDates, addMonths, MAX_OCCURRENCES } = require('../lib/recurrence');
+const {
+  primaryInsuranceForClient,
+  sessionHasActiveClaim,
+  insertDraftClaim,
+} = require('../lib/claims');
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -29,6 +36,13 @@ const SESSION_STATUSES = [
   'scheduled', 'completed', 'claim_ready', 'claim_submitted',
   'awaiting_payment', 'paid', 'no_claim',
 ];
+
+// Recurrence cadences accepted on POST /sessions. 'none' (or absent) = a single,
+// non-recurring session. 'biweekly' is the "every 2 weeks" option.
+const RECURRENCE_CADENCES = ['none', 'weekly', 'biweekly'];
+
+// Recurrence windows are capped at 6 months out (validated against session_date).
+const RECURRENCE_MAX_MONTHS = 6;
 
 const MAX_DIAGNOSIS_CODES = 12; // CMS-1500 allows up to 12 ICD-10 codes.
 
@@ -125,6 +139,7 @@ function shapeSession(r) {
     fee: r.fee,
     notes: r.notes,
     status: r.status,
+    recurrence_group_id: r.recurrence_group_id,
     is_hidden: r.is_hidden,
     created_at: r.created_at,
     updated_at: r.updated_at,
@@ -207,28 +222,99 @@ async function createSession(practiceId, body, event) {
     return json(400, { error: `Invalid status. Expected one of: ${SESSION_STATUSES.join(', ')}.` }, event);
   }
 
-  const res = await db.query(
-    `insert into sessions
-       (practice_id, client_id, clinician_id, session_date, duration_minutes,
-        cpt_code, diagnosis_codes, place_of_service, fee, notes, status)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, coalesce($11, 'scheduled'))
-     returning *`,
-    [
-      practiceId,
-      clientId,
-      clinicianId,
-      sessionDate,
-      duration.value,
-      cleanText(body.cpt_code),
-      dx.value,
-      cleanText(body.place_of_service),
-      fee.value,
-      cleanText(body.notes),
-      status.value,
-    ]
-  );
+  // Recurrence: absent/'none' → a single session (unchanged behavior). Otherwise
+  // pre-generate the whole series in one transaction (no cron).
+  const recurrence = body.recurrence == null || body.recurrence === ''
+    ? 'none'
+    : String(body.recurrence);
+  if (!RECURRENCE_CADENCES.includes(recurrence)) {
+    return json(400, { error: `Invalid recurrence. Expected one of: ${RECURRENCE_CADENCES.join(', ')}.` }, event);
+  }
 
-  return json(201, { session: shapeSession(res.rows[0]) }, event);
+  // Column values shared by every session in the (possibly singleton) series.
+  const cptCode = cleanText(body.cpt_code);
+  const placeOfService = cleanText(body.place_of_service);
+  const notes = cleanText(body.notes);
+
+  if (recurrence === 'none') {
+    const res = await db.query(
+      `insert into sessions
+         (practice_id, client_id, clinician_id, session_date, duration_minutes,
+          cpt_code, diagnosis_codes, place_of_service, fee, notes, status)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, coalesce($11, 'scheduled'))
+       returning *`,
+      [
+        practiceId,
+        clientId,
+        clinicianId,
+        sessionDate,
+        duration.value,
+        cptCode,
+        dx.value,
+        placeOfService,
+        fee.value,
+        notes,
+        status.value,
+      ]
+    );
+    return json(201, { session: shapeSession(res.rows[0]) }, event);
+  }
+
+  const endDate = cleanText(body.recurrence_end_date);
+  if (!endDate) {
+    return json(400, { error: 'recurrence_end_date is required when recurrence is set.' }, event);
+  }
+  if (!isValidDate(endDate)) {
+    return json(400, { error: 'Invalid recurrence_end_date. Expected YYYY-MM-DD.' }, event);
+  }
+  if (endDate < sessionDate) {
+    return json(400, { error: 'recurrence_end_date must be on or after session_date.' }, event);
+  }
+  if (endDate > addMonths(sessionDate, RECURRENCE_MAX_MONTHS)) {
+    return json(400, { error: `recurrence_end_date cannot be more than ${RECURRENCE_MAX_MONTHS} months out.` }, event);
+  }
+
+  const dates = generateOccurrenceDates(sessionDate, recurrence, endDate, MAX_OCCURRENCES);
+  const groupId = crypto.randomUUID();
+
+  const rows = await db.withTransaction(async (client) => {
+    const inserted = [];
+    for (let i = 0; i < dates.length; i++) {
+      // The first session keeps the caller's status (default scheduled); every
+      // generated occurrence is 'scheduled'.
+      const rowStatus = i === 0 ? status.value : 'scheduled';
+      const res = await client.query(
+        `insert into sessions
+           (practice_id, client_id, clinician_id, session_date, duration_minutes,
+            cpt_code, diagnosis_codes, place_of_service, fee, notes, status,
+            recurrence_group_id)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, coalesce($11, 'scheduled'), $12)
+         returning *`,
+        [
+          practiceId,
+          clientId,
+          clinicianId,
+          dates[i],
+          duration.value,
+          cptCode,
+          dx.value,
+          placeOfService,
+          fee.value,
+          notes,
+          rowStatus,
+          groupId,
+        ]
+      );
+      inserted.push(res.rows[0]);
+    }
+    return inserted;
+  });
+
+  return json(201, {
+    sessions: rows.map(shapeSession),
+    count: rows.length,
+    recurrence_group_id: groupId,
+  }, event);
 }
 
 async function listSessions(practiceId, event) {
@@ -287,7 +373,7 @@ async function getSession(practiceId, id, event) {
   return json(200, { session: shapeSession(res.rows[0]) }, event);
 }
 
-async function updateSession(practiceId, id, body, event) {
+async function updateSession(practiceId, userId, id, body, event) {
   if (!isUUID(id)) {
     return json(404, { error: 'Not found' }, event);
   }
@@ -303,6 +389,10 @@ async function updateSession(practiceId, id, body, event) {
     params.push(val);
     sets.push(`${col} = $${params.length}`);
   };
+
+  // When true, this PATCH transitions the session into 'completed', which triggers
+  // auto-draft-claim creation and an advance to 'claim_ready' (see below).
+  let completing = false;
 
   // clinician_id may be reassigned, but only to a clinician in this practice.
   if ('clinician_id' in body) {
@@ -358,6 +448,7 @@ async function updateSession(practiceId, id, body, event) {
       return json(400, { error: `Invalid status. Expected one of: ${SESSION_STATUSES.join(', ')}.` }, event);
     }
     add('status', status.value);
+    completing = status.value === 'completed';
   }
 
   if (sets.length === 0) {
@@ -371,16 +462,57 @@ async function updateSession(practiceId, id, body, event) {
   params.push(practiceId);
   const practiceParam = `$${params.length}`;
 
-  const res = await db.query(
-    `update sessions set ${sets.join(', ')}
+  const updateSql = `update sessions set ${sets.join(', ')}
       where id = ${idParam} and practice_id = ${practiceParam} and is_hidden = false
-      returning *`,
-    params
-  );
-  if (res.rowCount === 0) {
+      returning *`;
+
+  // Simple path: not transitioning to completed — a single UPDATE, unchanged.
+  if (!completing) {
+    const res = await db.query(updateSql, params);
+    if (res.rowCount === 0) {
+      return json(404, { error: 'Not found' }, event);
+    }
+    return json(200, { session: shapeSession(res.rows[0]) }, event);
+  }
+
+  // Completion path: apply the update, auto-create a draft claim if the session
+  // has none yet (idempotent — completing twice never doubles claims), then
+  // advance the session to 'claim_ready'. All in one transaction.
+  const outcome = await db.withTransaction(async (client) => {
+    const upd = await client.query(updateSql, params);
+    if (upd.rowCount === 0) return { notFound: true };
+    let session = upd.rows[0];
+
+    let claimCreated = false;
+    if (!(await sessionHasActiveClaim(client, practiceId, session.id))) {
+      const primary = await primaryInsuranceForClient(client, practiceId, session.client_id);
+      await insertDraftClaim(client, {
+        practiceId,
+        session,
+        insuranceRecordId: primary ? primary.id : null,
+        billedAmount: session.fee,
+        createdBy: userId,
+      });
+      claimCreated = true;
+    }
+
+    const adv = await client.query(
+      `update sessions set status = 'claim_ready'
+        where id = $1 and practice_id = $2 and is_hidden = false
+        returning *`,
+      [session.id, practiceId]
+    );
+    if (adv.rowCount > 0) session = adv.rows[0];
+    return { session, claimCreated };
+  });
+
+  if (outcome.notFound) {
     return json(404, { error: 'Not found' }, event);
   }
-  return json(200, { session: shapeSession(res.rows[0]) }, event);
+  return json(200, {
+    session: shapeSession(outcome.session),
+    claim_created: outcome.claimCreated,
+  }, event);
 }
 
 async function deleteSession(practiceId, id, event) {
@@ -424,10 +556,12 @@ exports.handler = async (event) => {
     const id = pathId(event);
     const body = method === 'POST' || method === 'PATCH' ? parseBody(event) : null;
 
+    const userId = auth.user.sub;
+
     if (method === 'POST' && !id) return await createSession(practiceId, body, event);
     if (method === 'GET' && !id) return await listSessions(practiceId, event);
     if (method === 'GET' && id) return await getSession(practiceId, id, event);
-    if (method === 'PATCH' && id) return await updateSession(practiceId, id, body, event);
+    if (method === 'PATCH' && id) return await updateSession(practiceId, userId, id, body, event);
     if (method === 'DELETE' && id) return await deleteSession(practiceId, id, event);
 
     return json(405, { error: 'Method not allowed' }, event);

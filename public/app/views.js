@@ -462,6 +462,8 @@
             value: String(initial),
             placeholder: f.placeholder || '',
           });
+          if (f.min != null) control.setAttribute('min', String(f.min));
+          if (f.max != null) control.setAttribute('max', String(f.max));
           display = control;
         }
 
@@ -481,6 +483,26 @@
         form.appendChild(fieldEl);
       });
 
+      // Conditional visibility: a field may declare showIf(values) -> boolean.
+      // Re-evaluated on every input/change. Hidden fields skip required-validation
+      // and are collected as null so a stale value never reaches the API.
+      function currentValues() {
+        var snap = {};
+        fields.forEach(function (f) { snap[f.name] = controls[f.name].value; });
+        return snap;
+      }
+      function isHidden(name) {
+        return fieldEls[name] && fieldEls[name].hidden === true;
+      }
+      function applyVisibility() {
+        var snap = currentValues();
+        fields.forEach(function (f) {
+          if (typeof f.showIf === 'function') {
+            fieldEls[f.name].hidden = !f.showIf(snap);
+          }
+        });
+      }
+
       function setError(name, message) {
         var errEl = errorEls[name];
         var fieldEl = fieldEls[name];
@@ -499,6 +521,11 @@
         var out = {};
         var ok = true;
         fields.forEach(function (f) {
+          if (isHidden(f.name)) {
+            setError(f.name, null);
+            out[f.name] = null;
+            return;
+          }
           var raw = controls[f.name].value;
           var val = typeof raw === 'string' ? raw.trim() : raw;
           if (f.required && (val === '' || val === null || val === undefined)) {
@@ -524,6 +551,9 @@
       }
 
       form.addEventListener('submit', onSubmit);
+      form.addEventListener('input', applyVisibility);
+      form.addEventListener('change', applyVisibility);
+      applyVisibility();   // set initial hidden state before first paint
 
       var modal = openModal({
         title: opts.title || 'Form',
