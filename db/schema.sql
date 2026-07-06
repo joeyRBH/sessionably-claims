@@ -354,6 +354,7 @@ create table if not exists claims (
   insurance_record_id    uuid references insurance_records (id) on delete restrict,
   claim_number           text,
   control_number         text,
+  patient_control_number varchar(20),                         -- 837P CLM01 (<=20 chars); echoed in 277CA/835 for matching
   clearinghouse          text,                                -- e.g. office_ally
   status                 text not null default 'draft'
                            check (status in ('draft', 'submitted', 'processing', 'info_requested',
@@ -386,6 +387,16 @@ create trigger trg_claims_updated_at
 -- Migration (idempotent): add soft-delete to the live claims table.
 alter table claims add column if not exists is_hidden boolean not null default false;
 create index if not exists idx_claims_is_hidden on claims (is_hidden);
+
+-- Migration (idempotent): add the 837P patient control number (CLM01, <=20 chars).
+-- Stedi rejects a >20-char value (error 33), so the adapter no longer sends the
+-- 36-char UUID; a short per-claim control number is minted and stored here so it
+-- stays stable across resubmissions and matches 277CA/835 responses back to the
+-- claim. See db/migrations/007_add_patient_control_number_to_claims.sql.
+alter table claims add column if not exists patient_control_number varchar(20);
+create unique index if not exists idx_claims_patient_control_number
+  on claims (patient_control_number)
+  where patient_control_number is not null;
 
 -- =============================================================================
 -- 9. claim_events — status-history log per claim.
