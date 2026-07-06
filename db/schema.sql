@@ -112,6 +112,18 @@ alter table practices add column if not exists vob_checks_used integer not null 
 alter table practices add column if not exists vob_period_start date;
 alter table practices add column if not exists stripe_subscription_id text;
 
+-- Migration (idempotent): ensure the billing address exists on the live practices
+-- table. Stedi's 837P submission requires a complete Billing.address block
+-- (address1 / city / state / postalCode); a practice with no address makes Stedi
+-- reject the claim. Declared above for fresh databases; these keep a pre-existing
+-- database in sync. See db/migrations/006_add_billing_address_to_practices.sql.
+alter table practices add column if not exists address_line1 text;
+alter table practices add column if not exists address_line2 text;
+alter table practices add column if not exists city text;
+alter table practices add column if not exists state text;
+alter table practices add column if not exists postal_code text;
+alter table practices add column if not exists country text not null default 'US';
+
 -- =============================================================================
 -- 3. practice_subscriptions — a practice's current plan.
 -- =============================================================================

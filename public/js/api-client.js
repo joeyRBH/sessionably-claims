@@ -191,10 +191,19 @@
     savePaymentMethod: function (token, paymentMethodId) {
       return request('POST', '/save-payment-method', { token: token, paymentMethodId: paymentMethodId }, VERCEL_BASE);
     },
+    // Persist the patient's demographics (date of birth + current address) to the
+    // client record so a claim can be built without manual re-entry. Hits the
+    // Lambda API (card_setup handler) directly — no Stripe/Twilio egress.
+    // fields: { date_of_birth?, address_line1?, address_line2?, city?, state?, postal_code? }
+    saveDetails: function (token, fields) {
+      var payload = { token: token };
+      Object.keys(fields || {}).forEach(function (k) { payload[k] = fields[k]; });
+      return request('POST', '/card-setup/save-details', payload);
+    },
     // Persist the patient's OON insurance info. No Stripe/Twilio egress needed, so
     // this hits the Lambda API (card_setup handler) directly — not a Vercel function.
     // fields: { carrier_name, member_id, group_number?, subscriber_relationship?,
-    //           subscriber_name?, subscriber_dob? }
+    //           subscriber_name?, subscriber_dob?, payer_id? }
     saveInsurance: function (token, fields) {
       var payload = { token: token };
       Object.keys(fields || {}).forEach(function (k) { payload[k] = fields[k]; });
@@ -278,6 +287,14 @@
     update: function (id, payload) { return request('PATCH', '/users/' + id, payload); },
   };
 
+  // The caller's own practice (settings). get() -> { practice: {...} };
+  // update(payload) PUTs identity + billing-address fields. Practice_id is always
+  // derived server-side from the token — never sent in the payload.
+  var practice = {
+    get: function () { return request('GET', '/practice'); },
+    update: function (payload) { return request('PUT', '/practice', payload); },
+  };
+
   var invitations = {
     list: function () { return request('GET', '/invitations'); },
     create: function (payload) { return request('POST', '/invitations', payload); },
@@ -330,6 +347,7 @@
     sessions: sessions,
     claims: claims,
     users: users,
+    practice: practice,
     invitations: invitations,
     billing: billing,
     subscription: subscription,

@@ -159,6 +159,40 @@ exports.handler = async (event) => {
       }
     }
 
+    if (path === 'save-details') {
+      // Patient-supplied demographics needed to build a claim: date of birth +
+      // current address. Persisted to the clients row (columns already exist —
+      // db/migrations/002). All optional individually; a blank field never nulls
+      // out existing data (coalesce(nullif(...))). No card/PCI data here.
+      const dateOfBirth = cleanField(body.date_of_birth);
+      const addressLine1 = cleanField(body.address_line1);
+      const addressLine2 = cleanField(body.address_line2);
+      const city = cleanField(body.city);
+      const state = cleanField(body.state);
+      const postalCode = cleanField(body.postal_code);
+
+      for (const v of [addressLine1, addressLine2, city, state, postalCode]) {
+        if (v.length > MAX_FIELD_LEN) return json(400, { error: 'One of the fields is too long.' }, event);
+      }
+      if (dateOfBirth && !/^\d{4}-\d{2}-\d{2}$/.test(dateOfBirth)) {
+        return json(400, { error: 'Date of birth must be YYYY-MM-DD.' }, event);
+      }
+
+      const result = await db.query(
+        `update clients set
+            date_of_birth = coalesce(nullif($1, '')::date, date_of_birth),
+            address_line1 = coalesce(nullif($2, ''), address_line1),
+            address_line2 = coalesce(nullif($3, ''), address_line2),
+            city          = coalesce(nullif($4, ''), city),
+            state         = coalesce(nullif($5, ''), state),
+            postal_code   = coalesce(nullif($6, ''), postal_code)
+          where id = $7 and is_hidden = false`,
+        [dateOfBirth, addressLine1, addressLine2, city, state, postalCode, clientId]
+      );
+      if (result.rowCount === 0) return json(404, { error: 'Not found' }, event);
+      return json(200, { ok: true }, event);
+    }
+
     if (path === 'save-insurance') {
       // Patient-supplied OON insurance info. Required: carrier_name, member_id.
       // Optional: group_number, subscriber_relationship, subscriber_name,

@@ -849,7 +849,6 @@
             delete payload.repeats;              // form-only fields; mapped below
             delete payload.recurrence_end_date;
             if (codes.length) payload.diagnosis_codes = codes;
-            payload.client_id = id;
             payload.clinician_id = result.clinician_id;
 
             // Recurrence (create only): map the form's cadence to the API params.
@@ -859,6 +858,8 @@
             }
 
             if (session) {
+              // client_id is immutable on a session — the PATCH endpoint rejects
+              // any body that carries it (400), so an edit must never send it.
               api.sessions.update(session.id, payload).then(function (res) {
                 // Completing a session auto-drafts a claim server-side.
                 if (res && res.claim_created) {
@@ -871,6 +872,8 @@
                 R.toast(err.message, 'error');
               });
             } else {
+              // Create attaches the session to this client.
+              payload.client_id = id;
               api.sessions.create(payload).then(function (res) {
                 if (res && res.count && res.count > 1) {
                   R.toast(res.count + ' sessions scheduled', 'success');

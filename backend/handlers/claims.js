@@ -129,6 +129,25 @@ function shapeClaim(r) {
   };
 }
 
+// List rows carry a few denormalized display fields (client name, date of
+// service, payer) so the Claims table renders one row per claim without an
+// N+1 fetch per claim. These are display-only; the base claim fields are
+// unchanged. clients.first/last/preferred and sessions.session_date come from
+// the joins in listClaims; payer prefers the insurance carrier name.
+function shapeClaimRow(r) {
+  const base = shapeClaim(r);
+  if (!base) return null;
+  const clientName =
+    r.client_preferred_name ||
+    [r.client_first_name, r.client_last_name].filter(Boolean).join(' ').trim() ||
+    null;
+  base.client_name = clientName;
+  base.session_date = r.session_date || null;
+  base.payer_name = r.payer_name || null;
+  base.payer_id = r.payer_id || null;
+  return base;
+}
+
 function shapeEvent(r) {
   if (!r) return null;
   return {
@@ -176,6 +195,27 @@ async function loadClaim(practiceId, id) {
     [id, practiceId]
   );
   return res.rows[0] || null;
+}
+
+// A practice needs a complete billing address before a claim can be submitted:
+// Stedi's 837P Billing.address requires address1 / city / state / postalCode
+// (address2 is optional). Missing any of these makes Stedi reject with a 400
+// ("Billing.address: missing field `address1`"); we catch it first and return a
+// clear 422 so staff know to fill in Practice Settings. Returns the first missing
+// field name, or null when the address is complete.
+function missingBillingAddressField(practice) {
+  if (!practice) return 'address1';
+  const required = [
+    ['address_line1', 'address1'],
+    ['city', 'city'],
+    ['state', 'state'],
+    ['postal_code', 'zip'],
+  ];
+  for (const [col, label] of required) {
+    const v = practice[col];
+    if (v == null || String(v).trim() === '') return label;
+  }
+  return null;
 }
 
 // Assemble the normalized context an adapter needs (no DB access in adapters).
@@ -255,20 +295,22 @@ async function createClaim(practiceId, userId, body, event) {
 
 async function listClaims(practiceId, event) {
   const params = [practiceId];
-  let where = `practice_id = $1 and is_hidden = false`;
+  // Columns are qualified (c./s./ir.) because the list joins clients, sessions,
+  // and the optional insurance record for the table's display fields.
+  let where = `c.practice_id = $1 and c.is_hidden = false`;
 
   const sessionId = queryParam(event, 'session_id');
   if (sessionId != null && sessionId !== '') {
     if (!isUUID(sessionId)) return json(400, { error: 'Invalid session_id.' }, event);
     params.push(sessionId);
-    where += ` and session_id = $${params.length}`;
+    where += ` and c.session_id = $${params.length}`;
   }
 
   const clientId = queryParam(event, 'client_id');
   if (clientId != null && clientId !== '') {
     if (!isUUID(clientId)) return json(400, { error: 'Invalid client_id.' }, event);
     params.push(clientId);
-    where += ` and client_id = $${params.length}`;
+    where += ` and c.client_id = $${params.length}`;
   }
 
   const status = queryParam(event, 'status');
@@ -277,14 +319,28 @@ async function listClaims(practiceId, event) {
       return json(400, { error: `Invalid status. Expected one of: ${CLAIM_STATUSES.join(', ')}.` }, event);
     }
     params.push(status);
-    where += ` and status = $${params.length}`;
+    where += ` and c.status = $${params.length}`;
   }
 
+  // client_id / session_id are NOT NULL on claims, so inner-join those; the
+  // insurance record is optional, so left-join it for the payer columns.
   const res = await db.query(
-    `select * from claims where ${where} order by created_at desc`,
+    `select c.*,
+            cl.first_name     as client_first_name,
+            cl.last_name      as client_last_name,
+            cl.preferred_name as client_preferred_name,
+            s.session_date    as session_date,
+            ir.carrier_name   as payer_name,
+            ir.payer_id       as payer_id
+       from claims c
+       join clients cl  on cl.id = c.client_id
+       join sessions s  on s.id = c.session_id
+       left join insurance_records ir on ir.id = c.insurance_record_id
+      where ${where}
+      order by c.created_at desc`,
     params
   );
-  return json(200, { claims: res.rows.map(shapeClaim) }, event);
+  return json(200, { claims: res.rows.map(shapeClaimRow) }, event);
 }
 
 async function getClaim(practiceId, id, event) {
@@ -384,6 +440,15 @@ async function submitClaim(practiceId, userId, id, event) {
   }
 
   const ctx = await buildClaimContext(practiceId, claim);
+
+  // Block submission before it reaches the clearinghouse if the practice has no
+  // billing address — otherwise Stedi 400s and the user sees an opaque 502.
+  if (missingBillingAddressField(ctx.practice)) {
+    return json(422, {
+      error: 'Practice billing address is required before submitting claims.',
+    }, event);
+  }
+
   const adapter = getClearinghouse();
 
   let result;
@@ -552,6 +617,9 @@ async function listEvents(practiceId, id, event) {
 }
 
 // --- entrypoint --------------------------------------------------------------
+
+// Exported for unit testing the billing-address guard (Lambda only calls .handler).
+exports.missingBillingAddressField = missingBillingAddressField;
 
 exports.handler = async (event) => {
   const method = httpMethod(event);

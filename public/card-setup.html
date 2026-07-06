@@ -280,7 +280,60 @@
         </p>
       </div>
 
-      <!-- Insurance state (shown after the card saves, before "all set"). -->
+      <!-- Your-details state (shown after the card saves, before insurance).
+           Collects the demographics a claim needs: date of birth + current
+           address. Persisted to the client record. -->
+      <div id="state-details" hidden>
+        <h1>Your information</h1>
+        <p class="subhead">Your practice needs this to submit your out-of-network
+          claims. It only takes a moment.</p>
+
+        <form id="details-form" novalidate>
+          <div class="field">
+            <label for="dt-dob">Date of birth</label>
+            <input id="dt-dob" class="input" type="date" autocomplete="bday">
+          </div>
+
+          <div class="field">
+            <label for="dt-address1">Street address</label>
+            <input id="dt-address1" class="input" type="text" autocomplete="address-line1"
+                   maxlength="200" placeholder="123 Main St">
+          </div>
+
+          <div class="field">
+            <label for="dt-address2">Apt / unit <span aria-hidden="true">(optional)</span></label>
+            <input id="dt-address2" class="input" type="text" autocomplete="address-line2"
+                   maxlength="200" placeholder="Optional">
+          </div>
+
+          <div class="field">
+            <label for="dt-city">City</label>
+            <input id="dt-city" class="input" type="text" autocomplete="address-level2"
+                   maxlength="200" placeholder="City">
+          </div>
+
+          <div class="field">
+            <label for="dt-state">State</label>
+            <input id="dt-state" class="input" type="text" autocomplete="address-level1"
+                   maxlength="200" placeholder="e.g. CO">
+          </div>
+
+          <div class="field">
+            <label for="dt-zip">ZIP code</label>
+            <input id="dt-zip" class="input" type="text" autocomplete="postal-code"
+                   inputmode="numeric" maxlength="20" placeholder="ZIP">
+          </div>
+
+          <p id="dt-error" class="msg msg--error" role="alert" aria-live="polite" hidden></p>
+
+          <button id="dt-submit" class="btn" type="submit">
+            <span id="dt-submit-label">Continue</span>
+          </button>
+          <button id="dt-skip" class="btn-link" type="button">Skip for now</button>
+        </form>
+      </div>
+
+      <!-- Insurance state (shown after the details step, before "all set"). -->
       <div id="state-insurance" hidden>
         <h1>Add your insurance</h1>
         <p class="subhead">This helps your practice submit your out-of-network claims.
@@ -373,7 +426,8 @@
       function hide(id) { $(id).hidden = true; }
 
       function showFatal(message) {
-        hide('state-loading'); hide('state-form'); hide('state-done');
+        hide('state-loading'); hide('state-form'); hide('state-details');
+        hide('state-insurance'); hide('state-done');
         if (message) $('fatal-msg').textContent = message;
         show('state-fatal');
       }
@@ -404,7 +458,60 @@
       if (!token) { showFatal(); return; }
       if (!API || !API.billing) { showFatal('This page failed to load. Please try again.'); return; }
 
-      // --- Insurance step (shown after the card saves) --------------------------
+      // --- Your-details step (shown after the card saves) -----------------------
+      // Collects date of birth + current address, persists them to the client,
+      // then advances to the insurance step. Skippable. Bound once at load.
+      (function setupDetailsStep() {
+        function showDtError(message) {
+          var el = $('dt-error');
+          el.textContent = message || 'Something went wrong. Please try again.';
+          el.hidden = false;
+        }
+        function clearDtError() { $('dt-error').hidden = true; }
+
+        function finishDetails() { hide('state-details'); show('state-insurance'); }
+
+        $('dt-skip').addEventListener('click', function () { finishDetails(); });
+
+        var saving = false;
+        $('details-form').addEventListener('submit', function (e) {
+          e.preventDefault();
+          if (saving) return;
+          clearDtError();
+
+          var fields = {
+            date_of_birth: $('dt-dob').value.trim(),
+            address_line1: $('dt-address1').value.trim(),
+            address_line2: $('dt-address2').value.trim(),
+            city: $('dt-city').value.trim(),
+            state: $('dt-state').value.trim(),
+            postal_code: $('dt-zip').value.trim(),
+          };
+
+          // Nudge for the claim-critical fields, but never hard-block — the patient
+          // can Skip, and staff can fill gaps later in the client chart.
+          if (!fields.date_of_birth) { showDtError('Please enter your date of birth.'); return; }
+          if (!fields.address_line1 || !fields.city || !fields.state || !fields.postal_code) {
+            showDtError('Please enter your full address.');
+            return;
+          }
+
+          saving = true;
+          $('dt-submit').disabled = true;
+          $('dt-submit-label').textContent = 'Saving…';
+
+          API.billing.saveDetails(token, fields).then(function () {
+            finishDetails();
+          }).catch(function (err) {
+            showDtError((err && err.message) || 'Could not save your information. Please try again.');
+            saving = false;
+            $('dt-submit').disabled = false;
+            $('dt-submit-label').textContent = 'Continue';
+          });
+        });
+      })();
+
+      // --- Insurance step (shown after the details step) ------------------------
       // Bound once at load; the elements exist in the DOM from the start.
       (function setupInsuranceStep() {
         var relationship = $('ins-relationship');
@@ -650,9 +757,10 @@
               // 3) Persist the payment method against the client.
               var pmId = result.setupIntent && result.setupIntent.payment_method;
               API.billing.savePaymentMethod(token, pmId).then(function () {
-                // Card saved — move to the insurance step (which can be skipped).
+                // Card saved — move to the details step (which flows into insurance;
+                // both can be skipped).
                 hide('state-form');
-                show('state-insurance');
+                show('state-details');
               }).catch(function (err) {
                 showError((err && err.message) || 'Could not save your card. Please try again.');
                 submitting = false;

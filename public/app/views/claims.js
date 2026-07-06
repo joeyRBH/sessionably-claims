@@ -174,16 +174,22 @@
       if (!claims.length) {
         cardContent = inlineEmpty('No claims match this filter.');
       } else {
+        // One row per claim: client · date of service · billed · status · payer.
+        // The display fields (client_name, session_date, payer_*) come from the
+        // list payload so there is no per-row fetch. Rows link to the detail view.
         var rows = claims.map(function (c) {
+          var payer = c.payer_name || c.payer_id || '—';
+          var client = c.client_name || ('#' + String(c.client_id || '').slice(0, 8));
           var row = h('tr', {
             class: 'data-table__row--clickable',
             tabindex: '0',
             role: 'link',
           }, [
-            h('td', null, claimLabel(c)),
-            h('td', null, R.statusBadge(c.status)),
+            h('td', null, client),
+            h('td', null, R.fmtDate(c.session_date)),
             h('td', { class: 'data-table__num' }, R.fmtMoney(c.billed_amount)),
-            h('td', null, R.fmtDate(c.created_at)),
+            h('td', null, R.statusBadge(c.status)),
+            h('td', null, payer),
           ]);
           function go() { R.navigate('claims/' + c.id); }
           row.addEventListener('click', go);
@@ -195,10 +201,11 @@
 
         cardContent = h('table', { class: 'data-table' }, [
           h('thead', null, h('tr', null, [
-            h('th', null, 'Claim'),
-            h('th', null, 'Status'),
+            h('th', null, 'Client'),
+            h('th', null, 'Date of service'),
             h('th', { class: 'data-table__num' }, 'Billed'),
-            h('th', null, 'Created'),
+            h('th', null, 'Status'),
+            h('th', null, 'Payer'),
           ])),
           h('tbody', null, rows),
         ]);
