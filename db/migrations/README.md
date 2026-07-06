@@ -55,3 +55,7 @@ done
   (`address_line1/2`, `city`, `state`, `postal_code`, `country`) to `practices`; required
   by Stedi's 837P `Billing.address` block. The claims Lambda blocks submission with a 422
   when the practice address is incomplete, and the Practice Settings page captures it.
+- `007_add_patient_control_number_to_claims.sql` — adds `patient_control_number varchar(20)`
+  to `claims` (837P CLM01) plus a partial unique index. Stedi rejects a >20-char control
+  number (error 33), so the adapter no longer sends the 36-char UUID; a short per-claim
+  number is minted, stored, and reused across resubmissions to match 277CA/835 responses.

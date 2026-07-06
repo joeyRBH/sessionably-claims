@@ -10,6 +10,45 @@
 // or a pg client inside a transaction — so callers control the transaction scope.
 // Claims carry PHI-adjacent billing data; this module never logs.
 
+const crypto = require('crypto');
+
+// 837P patient control number (CLM01). Payers cap this at 20 characters and Stedi
+// rejects longer values (error 33); Stedi recommends staying <= 17 and using only
+// alphanumeric characters (many payers mishandle special characters and truncate
+// past 17 in ERAs). We generate a random 17-char uppercase alphanumeric id — a
+// huge keyspace (36^17) makes collisions negligible, and it carries no PHI/pattern.
+const PCN_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+const PCN_LENGTH = 17;
+
+function generatePatientControlNumber() {
+  let out = '';
+  for (let i = 0; i < PCN_LENGTH; i += 1) {
+    out += PCN_ALPHABET[crypto.randomInt(PCN_ALPHABET.length)];
+  }
+  return out;
+}
+
+// Return the claim's stored patient control number, minting + persisting one on
+// first use. Reuses the stored value on every later call (resubmission/appeal of
+// the same claim must keep the same control number so 277/835 responses still
+// match). The coalesce makes the write a no-op if a value already exists — safe
+// under a concurrent submit — and returns whichever value won. `q` is the db
+// module or a pg client inside a transaction.
+async function ensurePatientControlNumber(q, practiceId, claim) {
+  if (claim && claim.patient_control_number && String(claim.patient_control_number).trim() !== '') {
+    return claim.patient_control_number;
+  }
+  const candidate = generatePatientControlNumber();
+  const res = await q.query(
+    `update claims
+        set patient_control_number = coalesce(patient_control_number, $1)
+      where id = $2 and practice_id = $3
+      returning patient_control_number`,
+    [candidate, claim.id, practiceId]
+  );
+  return res.rows[0] ? res.rows[0].patient_control_number : candidate;
+}
+
 // The client's primary non-hidden insurance record, if any. Mirrors the ordering
 // POST /claims uses when auto-picking coverage for a session's client.
 async function primaryInsuranceForClient(q, practiceId, clientId) {
@@ -88,6 +127,8 @@ async function insertDraftClaim(q, opts) {
 }
 
 module.exports = {
+  generatePatientControlNumber,
+  ensurePatientControlNumber,
   primaryInsuranceForClient,
   sessionHasActiveClaim,
   logClaimEvent,

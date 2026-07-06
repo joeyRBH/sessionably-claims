@@ -29,6 +29,7 @@ const {
   primaryInsuranceForClient,
   logClaimEvent: logEvent,
   insertDraftClaim,
+  ensurePatientControlNumber,
 } = require('../lib/claims');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -115,6 +116,7 @@ function shapeClaim(r) {
     insurance_record_id: r.insurance_record_id,
     claim_number: r.claim_number,
     control_number: r.control_number,
+    patient_control_number: r.patient_control_number,
     clearinghouse: r.clearinghouse,
     status: r.status,
     billed_amount: r.billed_amount,
@@ -439,6 +441,11 @@ async function submitClaim(practiceId, userId, id, event) {
     return json(400, { error: 'Attach an insurance record before submitting.' }, event);
   }
 
+  // Mint (or reuse) the <=20-char patient control number BEFORE building the
+  // payload. Persisting it up front keeps it stable across resubmissions and lets
+  // 277/835 responses match back to this claim. Reused as-is if already set.
+  claim.patient_control_number = await ensurePatientControlNumber(db, practiceId, claim);
+
   const ctx = await buildClaimContext(practiceId, claim);
 
   // Block submission before it reaches the clearinghouse if the practice has no
@@ -455,6 +462,13 @@ async function submitClaim(practiceId, userId, id, event) {
   try {
     result = await adapter.submitClaim(ctx);
   } catch (err) {
+    // A clearinghouse *rejection* (e.g. Stedi error 33 — invalid control number)
+    // carries a human-readable reason: surface it as a 422 the way VOB AAA
+    // rejections are surfaced, so the user sees the description, not a bare 502.
+    // The description is not logged (it may echo submitted PHI).
+    if (err && err.isRejection) {
+      return json(422, { error: err.message, rejection: err.rejection || null }, event);
+    }
     console.error('claims submit (clearinghouse) error:', err && err.message);
     return json(502, { error: 'Clearinghouse submission failed.' }, event);
   }

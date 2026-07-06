@@ -125,7 +125,28 @@ function num(v) {
   return Number.isFinite(n) ? n : null;
 }
 
-async function submitClaim(ctx) {
+// 837P control numbers (CLM01 patient control number, REF*6R line item control
+// number) are capped at 20 characters; a longer value makes Stedi reject the claim
+// (error 33). Strip to alphanumerics (payers mishandle special characters) and cap
+// at 20 as a defensive backstop — the handler already mints a <=17-char value.
+const MAX_CONTROL_NUMBER_LEN = 20;
+function boundControlNumber(v) {
+  return String(v == null ? '' : v).replace(/[^A-Za-z0-9]/g, '').slice(0, MAX_CONTROL_NUMBER_LEN);
+}
+
+// The patient control number to send. Prefer the value the claim carries (minted
+// and persisted by the claims handler so it stays stable across resubmissions and
+// matches 277/835 responses). Fall back to a short, deterministic id derived from
+// the claim UUID so a direct adapter call never sends the raw 36-char UUID.
+function patientControlNumber(claim) {
+  const stored = boundControlNumber(claim && claim.patient_control_number);
+  if (stored) return stored;
+  return boundControlNumber(claim && claim.id).slice(0, 17) || 'CLAIM';
+}
+
+// Build the 837P submission request body from the claim context. Pure (no network)
+// so it can be unit-tested; submitClaim() POSTs whatever this returns.
+function buildSubmissionBody(ctx) {
   const claim = (ctx && ctx.claim) || {};
   const insurance = (ctx && ctx.insurance) || {};
   const client = (ctx && ctx.client) || {};
@@ -145,7 +166,7 @@ async function submitClaim(ctx) {
     claimFrequencyCode: '1',         // original claim
     placeOfServiceCode: '11',        // office (default; can be overridden per session)
     claimChargeAmount: claim.billed_amount != null ? String(claim.billed_amount) : undefined,
-    patientControlNumber: String(claim.id), // echoed back in 277CA / 835 ERA for reconciliation
+    patientControlNumber: patientControlNumber(claim), // <=20 chars; echoed in 277CA / 835 ERA for reconciliation
     benefitsAssignmentCertificationIndicator: 'N',
     releaseInformationCode: 'Y',
     signatureIndicator: 'Y',         // provider signature on file
@@ -161,6 +182,9 @@ async function submitClaim(ctx) {
   };
 
   // Only attach a service line when we have a CPT code; otherwise omit serviceLines.
+  // Note: no line-item control number (REF*6R) is sent — nothing here is UUID-based,
+  // so there is no >20-char value to bound. If one is ever added, route it through
+  // boundControlNumber() so it stays within the 20-char limit like the CLM01 above.
   if (session.cpt_code) {
     claimInformation.serviceLines = [
       {
@@ -221,6 +245,51 @@ async function submitClaim(ctx) {
     claimInformation,
   };
 
+  return { body, tradingPartnerServiceId, billingNpi };
+}
+
+// Pull a human-readable rejection out of a Stedi submission error body so the
+// handler can surface it (e.g. error 33 "Invalid Patient Control Number ...").
+// Tolerates the shapes Stedi returns — an `errors` array of { code, message /
+// description / field }, a single `error` object, or an RFC7807 { title, detail }.
+// Returns { code, description } or null when nothing surfaceable is present.
+function parseSubmissionRejection(data) {
+  if (!data || typeof data !== 'object') return null;
+
+  const arr = Array.isArray(data.errors) ? data.errors
+    : Array.isArray(data.fieldErrors) ? data.fieldErrors
+      : data.error && typeof data.error === 'object' ? [data.error]
+        : null;
+
+  if (arr && arr.length) {
+    const describe = (e) => {
+      if (e == null) return null;
+      if (typeof e === 'string') return e;
+      const code = e.code != null ? e.code : e.errorCode;
+      const msg = e.message || e.description || e.detail || e.error || e.title || e.field;
+      if (msg == null && code == null) return null;
+      return code != null ? `[${code}] ${msg != null ? msg : ''}`.trim() : String(msg);
+    };
+    const parts = arr.map(describe).filter(Boolean);
+    if (parts.length) {
+      const firstObj = arr.find((e) => e && typeof e === 'object') || {};
+      const code = firstObj.code != null ? String(firstObj.code)
+        : firstObj.errorCode != null ? String(firstObj.errorCode) : null;
+      return { code, description: parts.join('; ') };
+    }
+  }
+
+  const single = data.detail || data.title || (typeof data.error === 'string' ? data.error : data.message);
+  if (single) {
+    return { code: data.code != null ? String(data.code) : null, description: String(single) };
+  }
+  return null;
+}
+
+async function submitClaim(ctx) {
+  const claim = (ctx && ctx.claim) || {};
+  const { body, tradingPartnerServiceId, billingNpi } = buildSubmissionBody(ctx);
+
   const res = await stediPost('/professionalclaims/v3/submission', body, {
     'Idempotency-Key': String(claim.id || ''),
   });
@@ -232,9 +301,18 @@ async function submitClaim(ctx) {
   const control = ref.correlationId || data.controlNumber || ref.controlNumber || null;
 
   if (!res.ok || !control) {
-    throw new Error(
-      `Stedi submission failed (HTTP ${res.status}): ${JSON.stringify(data)}`
-    );
+    // A structured payer/validation rejection (error 33, etc.) carries a reason we
+    // want the user to see: throw a flagged error the handler turns into a 422.
+    const rejection = parseSubmissionRejection(data);
+    if (rejection) {
+      const e = new Error(rejection.description);
+      e.isRejection = true;
+      e.rejection = rejection;
+      throw e;
+    }
+    // Otherwise fail generically — never include the response body, which can
+    // echo submitted PHI (member id, name, DOB).
+    throw new Error(`Stedi submission failed (HTTP ${res.status})`);
   }
 
   return {
@@ -422,4 +500,9 @@ module.exports = {
   searchPayers,
   mapStatus,
   firstStatus,
+  // Exposed for unit testing (pure, no network).
+  buildSubmissionBody,
+  parseSubmissionRejection,
+  patientControlNumber,
+  boundControlNumber,
 };
