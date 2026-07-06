@@ -23,6 +23,20 @@ const { normalizeEmail, parseBody } = require('../lib/util');
 // Allowed client.status values — mirror the CHECK constraint in db/schema.sql.
 const ALLOWED_STATUSES = ['active', 'awaiting_info', 'ready', 'inactive'];
 
+// Allowed client.gender values — mirror the clients_gender_check CHECK in
+// db/schema.sql and the options in the client form (clients.js CLIENT_FIELDS).
+// Used for the 837 subscriber demographics required by Stedi.
+const ALLOWED_GENDERS = ['male', 'female', 'unknown'];
+
+// Optional nullable free-text columns the client form sends and both create +
+// update accept. Kept in one place so the two handlers can't drift (the bug that
+// silently dropped the subscriber address, blocking claim submission). gender and
+// date_of_birth are validated separately (enum / date); these are plain text.
+const OPTIONAL_TEXT_COLUMNS = [
+  'preferred_name', 'pronouns', 'phone',
+  'address_line1', 'address_line2', 'city', 'state', 'postal_code',
+];
+
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -85,6 +99,15 @@ function shapeClient(r) {
     email: r.email,
     phone: r.phone,
     date_of_birth: r.date_of_birth,
+    gender: r.gender,
+    // Subscriber demographics required by the clearinghouse (Stedi 837P) when the
+    // patient is the subscriber — must round-trip so staff edits actually persist.
+    address_line1: r.address_line1,
+    address_line2: r.address_line2,
+    city: r.city,
+    state: r.state,
+    postal_code: r.postal_code,
+    country: r.country,
     status: r.status,
     // Display-only payment-method summary (never the Stripe customer / PM ids).
     payment_method_brand: r.payment_method_brand,
@@ -140,6 +163,11 @@ async function createClient(practiceId, body, event) {
     return json(400, { error: 'Invalid date_of_birth. Expected YYYY-MM-DD.' }, event);
   }
 
+  const gender = cleanText(body.gender);
+  if (gender && !ALLOWED_GENDERS.includes(gender)) {
+    return json(400, { error: `Invalid gender. Expected one of: ${ALLOWED_GENDERS.join(', ')}` }, event);
+  }
+
   const primaryClinicianId = cleanText(body.primary_clinician_id);
   if (primaryClinicianId) {
     if (!isUUID(primaryClinicianId)) {
@@ -155,8 +183,10 @@ async function createClient(practiceId, body, event) {
   const res = await db.query(
     `insert into clients
        (practice_id, first_name, last_name, preferred_name, pronouns, email, phone,
-        date_of_birth, primary_clinician_id, status)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, coalesce($10, 'awaiting_info'))
+        date_of_birth, gender, address_line1, address_line2, city, state, postal_code,
+        primary_clinician_id, status)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+             coalesce($16, 'awaiting_info'))
      returning *`,
     [
       practiceId,
@@ -167,6 +197,12 @@ async function createClient(practiceId, body, event) {
       email,
       cleanText(body.phone),
       dob,
+      gender,
+      cleanText(body.address_line1),
+      cleanText(body.address_line2),
+      cleanText(body.city),
+      cleanText(body.state),
+      cleanText(body.postal_code),
       primaryClinicianId,
       status,
     ]
@@ -224,8 +260,10 @@ async function updateClient(practiceId, id, body, event) {
     }
   }
 
-  // Optional nullable text fields.
-  for (const col of ['preferred_name', 'pronouns', 'phone']) {
+  // Optional nullable text fields — includes the subscriber address columns the
+  // client form sends (address_line1/2, city, state, postal_code). Omitting these
+  // is the bug that silently dropped the patient address and blocked claims.
+  for (const col of OPTIONAL_TEXT_COLUMNS) {
     if (col in body) add(col, cleanText(body[col]));
   }
 
@@ -239,6 +277,14 @@ async function updateClient(practiceId, id, body, event) {
       return json(400, { error: 'Invalid date_of_birth. Expected YYYY-MM-DD.' }, event);
     }
     add('date_of_birth', dob);
+  }
+
+  if ('gender' in body) {
+    const gender = cleanText(body.gender);
+    if (gender && !ALLOWED_GENDERS.includes(gender)) {
+      return json(400, { error: `Invalid gender. Expected one of: ${ALLOWED_GENDERS.join(', ')}` }, event);
+    }
+    add('gender', gender);
   }
 
   if ('status' in body) {
