@@ -25,6 +25,11 @@ const { requireAuth } = require('../lib/auth');
 const { json, preflight } = require('../lib/response');
 const { parseBody } = require('../lib/util');
 const { getClearinghouse } = require('../lib/clearinghouse');
+const {
+  primaryInsuranceForClient,
+  logClaimEvent: logEvent,
+  insertDraftClaim,
+} = require('../lib/claims');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -165,43 +170,12 @@ async function loadInsuranceRecord(practiceId, recordId) {
   return res.rows[0] || null;
 }
 
-// The client's primary non-hidden insurance record, if any.
-async function primaryInsuranceForClient(practiceId, clientId) {
-  const res = await db.query(
-    `select * from insurance_records
-      where practice_id = $1 and client_id = $2 and is_hidden = false
-      order by is_primary desc, created_at asc
-      limit 1`,
-    [practiceId, clientId]
-  );
-  return res.rows[0] || null;
-}
-
 async function loadClaim(practiceId, id) {
   const res = await db.query(
     `select * from claims where id = $1 and practice_id = $2 and is_hidden = false limit 1`,
     [id, practiceId]
   );
   return res.rows[0] || null;
-}
-
-// Insert a claim_events row. `q` is a pg client (inside a transaction) or db.
-async function logEvent(q, e) {
-  await q.query(
-    `insert into claim_events
-       (practice_id, claim_id, created_by, event_type, status_from, status_to, note, payload)
-     values ($1, $2, $3, $4, $5, $6, $7, $8)`,
-    [
-      e.practiceId,
-      e.claimId,
-      e.createdBy || null,
-      e.eventType,
-      e.statusFrom || null,
-      e.statusTo || null,
-      e.note || null,
-      e.payload != null ? JSON.stringify(e.payload) : null,
-    ]
-  );
 }
 
 // Assemble the normalized context an adapter needs (no DB access in adapters).
@@ -255,7 +229,7 @@ async function createClaim(practiceId, userId, body, event) {
     }
     insuranceRecordId = rec.id;
   } else {
-    const primary = await primaryInsuranceForClient(practiceId, session.client_id);
+    const primary = await primaryInsuranceForClient(db, practiceId, session.client_id);
     insuranceRecordId = primary ? primary.id : null;
   }
 
@@ -266,32 +240,14 @@ async function createClaim(practiceId, userId, body, event) {
   const billedAmount = billed.value != null ? billed.value : session.fee;
 
   const result = await db.withTransaction(async (client) => {
-    const ins = await client.query(
-      `insert into claims
-         (practice_id, session_id, client_id, clinician_id, insurance_record_id,
-          claim_number, status, billed_amount)
-       values ($1, $2, $3, $4, $5, $6, 'draft', $7)
-       returning *`,
-      [
-        practiceId,
-        session.id,
-        session.client_id,
-        session.clinician_id,
-        insuranceRecordId,
-        cleanText(body.claim_number),
-        billedAmount,
-      ]
-    );
-    const claim = ins.rows[0];
-    await logEvent(client, {
+    return insertDraftClaim(client, {
       practiceId,
-      claimId: claim.id,
+      session,
+      insuranceRecordId,
+      claimNumber: cleanText(body.claim_number),
+      billedAmount,
       createdBy: userId,
-      eventType: 'created',
-      statusTo: 'draft',
-      note: 'Claim created from session.',
     });
-    return claim;
   });
 
   return json(201, { claim: shapeClaim(result) }, event);

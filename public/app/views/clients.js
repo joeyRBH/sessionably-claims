@@ -72,6 +72,25 @@
                 'awaiting_payment', 'paid', 'no_claim'] },
   ];
 
+  // Recurrence options for the Add Session form (create only). 'biweekly' is the
+  // "every 2 weeks" cadence the backend expects.
+  var RECURRENCE_OPTIONS = [
+    { value: 'none',     label: 'Does not repeat' },
+    { value: 'weekly',   label: 'Weekly' },
+    { value: 'biweekly', label: 'Every 2 weeks' },
+  ];
+
+  // 'YYYY-MM-DD' six months from today — the max "Repeat until" the picker offers.
+  // The backend independently enforces the 6-month bound relative to session_date.
+  function sixMonthsOut() {
+    var d = new Date();
+    d.setMonth(d.getMonth() + 6);
+    var y = d.getFullYear();
+    var m = String(d.getMonth() + 1).padStart(2, '0');
+    var day = String(d.getDate()).padStart(2, '0');
+    return y + '-' + m + '-' + day;
+  }
+
   // Drop null / undefined / '' keys so optional fields are omitted, not blanked.
   function compact(obj) {
     var out = {};
@@ -790,12 +809,27 @@
               required: true, options: clinicianOptions },
           ]);
 
+          // Recurrence is only offered when creating. "Repeat until" appears only
+          // once a repeating cadence is chosen (formModal showIf) and is required
+          // then; capped 6 months out.
+          if (!session) {
+            sessionFields = sessionFields.concat([
+              { name: 'repeats', label: 'Repeats', type: 'select',
+                options: RECURRENCE_OPTIONS },
+              { name: 'recurrence_end_date', label: 'Repeat until', type: 'date',
+                required: true, max: sixMonthsOut(),
+                showIf: function (v) { return v.repeats && v.repeats !== 'none'; } },
+            ]);
+          }
+
           var values = { clinician_id: defaultClinicianId };
           if (session) {
             Object.keys(session).forEach(function (k) { values[k] = session[k]; });
             if (Array.isArray(session.diagnosis_codes)) {
               values.diagnosis_codes = session.diagnosis_codes.join(', ');
             }
+          } else {
+            values.repeats = 'none';
           }
 
           R.formModal({
@@ -812,19 +846,42 @@
 
             var payload = compact(result);
             delete payload.diagnosis_codes;
+            delete payload.repeats;              // form-only fields; mapped below
+            delete payload.recurrence_end_date;
             if (codes.length) payload.diagnosis_codes = codes;
             payload.client_id = id;
             payload.clinician_id = result.clinician_id;
 
-            var p = session
-              ? api.sessions.update(session.id, payload)
-              : api.sessions.create(payload);
-            p.then(function () {
-              R.toast(session ? 'Session updated' : 'Session added', 'success');
-              reload();
-            }).catch(function (err) {
-              R.toast(err.message, 'error');
-            });
+            // Recurrence (create only): map the form's cadence to the API params.
+            if (!session && result.repeats && result.repeats !== 'none') {
+              payload.recurrence = result.repeats;
+              payload.recurrence_end_date = result.recurrence_end_date;
+            }
+
+            if (session) {
+              api.sessions.update(session.id, payload).then(function (res) {
+                // Completing a session auto-drafts a claim server-side.
+                if (res && res.claim_created) {
+                  R.toast('Draft claim created — review in Claims.', 'success');
+                } else {
+                  R.toast('Session updated', 'success');
+                }
+                reload();
+              }).catch(function (err) {
+                R.toast(err.message, 'error');
+              });
+            } else {
+              api.sessions.create(payload).then(function (res) {
+                if (res && res.count && res.count > 1) {
+                  R.toast(res.count + ' sessions scheduled', 'success');
+                } else {
+                  R.toast('Session added', 'success');
+                }
+                reload();
+              }).catch(function (err) {
+                R.toast(err.message, 'error');
+              });
+            }
           });
         }).catch(function (err) {
           R.toast(err.message || 'Could not load clinicians', 'error');
