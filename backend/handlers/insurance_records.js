@@ -20,6 +20,7 @@ const db = require('../lib/db');
 const { requireAuth } = require('../lib/auth');
 const { json, preflight } = require('../lib/response');
 const { parseBody } = require('../lib/util');
+const { normalizeEligibility } = require('./vob');
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -101,6 +102,18 @@ function parsePayerId(v) {
 
 // --- shaping -----------------------------------------------------------------
 
+// Build the compact VOB summary the UI renders from a stored 271 payload,
+// reusing the VOB handler's normalization so the persistent card and the live
+// modal stay in lockstep. Returns null when no check has been stored. The bulky
+// `raw` payload is dropped from the summary — callers still get benefits_raw
+// separately, and the summary only needs the normalized fields.
+function benefitsSummary(r) {
+  if (!r || r.benefits_raw == null) return null;
+  const summary = normalizeEligibility(r.benefits_raw, r.member_id);
+  if (summary && 'raw' in summary) delete summary.raw;
+  return summary;
+}
+
 // Shape an insurance_records row for the API. All fields belong to the caller's
 // own practice, so the full record (including PHI) is safe to return to them.
 function shapeRecord(r) {
@@ -122,6 +135,7 @@ function shapeRecord(r) {
     payer_id: r.payer_id,
     benefits_checked_at: r.benefits_checked_at,
     benefits_raw: r.benefits_raw,
+    benefits_summary: benefitsSummary(r),
     is_primary: r.is_primary,
     is_hidden: r.is_hidden,
     created_at: r.created_at,

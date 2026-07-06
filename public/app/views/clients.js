@@ -558,19 +558,27 @@
         ]);
       }
 
+      // Status badge shared by the live modal and the persistent summary card.
+      // A payer rejection (AAA error) is not the same as inactive coverage: the
+      // payer refused the request, so the status is unknown, not "Inactive".
+      function vobStatusBadge(res) {
+        if (res.rejected) {
+          return h('span', { class: 'badge badge--warning' }, 'Could not verify');
+        }
+        return res.active
+          ? h('span', { class: 'badge badge--success' }, 'Active coverage')
+          : h('span', { class: 'badge badge--danger' }, 'Inactive');
+      }
+
+      // Render the full benefit result — used both for a fresh check response and
+      // for a stored summary reopened from the insurance row (same shape).
       function showVobResult(res) {
         res = res || {};
         var ded = res.deductible || {};
         var oop = res.outOfPocket || {};
 
-        // A payer rejection (AAA error) is not the same as inactive coverage: the
-        // payer refused the request, so the status is unknown, not "Inactive".
         var rejection = (res.rejected && res.rejections && res.rejections[0]) || null;
-        var statusBadge = res.rejected
-          ? h('span', { class: 'badge badge--warning' }, 'Could not verify')
-          : (res.active
-            ? h('span', { class: 'badge badge--success' }, 'Active coverage')
-            : h('span', { class: 'badge badge--danger' }, 'Inactive'));
+        var statusBadge = vobStatusBadge(res);
 
         var children = [
           h('div', { style: 'display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap' }, [
@@ -612,6 +620,55 @@
         });
       }
 
+      // A persistent, full-width summary of the last stored VOB result, shown as
+      // a sub-row beneath its insurance row. Returns null when the record has no
+      // stored check (benefits_summary is computed server-side from benefits_raw).
+      function vobSummaryRow(record) {
+        var s = record.benefits_summary;
+        if (!s) return null;
+        var ded = s.deductible || {};
+        var oop = s.outOfPocket || {};
+
+        function amount(label, pair) {
+          if (pair.individual == null) return null;
+          var value = (pair.met != null ? R.fmtMoney(pair.met) + ' / ' : '') + R.fmtMoney(pair.individual);
+          return label + ' ' + value;
+        }
+        var facts = [amount('Deductible', ded), amount('Out-of-pocket', oop)]
+          .filter(function (t) { return t != null; });
+
+        var lines = [
+          h('div', { style: 'display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap' }, [
+            vobStatusBadge(s),
+            s.planName ? h('span', { style: 'font-weight:var(--font-weight-medium)' }, s.planName) : null,
+          ]),
+        ];
+        if (facts.length) {
+          lines.push(h('div', {
+            style: 'color:var(--color-text-muted);font-size:var(--font-size-2)',
+          }, facts.join('  ·  ')));
+        }
+        lines.push(h('div', {
+          style: 'display:flex;align-items:center;justify-content:space-between;'
+            + 'gap:var(--space-2);flex-wrap:wrap',
+        }, [
+          h('span', { style: 'color:var(--color-text-muted);font-size:var(--font-size-2)' },
+            'Last verified ' + R.fmtDate(record.benefits_checked_at)),
+          h('button', {
+            class: 'btn btn--ghost btn--sm', type: 'button',
+            onClick: function (e) { e.stopPropagation(); showVobResult(s); },
+          }, 'View result'),
+        ]));
+
+        var box = h('div', {
+          class: 'stack',
+          style: 'gap:var(--space-2);padding:var(--space-3);border-radius:var(--radius-2);'
+            + 'background:var(--color-surface-sunken)',
+        }, lines);
+
+        return h('tr', null, h('td', { colspan: '5', style: 'padding-top:0' }, box));
+      }
+
       // A per-row action cell: Verify / Edit / Delete.
       function insuranceRowActions(record) {
         return h('td', { class: 'data-table__num' }, [
@@ -640,8 +697,9 @@
           body.appendChild(inlineEmpty('No insurance on file'));
           return;
         }
-        var rows = records.map(function (r) {
-          return h('tr', null, [
+        var rows = [];
+        records.forEach(function (r) {
+          rows.push(h('tr', null, [
             h('td', null, r.carrier_name || '—'),
             h('td', null, r.member_id || '—'),
             h('td', null, r.is_primary
@@ -651,7 +709,9 @@
               ? r.oon_reimbursement_rate + '%'
               : '—'),
             insuranceRowActions(r),
-          ]);
+          ]));
+          var summary = vobSummaryRow(r);
+          if (summary) rows.push(summary);
         });
         body.appendChild(h('table', { class: 'data-table' }, [
           h('thead', null, h('tr', null, [
