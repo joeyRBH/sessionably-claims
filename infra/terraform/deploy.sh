@@ -10,6 +10,14 @@ cd "$(dirname "$0")"
 
 command -v jq >/dev/null 2>&1 || { echo "jq is required (brew install jq)"; exit 2; }
 
+# Refresh the schema bundle the migrate Lambda ships (db/schema.sql is the single
+# source of truth; backend/sql/schema.sql is gitignored and regenerated). Running
+# it here means a schema change can never silently deploy a stale copy. Pure fs
+# copy — no external deps. (node_modules is still installed out-of-band per
+# lambda.tf: `cd backend && npm install --omit=dev`.)
+echo ">> bundling schema (db/schema.sql -> backend/sql/schema.sql)"
+( cd ../../backend && npm run --silent bundle:schema )
+
 PROFILE="${AWS_PROFILE:-claimsub-prod}"
 REGION="${AWS_REGION:-us-west-2}"
 AWS=(aws --profile "$PROFILE" --region "$REGION")

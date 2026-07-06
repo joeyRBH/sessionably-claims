@@ -25,6 +25,16 @@ locals {
       handler = "handlers/me.handler"
       routes  = [{ method = "GET", path = "me" }]
     }
+    practice = {
+      handler = "handlers/practice.handler"
+      # The caller's own practice: settings summary (GET) + identity/billing-address
+      # edit (PUT; PATCH accepted as an alias). Billing address feeds Stedi 837P.
+      routes = [
+        { method = "GET", path = "practice" },
+        { method = "PUT", path = "practice" },
+        { method = "PATCH", path = "practice" },
+      ]
+    }
     clients = {
       handler = "handlers/clients.handler"
       routes = [
@@ -119,6 +129,7 @@ locals {
         { method = "POST", path = "card-setup/context" },
         { method = "POST", path = "card-setup/save-customer" },
         { method = "POST", path = "card-setup/save-payment-method" },
+        { method = "POST", path = "card-setup/save-details" },
         { method = "POST", path = "card-setup/save-insurance" },
         { method = "POST", path = "card-setup/payer-search" },
       ]
