@@ -202,6 +202,7 @@ create table if not exists clients (
   state                text,
   postal_code          text,
   country              text not null default 'US',
+  diagnosis_codes      text[],                                -- default ICD-10 dx (dotless, billable) auto-applied to new sessions
   status               text not null default 'awaiting_info'
                          check (status in ('active', 'awaiting_info', 'ready', 'inactive')),
   is_hidden            boolean not null default false,
@@ -253,6 +254,13 @@ alter table clients add column if not exists payment_method_exp_month integer;
 alter table clients add column if not exists payment_method_exp_year integer;
 alter table clients add column if not exists payment_method_set_at timestamptz;
 alter table clients add column if not exists payment_link_sent_at timestamptz;
+
+-- Migration (idempotent): add default diagnosis codes to the live clients table.
+-- New sessions (and the claims derived from them) auto-populate their ICD-10
+-- diagnosis from here; the session form still allows a per-session override.
+-- Stored dotless (F3290), billable-specificity only. See
+-- db/migrations/008_add_diagnosis_codes_to_clients.sql.
+alter table clients add column if not exists diagnosis_codes text[];
 
 -- =============================================================================
 -- 6. insurance_records — OON benefit data per client (PHI).

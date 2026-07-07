@@ -76,6 +76,7 @@ locals {
         { method = "POST", path = "claims/{id}/submit" },
         { method = "POST", path = "claims/{id}/refresh" },
         { method = "POST", path = "claims/{id}/void" },
+        { method = "POST", path = "claims/{id}/regenerate" },
         { method = "GET", path = "claims/{id}/events" },
       ]
     }
@@ -85,6 +86,15 @@ locals {
         { method = "GET", path = "users" },
         { method = "GET", path = "users/{id}" },
         { method = "PATCH", path = "users/{id}" },
+      ]
+    }
+    reports = {
+      handler = "handlers/reports.handler"
+      # Practice analytics v1: server-side aggregation (pipeline / revenue / aging
+      # / by-client / by-CPT) over the caller's practice claims. Practice-scoped
+      # from the token; optional ?start & ?end (YYYY-MM-DD) date-range filter.
+      routes = [
+        { method = "GET", path = "reports" },
       ]
     }
     invitations = {

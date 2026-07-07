@@ -37,6 +37,8 @@ const OPTIONAL_TEXT_COLUMNS = [
   'address_line1', 'address_line2', 'city', 'state', 'postal_code',
 ];
 
+const MAX_DIAGNOSIS_CODES = 12; // CMS-1500 allows up to 12 ICD-10 codes.
+
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -82,6 +84,24 @@ function isValidDate(s) {
   return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
 }
 
+// Optional ICD-10 diagnosis codes: absent/null → null; otherwise must be an array
+// of non-empty trimmed strings, at most MAX_DIAGNOSIS_CODES. An empty array clears
+// the column (stored as null). Mirrors the sessions handler's parser so a client's
+// default codes and a session's codes are validated identically.
+function parseDiagnosisCodes(v) {
+  if (v == null) return { ok: true, value: null };
+  if (!Array.isArray(v)) return { ok: false };
+  const out = [];
+  for (const item of v) {
+    if (typeof item !== 'string') return { ok: false };
+    const s = item.trim();
+    if (s === '') return { ok: false };
+    out.push(s);
+  }
+  if (out.length > MAX_DIAGNOSIS_CODES) return { ok: false };
+  return { ok: true, value: out.length === 0 ? null : out };
+}
+
 // --- shaping -----------------------------------------------------------------
 
 // Shape a clients row for the API. All fields belong to the caller's own
@@ -108,6 +128,7 @@ function shapeClient(r) {
     state: r.state,
     postal_code: r.postal_code,
     country: r.country,
+    diagnosis_codes: r.diagnosis_codes,
     status: r.status,
     // Display-only payment-method summary (never the Stripe customer / PM ids).
     payment_method_brand: r.payment_method_brand,
@@ -168,6 +189,11 @@ async function createClient(practiceId, body, event) {
     return json(400, { error: `Invalid gender. Expected one of: ${ALLOWED_GENDERS.join(', ')}` }, event);
   }
 
+  const dx = parseDiagnosisCodes(body.diagnosis_codes);
+  if (!dx.ok) {
+    return json(400, { error: 'Invalid diagnosis_codes. Expected an array of up to 12 non-empty strings.' }, event);
+  }
+
   const primaryClinicianId = cleanText(body.primary_clinician_id);
   if (primaryClinicianId) {
     if (!isUUID(primaryClinicianId)) {
@@ -184,9 +210,9 @@ async function createClient(practiceId, body, event) {
     `insert into clients
        (practice_id, first_name, last_name, preferred_name, pronouns, email, phone,
         date_of_birth, gender, address_line1, address_line2, city, state, postal_code,
-        primary_clinician_id, status)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-             coalesce($16, 'awaiting_info'))
+        diagnosis_codes, primary_clinician_id, status)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
+             coalesce($17, 'awaiting_info'))
      returning *`,
     [
       practiceId,
@@ -203,6 +229,7 @@ async function createClient(practiceId, body, event) {
       cleanText(body.city),
       cleanText(body.state),
       cleanText(body.postal_code),
+      dx.value,
       primaryClinicianId,
       status,
     ]
@@ -285,6 +312,14 @@ async function updateClient(practiceId, id, body, event) {
       return json(400, { error: `Invalid gender. Expected one of: ${ALLOWED_GENDERS.join(', ')}` }, event);
     }
     add('gender', gender);
+  }
+
+  if ('diagnosis_codes' in body) {
+    const dx = parseDiagnosisCodes(body.diagnosis_codes);
+    if (!dx.ok) {
+      return json(400, { error: 'Invalid diagnosis_codes. Expected an array of up to 12 non-empty strings.' }, event);
+    }
+    add('diagnosis_codes', dx.value);
   }
 
   if ('status' in body) {

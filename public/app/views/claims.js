@@ -334,6 +334,58 @@
       });
     }
 
+    // Edit the claim's UNDERLYING SESSION (date / CPT / diagnosis / rate), then
+    // regenerate the claim's derived fields (billed amount) from the saved
+    // session. Only offered for draft + denied claims; submitted claims stay
+    // read-only. No status field here, so saving never transitions the session.
+    function doEditClaim(claim) {
+      api.sessions.get(claim.session_id).then(function (res) {
+        var session = res && res.session;
+        if (!session) {
+          R.toast('Underlying session not found', 'error');
+          return;
+        }
+        R.formModal({
+          title: 'Edit claim',
+          fields: [
+            { name: 'session_date',   label: 'Session date',   type: 'date', required: true },
+            { name: 'cpt_code',       label: 'CPT code',       type: 'text' },
+            { name: 'diagnosis_codes', label: 'Diagnosis code(s)', type: 'diagnosis',
+              placeholder: 'Search code or condition (e.g. F411 or anxiety)…' },
+            { name: 'fee',            label: 'Rate / fee',     type: 'number' },
+          ],
+          values: {
+            session_date: session.session_date ? String(session.session_date).slice(0, 10) : '',
+            cpt_code: session.cpt_code || '',
+            diagnosis_codes: Array.isArray(session.diagnosis_codes) ? session.diagnosis_codes : [],
+            fee: session.fee != null ? session.fee : '',
+          },
+          submitLabel: 'Save & regenerate',
+        }).then(function (values) {
+          if (!values) return;
+          var codes = String(values.diagnosis_codes || '')
+            .split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+          var payload = {
+            session_date: values.session_date,
+            cpt_code: values.cpt_code,          // null clears it
+            fee: values.fee,                     // null clears it
+            diagnosis_codes: codes,              // [] clears them
+          };
+          api.sessions.update(session.id, payload).then(function () {
+            // Regenerate billed amount etc. from the updated session, server-side.
+            return api.claims.regenerate(claim.id);
+          }).then(function () {
+            R.toast('Claim updated from session', 'success');
+            load();
+          }).catch(function (err) {
+            R.toast(err.message, 'error');
+          });
+        });
+      }).catch(function (err) {
+        R.toast(err.message, 'error');
+      });
+    }
+
     function doDelete() {
       R.confirmModal({
         title: 'Delete claim?',
@@ -360,12 +412,22 @@
       if (s === 'draft') {
         return [
           btn('Submit', 'btn--primary', doSubmit),
-          btn('Edit', 'btn--ghost', function () { doEdit(claim); }),
+          btn('Edit claim', 'btn--ghost', function () { doEditClaim(claim); }),
+          btn('Claim #', 'btn--ghost', function () { doEdit(claim); }),
           btn('Delete', 'btn--danger', doDelete),
         ];
       }
+      // Denied (rejected) claims can be corrected: edit the session, regenerate,
+      // then void + resubmit or appeal via the existing paths.
+      if (s === 'denied') {
+        return [
+          btn('Refresh', 'btn--primary', doRefresh),
+          btn('Edit claim', 'btn--ghost', function () { doEditClaim(claim); }),
+          btn('Void', 'btn--danger', doVoid),
+        ];
+      }
       if (s === 'submitted' || s === 'processing' || s === 'info_requested' ||
-          s === 'appealed' || s === 'denied') {
+          s === 'appealed') {
         return [
           btn('Refresh', 'btn--primary', doRefresh),
           btn('Void', 'btn--danger', doVoid),
