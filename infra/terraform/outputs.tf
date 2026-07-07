@@ -60,6 +60,11 @@ output "lambda_exec_role_arn" {
   value       = aws_iam_role.lambda_exec.arn
 }
 
+output "migrate_function_name" {
+  description = "Name of the one-off schema-migration Lambda (invoked by deploy.sh after apply)."
+  value       = aws_lambda_function.migrate.function_name
+}
+
 # ─────────────────────────────────────────────────────────────
 # API
 # ─────────────────────────────────────────────────────────────

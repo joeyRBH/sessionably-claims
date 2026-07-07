@@ -398,6 +398,196 @@
     return { node: node, control: hidden };
   }
 
+  // ---------------------------------------------------------------------------
+  // Diagnosis picker — a multi-select, searchable ICD-10 picker backed by the
+  // curated billable list (window.ReddablyDiagnoses). Only codes in that list can
+  // be added, so a category code (e.g. F10.9) that Aetna rejects can never be
+  // chosen — only its billable children (F10.90). Codes carried in on `initial`
+  // that predate the picker are preserved as chips even if not in the list, so an
+  // edit never silently drops stored data.
+  //
+  // Returns { node, control } where `control` is a hidden <input> whose .value is
+  // the comma-joined DOTLESS codes (as transmitted in the 837P) — so formModal's
+  // collect() path works unchanged and the view splits on comma.
+  function createDiagnosisPicker(opts) {
+    opts = opts || {};
+    var D = window.ReddablyDiagnoses;
+
+    // Accept an array or a comma string; normalize + de-dupe into dotless codes.
+    var raw = opts.initial;
+    var initialCodes = [];
+    (Array.isArray(raw) ? raw : String(raw == null ? '' : raw).split(','))
+      .forEach(function (c) {
+        var code = D ? D.normalize(c) : String(c || '').trim().toUpperCase();
+        if (code && initialCodes.indexOf(code) === -1) initialCodes.push(code);
+      });
+
+    var selected = initialCodes.slice();
+
+    var hidden = h('input', { type: 'hidden', name: opts.name || 'diagnosis_codes' });
+    var chips = h('div', {
+      class: 'dx-picker__chips',
+      style: 'display:flex;flex-wrap:wrap;gap:var(--space-2);'
+        + 'margin-bottom:var(--space-2)',
+    });
+    var input = h('input', {
+      class: 'field__control',
+      type: 'text',
+      autocomplete: 'off',
+      spellcheck: 'false',
+      placeholder: opts.placeholder || 'Search code or condition (e.g. F411 or anxiety)…',
+      role: 'combobox',
+      'aria-autocomplete': 'list',
+      'aria-expanded': 'false',
+    });
+    var results = h('div', { class: 'payer-picker__results', role: 'listbox', hidden: 'hidden' });
+    var picker = h('div', { class: 'payer-picker' }, [input, results, hidden]);
+    var node = h('div', { class: 'dx-picker' }, [chips, picker]);
+
+    var currentList = [];
+    var activeIndex = -1;
+
+    function syncControl() { hidden.value = selected.join(','); }
+
+    function codeText(code) {
+      return D ? D.label(code) : code;
+    }
+
+    function renderChips() {
+      clear(chips);
+      if (!selected.length) {
+        chips.appendChild(h('span', {
+          class: 'dx-picker__empty',
+          style: 'color:var(--color-text-muted);font-size:var(--font-size-2)',
+        }, 'No diagnosis codes selected'));
+        return;
+      }
+      selected.forEach(function (code) {
+        var chip = h('span', {
+          class: 'badge badge--neutral',
+          style: 'display:inline-flex;align-items:center;gap:var(--space-1)',
+          title: codeText(code),
+        }, [
+          D ? D.display(code) : code,
+          h('button', {
+            type: 'button',
+            'aria-label': 'Remove ' + (D ? D.display(code) : code),
+            style: 'background:none;border:none;cursor:pointer;padding:0;'
+              + 'font-size:var(--font-size-3);line-height:1;color:inherit',
+            onClick: function () { removeCode(code); },
+          }, '×'),
+        ]);
+        chips.appendChild(chip);
+      });
+    }
+
+    function openResults() { results.hidden = false; input.setAttribute('aria-expanded', 'true'); }
+    function closeResults() { results.hidden = true; input.setAttribute('aria-expanded', 'false'); activeIndex = -1; }
+
+    function addCode(code) {
+      var norm = D ? D.normalize(code) : String(code || '').trim().toUpperCase();
+      if (!norm) return;
+      if (selected.indexOf(norm) === -1) {
+        selected.push(norm);
+        syncControl();
+        renderChips();
+      }
+      input.value = '';
+      closeResults();
+    }
+
+    function removeCode(code) {
+      selected = selected.filter(function (c) { return c !== code; });
+      syncControl();
+      renderChips();
+    }
+
+    function paintActive() {
+      var optionEls = results.querySelectorAll('.payer-picker__option');
+      Array.prototype.forEach.call(optionEls, function (el, i) {
+        el.classList.toggle('is-active', i === activeIndex);
+      });
+      if (activeIndex >= 0 && optionEls[activeIndex]) {
+        optionEls[activeIndex].scrollIntoView({ block: 'nearest' });
+      }
+    }
+
+    function renderResults(list) {
+      currentList = list || [];
+      activeIndex = -1;
+      clear(results);
+      if (!currentList.length) {
+        results.appendChild(h('div', { class: 'payer-picker__status' }, 'No billable codes match'));
+        openResults();
+        return;
+      }
+      currentList.forEach(function (entry, i) {
+        var opt = h('div', { class: 'payer-picker__option', role: 'option' }, [
+          h('span', { class: 'payer-picker__option-name' }, entry.label),
+          h('span', { class: 'payer-picker__option-id' }, D ? D.display(entry.code) : entry.code),
+        ]);
+        opt.addEventListener('mousedown', function (e) {
+          e.preventDefault();
+          addCode(currentList[i].code);
+        });
+        opt.addEventListener('mouseenter', function () { activeIndex = i; paintActive(); });
+        results.appendChild(opt);
+      });
+      openResults();
+    }
+
+    input.addEventListener('input', function () {
+      if (!D) { closeResults(); return; }
+      var q = input.value.trim();
+      renderResults(D.search(q, 8));
+    });
+
+    input.addEventListener('focus', function () {
+      if (!D) return;
+      renderResults(D.search(input.value.trim(), 8));
+    });
+
+    input.addEventListener('keydown', function (e) {
+      if (results.hidden) {
+        // Enter on a raw exact billable code adds it even without opening the list.
+        if (e.key === 'Enter' && D && D.isBillableCode(input.value)) {
+          e.preventDefault();
+          addCode(input.value);
+        }
+        return;
+      }
+      var optionEls = results.querySelectorAll('.payer-picker__option');
+      if (e.key === 'ArrowDown') {
+        if (!optionEls.length) return;
+        e.preventDefault();
+        activeIndex = Math.min(optionEls.length - 1, activeIndex + 1);
+        paintActive();
+      } else if (e.key === 'ArrowUp') {
+        if (!optionEls.length) return;
+        e.preventDefault();
+        activeIndex = Math.max(0, activeIndex - 1);
+        paintActive();
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        if (activeIndex >= 0 && activeIndex < currentList.length) {
+          addCode(currentList[activeIndex].code);
+        } else if (D && D.isBillableCode(input.value)) {
+          addCode(input.value);
+        }
+      } else if (e.key === 'Escape') {
+        e.stopPropagation();
+        closeResults();
+      }
+    });
+
+    input.addEventListener('blur', function () { window.setTimeout(closeResults, 150); });
+
+    syncControl();
+    renderChips();
+
+    return { node: node, control: hidden };
+  }
+
   // formModal({ title, fields, values, submitLabel }) -> Promise<values|null>
   //   fields: [{ name, label, type, required, options, placeholder }]
   //   types: text | email | date | number | select | textarea | payer (default text)
@@ -454,6 +644,17 @@
           });
           control = picker.control;   // hidden input carrying the payer_id
           display = picker.node;      // composite search box + results list
+        } else if (type === 'diagnosis') {
+          // `initial` may be an array (client/session.diagnosis_codes) or a
+          // comma string; the picker normalizes either. control.value is the
+          // comma-joined dotless codes.
+          var dxPicker = createDiagnosisPicker({
+            name: f.name,
+            initial: values[f.name],
+            placeholder: f.placeholder,
+          });
+          control = dxPicker.control;
+          display = dxPicker.node;
         } else {
           control = h('input', {
             class: 'field__control',
@@ -718,6 +919,7 @@
     confirmModal: confirmModal,
     formModal: formModal,
     createPayerPicker: createPayerPicker,
+    createDiagnosisPicker: createDiagnosisPicker,
     // formatting
     fmtMoney: fmtMoney,
     fmtDate: fmtDate,

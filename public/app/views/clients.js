@@ -38,6 +38,8 @@
     { name: 'city',           label: 'City',           type: 'text', required: true },
     { name: 'state',          label: 'State',          type: 'text', required: true },
     { name: 'postal_code',    label: 'Zip code',       type: 'text', required: true },
+    { name: 'diagnosis_codes', label: 'Default diagnosis code(s)', type: 'diagnosis',
+      placeholder: 'Search code or condition (e.g. F411 or anxiety)…' },
     { name: 'status',         label: 'Status',         type: 'select',
       options: ['awaiting_info', 'ready', 'active', 'inactive'] },
   ];
@@ -66,7 +68,8 @@
     { name: 'duration_minutes', label: 'Duration (min)', type: 'number' },
     { name: 'fee',              label: 'Fee',            type: 'number' },
     { name: 'place_of_service', label: 'Place of service', type: 'text' },
-    { name: 'diagnosis_codes',  label: 'Diagnosis codes (comma-separated)', type: 'text' },
+    { name: 'diagnosis_codes',  label: 'Diagnosis code(s)', type: 'diagnosis',
+      placeholder: 'Search code or condition (e.g. F411 or anxiety)…' },
     { name: 'status',           label: 'Status',         type: 'select',
       options: ['scheduled', 'completed', 'claim_ready', 'claim_submitted',
                 'awaiting_payment', 'paid', 'no_claim'] },
@@ -100,6 +103,27 @@
       out[k] = v;
     });
     return out;
+  }
+
+  // Split the diagnosis picker's comma-joined value into an array of dotless
+  // codes. '' → [] (empty array clears the column on the backend).
+  function splitCodes(value) {
+    return String(value || '')
+      .split(',')
+      .map(function (s) { return s.trim(); })
+      .filter(Boolean);
+  }
+
+  // Build the API payload for a client create/edit: compact the plain fields, then
+  // map the diagnosis picker's comma string to an array. On edit we always send
+  // diagnosis_codes (even empty) so clearing all codes persists; on create we omit
+  // it when empty. `isEdit` controls that.
+  function buildClientPayload(values, isEdit) {
+    var payload = compact(values);
+    delete payload.diagnosis_codes;
+    var codes = splitCodes(values.diagnosis_codes);
+    if (codes.length || isEdit) payload.diagnosis_codes = codes;
+    return payload;
   }
 
   function clientName(c) {
@@ -150,7 +174,7 @@
         submitLabel: 'Create client',
       }).then(function (values) {
         if (!values) return;
-        api.clients.create(compact(values)).then(function () {
+        api.clients.create(buildClientPayload(values, false)).then(function () {
           R.toast('Client created', 'success');
           load();
         }).catch(function (err) {
@@ -303,12 +327,95 @@
         submitLabel: 'Save changes',
       }).then(function (values) {
         if (!values) return;
-        api.clients.update(id, compact(values)).then(function () {
+        api.clients.update(id, buildClientPayload(values, true)).then(function () {
           R.toast('Client updated', 'success');
           load();
         }).catch(function (err) {
           R.toast(err.message, 'error');
         });
+      });
+    }
+
+    // --- Read-only View (no Edit form) --------------------------------------
+    // A definition-list summary of the client's demographics, address, diagnosis,
+    // and insurance. "Edit client" in the footer hands off to the edit form.
+    function openView(client, insurance) {
+      var Dx = window.ReddablyDiagnoses;
+
+      function fmtGender(g) {
+        return g === 'male' ? 'Male' : g === 'female' ? 'Female'
+          : g === 'unknown' ? 'Unknown' : '—';
+      }
+
+      // One label/value row; value falls back to an em dash when blank.
+      function row(label, value) {
+        var shown = (value === null || value === undefined || value === '') ? '—' : value;
+        return h('div', {
+          style: 'display:flex;justify-content:space-between;gap:var(--space-4);'
+            + 'padding:var(--space-1) 0',
+        }, [
+          h('span', { style: 'color:var(--color-text-muted);font-size:var(--font-size-2)' }, label),
+          h('span', { style: 'text-align:right' }, shown),
+        ]);
+      }
+
+      function section(title, rows) {
+        return h('div', { class: 'stack', style: 'gap:var(--space-1)' }, [
+          h('h3', {
+            style: 'margin:0;font-size:var(--font-size-2);text-transform:uppercase;'
+              + 'letter-spacing:0.04em;color:var(--color-text-muted)',
+          }, title),
+          h('div', null, rows),
+        ]);
+      }
+
+      var addressParts = [client.address_line1, client.address_line2,
+        [client.city, client.state].filter(Boolean).join(', '), client.postal_code]
+        .filter(function (s) { return s != null && String(s).trim() !== ''; });
+
+      var codes = Array.isArray(client.diagnosis_codes) ? client.diagnosis_codes : [];
+      var dxValue = codes.length
+        ? h('span', { style: 'text-align:right' },
+            codes.map(function (c) { return Dx ? Dx.label(c) : c; }).join('; '))
+        : '—';
+
+      var insuranceRows;
+      if (insurance && insurance.length) {
+        insuranceRows = insurance.map(function (r) {
+          var bits = [r.carrier_name || 'Insurance'];
+          if (r.member_id) bits.push('Member ' + r.member_id);
+          if (r.oon_reimbursement_rate != null) bits.push(r.oon_reimbursement_rate + '% OON');
+          return row(r.is_primary ? 'Primary' : 'Secondary', bits.join('  ·  '));
+        });
+      } else {
+        insuranceRows = [row('Insurance', 'None on file')];
+      }
+
+      var body = h('div', { class: 'stack', style: 'gap:var(--space-4)' }, [
+        section('Demographics', [
+          row('Name', clientName(client)),
+          row('Preferred name', client.preferred_name),
+          row('Pronouns', client.pronouns),
+          row('Email', client.email),
+          row('Phone', client.phone),
+          row('Date of birth', client.date_of_birth ? R.fmtDate(client.date_of_birth) : '—'),
+          row('Biological sex', fmtGender(client.gender)),
+          row('Status', R.statusBadge(client.status)),
+        ]),
+        section('Address', [
+          row('Address', addressParts.length ? addressParts.join(', ') : '—'),
+        ]),
+        section('Diagnosis', [row('Default code(s)', dxValue)]),
+        section('Insurance', insuranceRows),
+      ]);
+
+      R.confirmModal({
+        title: clientName(client),
+        body: body,
+        confirmLabel: 'Edit client',
+        cancelLabel: 'Close',
+      }).then(function (edit) {
+        if (edit) openEdit(client);
       });
     }
 
@@ -375,7 +482,7 @@
       }, children);
     }
 
-    function headerCard(client) {
+    function headerCard(client, insurance) {
       var meta = [];
       if (client.email) meta.push(client.email);
       if (client.phone) meta.push(client.phone);
@@ -388,6 +495,8 @@
             R.statusBadge(client.status),
           ]),
           h('div', { class: 'page-header__actions' }, [
+            h('button', { class: 'btn btn--ghost', type: 'button',
+              onClick: function () { openView(client, insurance); } }, 'View'),
             h('button', { class: 'btn btn--ghost', type: 'button',
               onClick: function () { openEdit(client); } }, 'Edit'),
             h('button', { class: 'btn btn--danger', type: 'button',
@@ -824,12 +933,16 @@
 
           var values = { clinician_id: defaultClinicianId };
           if (session) {
+            // Editing: carry the session's own values (diagnosis_codes stays an
+            // array — the diagnosis picker accepts arrays directly).
             Object.keys(session).forEach(function (k) { values[k] = session[k]; });
-            if (Array.isArray(session.diagnosis_codes)) {
-              values.diagnosis_codes = session.diagnosis_codes.join(', ');
-            }
           } else {
             values.repeats = 'none';
+            // Auto-populate the diagnosis from the client's default code(s); the
+            // picker still lets the clinician override per session.
+            values.diagnosis_codes = Array.isArray(client.diagnosis_codes)
+              ? client.diagnosis_codes.slice()
+              : [];
           }
 
           R.formModal({
@@ -956,7 +1069,7 @@
 
       var view = h('div', { class: 'view stack' }, [
         backLink(),
-        headerCard(client),
+        headerCard(client, insurance),
         insurancePanel(client, insurance),
         sessionsPanel(client, sessions),
       ]);

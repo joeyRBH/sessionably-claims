@@ -277,6 +277,9 @@
     },
     refresh: function (id) { return request('POST', '/claims/' + id + '/refresh', {}); },
     void: function (id) { return request('POST', '/claims/' + id + '/void', {}); },
+    // Recompute a draft/denied claim's session-derived fields (billed amount)
+    // after its underlying session was edited. Server-side; no client-side math.
+    regenerate: function (id) { return request('POST', '/claims/' + id + '/regenerate', {}); },
     events: function (id) { return request('GET', '/claims/' + id + '/events'); },
   };
 
@@ -324,6 +327,13 @@
     search: function (q) { return request('GET', '/payers/search' + buildQuery({ q: q })); },
   };
 
+  // Practice analytics (Reports view). Server-side aggregation; practice-scoped
+  // from the token. filters: { start, end } as YYYY-MM-DD (both optional; non-PHI
+  // date bounds only). summary(filters) -> { report: {...} }.
+  var reports = {
+    summary: function (filters) { return request('GET', '/reports' + buildQuery(filters)); },
+  };
+
   window.ReddablyAPI = {
     // config
     API_BASE: API_BASE,
@@ -353,5 +363,6 @@
     subscription: subscription,
     vob: vob,
     payers: payers,
+    reports: reports,
   };
 })(window);

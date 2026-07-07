@@ -111,4 +111,45 @@ for FN in $FUNCS; do
   "${AWS[@]}" lambda wait function-updated --function-name "$FN"
 done
 
-echo ">> done. Secrets hydrated from SSM; tfstate contains no secret values."
+# ---------------------------------------------------------------------------
+# Run database migrations.
+#
+# terraform apply ships the new handler code, but the migrate Lambda applies
+# db/schema.sql to RDS and is NOT invoked by terraform. Skipping it has twice
+# caused prod failures where freshly deployed code referenced columns that did
+# not exist yet (practice billing address; patient_control_number). schema.sql
+# is idempotent, so this is safe to run on every deploy. We fail loudly (non-zero
+# exit) if the migration reports an error or the invoke itself fails, so a bad
+# migration can never masquerade as a clean deploy.
+# ---------------------------------------------------------------------------
+echo ">> running database migrations (invoking migrate Lambda)"
+MIGRATE_FN=$(terraform output -raw migrate_function_name)
+"${AWS[@]}" lambda wait function-updated --function-name "$MIGRATE_FN"
+
+MIG_OUT=$(mktemp)
+# --cli-binary-format raw-in-base64-out lets us pass a plain-JSON payload on AWS
+# CLI v2. The function's return value is written to $MIG_OUT; invoke metadata
+# (StatusCode / FunctionError) comes back as JSON on stdout.
+MIG_META=$("${AWS[@]}" lambda invoke \
+  --function-name "$MIGRATE_FN" \
+  --cli-binary-format raw-in-base64-out \
+  --payload '{}' \
+  --output json \
+  "$MIG_OUT") || { echo "ERROR: migrate Lambda invoke failed to execute."; rm -f "$MIG_OUT"; exit 1; }
+
+MIG_FN_ERROR=$(printf '%s' "$MIG_META" | jq -r '.FunctionError // ""')
+MIG_BODY=$(cat "$MIG_OUT")
+rm -f "$MIG_OUT"
+MIG_OK=$(printf '%s' "$MIG_BODY" | jq -r 'if type=="object" then (.ok // empty) else empty end' 2>/dev/null || printf '')
+MIG_MSG=$(printf '%s' "$MIG_BODY" | jq -r 'if type=="object" then (.message // "") else "" end' 2>/dev/null || printf '')
+
+if [ -n "$MIG_FN_ERROR" ] || [ "$MIG_OK" != "true" ]; then
+  echo "!! MIGRATION FAILED"
+  [ -n "$MIG_FN_ERROR" ] && echo "!!   FunctionError: $MIG_FN_ERROR"
+  [ -n "$MIG_MSG" ] && echo "!!   message: $MIG_MSG"
+  echo "!!   raw response: $MIG_BODY"
+  exit 1
+fi
+echo ">> MIGRATION OK: ${MIG_MSG:-schema applied}"
+
+echo ">> done. Secrets hydrated from SSM; migrations applied; tfstate contains no secret values."

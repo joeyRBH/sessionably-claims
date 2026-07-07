@@ -617,6 +617,54 @@ async function voidClaim(practiceId, userId, id, event) {
   return json(200, { claim: shapeClaim(updated) }, event);
 }
 
+// Claim statuses whose derived fields may be regenerated from the underlying
+// session. A draft has not been sent yet; a denied claim is being corrected for
+// resubmission/appeal. Everything else (submitted/processing/paid/void/...) is
+// read-only from the session's point of view — void/refresh are the paths there.
+const REGENERATABLE_STATUSES = ['draft', 'denied'];
+
+// Regenerate a claim's session-derived fields after its session was edited (the
+// "Edit claim" flow opens the session, saves it, then calls this). Today the only
+// derived field is billed_amount = session.fee; keeping it in one server-side
+// place means the browser never recomputes money over claim rows.
+async function regenerateClaim(practiceId, userId, id, event) {
+  if (!isUUID(id)) return json(404, { error: 'Not found' }, event);
+  const claim = await loadClaim(practiceId, id);
+  if (!claim) return json(404, { error: 'Not found' }, event);
+  if (!REGENERATABLE_STATUSES.includes(claim.status)) {
+    return json(409, { error: 'Only draft or denied claims can be regenerated from their session.' }, event);
+  }
+
+  const session = await loadSession(practiceId, claim.session_id);
+  if (!session) {
+    return json(409, { error: 'The claim\'s session no longer exists.' }, event);
+  }
+
+  const billedAmount = session.fee != null ? session.fee : null;
+
+  const updated = await db.withTransaction(async (client) => {
+    const res = await client.query(
+      `update claims set billed_amount = $1
+        where id = $2 and practice_id = $3 and is_hidden = false and status = any($4)
+        returning *`,
+      [billedAmount, id, practiceId, REGENERATABLE_STATUSES]
+    );
+    if (res.rowCount === 0) return null;
+    const row = res.rows[0];
+    await logEvent(client, {
+      practiceId,
+      claimId: row.id,
+      createdBy: userId,
+      eventType: 'note',
+      note: 'Claim fields regenerated from the updated session.',
+    });
+    return row;
+  });
+
+  if (!updated) return json(409, { error: 'Claim is no longer in a regeneratable state.' }, event);
+  return json(200, { claim: shapeClaim(updated) }, event);
+}
+
 async function listEvents(practiceId, id, event) {
   if (!isUUID(id)) return json(404, { error: 'Not found' }, event);
   const claim = await loadClaim(practiceId, id);
@@ -632,8 +680,10 @@ async function listEvents(practiceId, id, event) {
 
 // --- entrypoint --------------------------------------------------------------
 
-// Exported for unit testing the billing-address guard (Lambda only calls .handler).
+// Exported for unit testing (Lambda only calls .handler): the billing-address
+// guard and the set of statuses whose claims may be regenerated from a session.
 exports.missingBillingAddressField = missingBillingAddressField;
+exports.REGENERATABLE_STATUSES = REGENERATABLE_STATUSES;
 
 exports.handler = async (event) => {
   const method = httpMethod(event);
@@ -662,6 +712,7 @@ exports.handler = async (event) => {
     if (action === 'submit' && method === 'POST' && id) return await submitClaim(practiceId, userId, id, event);
     if (action === 'refresh' && method === 'POST' && id) return await refreshClaim(practiceId, userId, id, event);
     if (action === 'void' && method === 'POST' && id) return await voidClaim(practiceId, userId, id, event);
+    if (action === 'regenerate' && method === 'POST' && id) return await regenerateClaim(practiceId, userId, id, event);
     if (action === 'events' && method === 'GET' && id) return await listEvents(practiceId, id, event);
 
     if (method === 'POST' && !id) return await createClaim(practiceId, userId, body, event);
