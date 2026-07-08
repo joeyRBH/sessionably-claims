@@ -20,9 +20,10 @@
 // Lambda `environment` block is ignore_changes — see lambda.tf).
 const FROM_ADDRESS = process.env.SES_FROM_ADDRESS || 'notifications@reddably.com';
 
-// Base URL for building app deep-links (client chart, etc.). app.reddably.com is
-// the app shell host.
-const APP_BASE_URL = (process.env.APP_BASE_URL || 'https://app.reddably.com').replace(/\/+$/, '');
+// Base URL for building app deep-links (client chart, etc.). The app shell is
+// served at reddably.com/app/app.html (Vercel serves the static /public tree),
+// so default to reddably.com — matching payment_link.js / invitations.js.
+const APP_BASE_URL = (process.env.APP_BASE_URL || 'https://reddably.com').replace(/\/+$/, '');
 
 // Build the SES SendEmail input from a simple { to, subject, text, html } shape.
 // Pure — no I/O — so tests can assert on Source / Destination / body directly.
@@ -74,7 +75,7 @@ function buildIntakeCompletionEmail(opts) {
   const clientName = String(o.clientName || 'A client').trim() || 'A client';
   const completedAt = o.completedAt || new Date().toISOString();
   const chartUrl = o.chartUrl
-    || (o.clientId ? `${APP_BASE_URL}/app/#clients/${encodeURIComponent(o.clientId)}` : APP_BASE_URL);
+    || (o.clientId ? `${APP_BASE_URL}/app/app.html#clients/${encodeURIComponent(o.clientId)}` : APP_BASE_URL);
 
   const subject = `${clientName} completed intake`;
   const lines = [
