@@ -20,6 +20,7 @@ const db = require('../lib/db');
 const { requireAuth } = require('../lib/auth');
 const { json, preflight } = require('../lib/response');
 const { parseBody } = require('../lib/util');
+const { isValidEmail } = require('../lib/email');
 
 const EDIT_ROLES = ['practice_admin', 'billing_staff'];
 
@@ -59,6 +60,7 @@ function shapePractice(r) {
     default_fee_payer: r.default_fee_payer,
     platform_fee_percent: r.platform_fee_percent,
     plan: r.plan,
+    notification_email: r.notification_email,
     created_at: r.created_at,
     updated_at: r.updated_at,
   };
@@ -124,6 +126,17 @@ async function updatePractice(practiceId, role, body, event) {
   Object.keys(textFields).forEach((col) => {
     if (col in body) add(col, cleanText(body[col], textFields[col]));
   });
+
+  // Notification email: where intake-completion alerts are sent. Optional — a
+  // blank clears it — but a non-blank value must be a valid email, so we never
+  // store (and later hand SES) a login username like "BigRedd".
+  if ('notification_email' in body) {
+    const notify = cleanText(body.notification_email, 200);
+    if (notify && !isValidEmail(notify)) {
+      return json(400, { error: 'Enter a valid notification email address.' }, event);
+    }
+    add('notification_email', notify);
+  }
 
   if (sets.length === 0) {
     return json(400, { error: 'No updatable fields provided.' }, event);

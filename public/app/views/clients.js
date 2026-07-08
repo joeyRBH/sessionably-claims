@@ -55,11 +55,18 @@
       options: ['awaiting_info', 'ready', 'active', 'inactive'] },
   ];
 
-  // The "New client" form omits date of birth — the client supplies it themselves
-  // in the SMS intake ("Your information" step), keeping PHI entry with the client.
-  // Staff can still correct it later via the Edit client form (full CLIENT_FIELDS).
+  // The "New client" form omits date of birth, pronouns, and the full address —
+  // the client supplies all of these themselves in the SMS intake ("Your
+  // information" step), keeping PHI entry with the client and the New-client form
+  // short. Staff can still add or correct every one of them later via the Edit
+  // client form (which uses the full CLIENT_FIELDS). These are all optional on the
+  // backend create, so omitting them never triggers a validation error.
+  var CREATE_ONLY_OMITTED = [
+    'date_of_birth', 'pronouns',
+    'address_line1', 'address_line2', 'city', 'state', 'postal_code',
+  ];
   var CREATE_CLIENT_FIELDS = CLIENT_FIELDS.filter(function (f) {
-    return f.name !== 'date_of_birth';
+    return CREATE_ONLY_OMITTED.indexOf(f.name) === -1;
   });
 
   var INSURANCE_FIELDS = [

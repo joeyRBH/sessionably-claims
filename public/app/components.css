@@ -383,8 +383,15 @@ textarea.field__control {
 .modal__panel {
   width: 100%;
   max-width: 520px;
+  /* Cap to the viewport and let the BODY scroll (not the whole panel) so the
+     header and the action footer stay put. dvh tracks the *visual* viewport, so
+     the footer is never hidden behind iOS Safari's toolbar; vh is the fallback
+     for engines without dvh. */
   max-height: 90vh;
-  overflow-y: auto;
+  max-height: 90dvh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   background: var(--color-surface);
   border-radius: var(--radius-4);
   box-shadow: var(--shadow-3);
@@ -392,6 +399,7 @@ textarea.field__control {
 }
 
 .modal__header {
+  flex: 0 0 auto;
   padding: var(--space-5) var(--space-5) 0;
 }
 
@@ -404,16 +412,28 @@ textarea.field__control {
 }
 
 .modal__body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   padding: var(--space-4) var(--space-5);
   color: var(--color-text);
 }
 
+/* The action buttons stay pinned at the bottom of the panel: the body scrolls
+   beneath them, so Cancel/Save are always reachable — even with a long form or
+   the on-screen keyboard up. A solid background + top border keep the scrolled
+   content from bleeding through. */
 .modal__footer {
+  flex: 0 0 auto;
+  position: sticky;
+  bottom: 0;
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: var(--space-3);
-  padding: 0 var(--space-5) var(--space-5);
+  padding: var(--space-4) var(--space-5);
+  background: var(--color-surface);
+  border-top: var(--border-width-1) solid var(--color-border);
 }
 
 @keyframes modal-fade {
@@ -641,8 +661,10 @@ textarea.field__control {
   }
 
   /* -------------------------------- Modals ------------------------------- */
-  /* Near-full-screen sheet: edge-to-edge, its own scroll, footer buttons
-     reachable by scrolling above the on-screen keyboard. */
+  /* Full-screen sheet: edge-to-edge, scrollable body, action footer pinned above
+     the on-screen keyboard. dvh tracks the visual viewport (shrinks with the iOS
+     toolbar) so the pinned footer never falls off-screen; vh stays as a fallback.
+     The flex-column layout + scrolling body are inherited from the base rule. */
   .modal__backdrop {
     padding: 0;
     align-items: stretch;
@@ -652,7 +674,9 @@ textarea.field__control {
     width: 100%;
     max-width: none;
     min-height: 100vh;
+    min-height: 100dvh;
     max-height: 100vh;
+    max-height: 100dvh;
     border-radius: 0;
   }
 

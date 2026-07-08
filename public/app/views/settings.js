@@ -34,6 +34,18 @@
     ['postal_code',   'ZIP code',       { required: true, autocomplete: 'postal-code' }],
   ];
 
+  // Where intake-completion alerts are sent. Standalone (own card + hint) rather
+  // than a plain identity field because it needs email-format validation and an
+  // empty-state hint.
+  var NOTIFY_HINT = 'Add an email to receive intake notifications.';
+
+  // Mirror backend/lib/email.js isValidEmail: one @, non-empty local part, dotted
+  // domain with a 2+ char TLD. Blocks a login username (e.g. "BigRedd") from ever
+  // reaching SES, which rejects it with "Missing final '@domain'".
+  function isValidEmail(v) {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(String(v || '').trim());
+  }
+
   // Drop null / undefined / '' keys so untouched fields are omitted, not blanked.
   function compact(obj) {
     var out = {};
@@ -100,6 +112,47 @@
 
       var allSpecs = IDENTITY_FIELDS.concat(ADDRESS_FIELDS);
 
+      // --- Notification email (standalone: email-format validation + hint) -----
+      var notifyInput = h('input', {
+        class: 'field__control',
+        type: 'email',
+        name: 'notification_email',
+        value: practice.notification_email != null ? String(practice.notification_email) : '',
+        placeholder: 'admin@yourpractice.com',
+        autocomplete: 'email',
+      });
+      controls.notification_email = notifyInput;
+      var notifyError = h('span', { class: 'field__error', hidden: 'hidden' });
+      errorEls.notification_email = notifyError;
+      var notifyHint = h('p', {
+        class: 'field__hint',
+        style: 'margin:var(--space-1) 0 0;color:var(--color-text-muted);' +
+          'font-size:var(--font-size-2)',
+      }, NOTIFY_HINT);
+      function syncNotifyHint() {
+        notifyHint.hidden = (notifyInput.value || '').trim() !== '';
+      }
+      notifyInput.addEventListener('input', syncNotifyHint);
+      syncNotifyHint();
+
+      function notificationCard() {
+        return h('div', { class: 'card' }, [
+          h('div', { class: 'card__header' }, [
+            h('h2', { class: 'card__title' }, 'Notifications'),
+          ]),
+          h('p', {
+            style: 'margin:0 0 var(--space-4);color:var(--color-text-muted);' +
+              'font-size:var(--font-size-3)',
+          }, 'Where we send alerts when a client finishes intake.'),
+          h('label', { class: 'field' }, [
+            h('span', { class: 'field__label' }, 'Notification email'),
+            notifyInput,
+            notifyError,
+            notifyHint,
+          ]),
+        ]);
+      }
+
       function collect() {
         var out = {};
         var ok = true;
@@ -114,6 +167,18 @@
           }
           out[name] = val;
         });
+
+        // Notification email is optional, but a non-blank value must be a valid
+        // email (matches the backend guard) so a username never reaches SES.
+        var notify = (controls.notification_email.value || '').trim();
+        if (notify && !isValidEmail(notify)) {
+          setError('notification_email', 'Enter a valid email address.');
+          ok = false;
+        } else {
+          setError('notification_email', null);
+        }
+        out.notification_email = notify;
+
         return ok ? out : null;
       }
 
@@ -162,6 +227,7 @@
              'is complete.'),
           grid(ADDRESS_FIELDS),
         ]),
+        notificationCard(),
         h('div', { class: 'page-header__actions' }, [saveBtn]),
       ]);
 

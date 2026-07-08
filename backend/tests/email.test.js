@@ -94,6 +94,38 @@ assert.strictEqual(input.Message.Body.Text.Data, 'body text');
   const noneRes = await email.sendIntakeCompletionEmail({ to: '' }, makeMock('throw').deps);
   assert.strictEqual(noneRes.sent, false, 'no recipient -> sent=false');
 
+  // --- 6. a non-email recipient (login username) is NEVER handed to SES -----
+  // Production regression: the recipient resolved to a practice_admin login
+  // ("BigRedd"), and SES rejected it with "Missing final '@domain'". The helper
+  // must now skip the send entirely and log the exact configuration line, so a
+  // username can never reach SES.
+  const warnLines = [];
+  const origWarn = console.warn;
+  console.warn = (...args) => { warnLines.push(args.join(' ')); };
+  const usernameMock = makeMock('ok');
+  let usernameRes;
+  try {
+    usernameRes = await email.sendIntakeCompletionEmail(
+      { to: 'BigRedd', clientId: 'c9', clientName: 'Test Client' },
+      usernameMock.deps
+    );
+  } finally {
+    console.warn = origWarn;
+  }
+  assert.strictEqual(usernameRes.sent, false, 'username recipient -> sent=false');
+  assert.strictEqual(usernameMock.captured.commands.length, 0, 'SES send() is NEVER called for a username');
+  assert.ok(
+    warnLines.some((l) => l.includes('notification email not configured')),
+    'logs the exact "notification email not configured" line'
+  );
+
+  // isValidEmail accepts real addresses, rejects usernames / malformed values.
+  assert.strictEqual(email.isValidEmail('owner@practice.test'), true);
+  assert.strictEqual(email.isValidEmail('BigRedd'), false);
+  assert.strictEqual(email.isValidEmail('a@b'), false, 'needs a dotted domain');
+  assert.strictEqual(email.isValidEmail(''), false);
+  assert.strictEqual(email.isValidEmail(null), false);
+
   console.log('email.test.js: OK');
 })().catch((err) => {
   console.error('email.test.js: FAIL', err);
