@@ -21,8 +21,9 @@
 const db = require('../lib/db');
 const paymentToken = require('../lib/payment_token');
 const { json, preflight } = require('../lib/response');
-const { parseBody } = require('../lib/util');
+const { parseBody, normalizePhone } = require('../lib/util');
 const stedi = require('../lib/clearinghouse/stedi');
+const email = require('../lib/email');
 
 function httpMethod(event) {
   if (!event) return '';
@@ -56,6 +57,52 @@ async function loadClient(clientId) {
     [clientId]
   );
   return r.rows[0] || null;
+}
+
+// Resolve the practice's notification recipient for intake alerts: an explicit
+// practices.notification_email override if set, else the first active
+// practice_admin's email. Returns null when no recipient can be found (the caller
+// then simply skips the email). Best-effort; never throws to the request path.
+async function resolveNotificationEmail(practiceId) {
+  try {
+    const r = await db.query(
+      `select coalesce(
+                nullif(p.notification_email, ''),
+                (select u.email from users u
+                  where u.practice_id = p.id and u.role = 'practice_admin' and u.is_active = true
+                  order by u.created_at asc limit 1)
+              ) as recipient
+         from practices p
+        where p.id = $1
+        limit 1`,
+      [practiceId]
+    );
+    const recipient = r.rows[0] && r.rows[0].recipient;
+    return recipient && String(recipient).trim() !== '' ? String(recipient).trim() : null;
+  } catch (err) {
+    console.warn('card_setup resolveNotificationEmail failed:', err && err.message);
+    return null;
+  }
+}
+
+// Fire the "intake completed" admin email after the final intake step (insurance
+// saved). Best-effort and fully non-blocking: any failure (SES not verified yet,
+// no recipient, send error) is logged and swallowed so the patient's request
+// still succeeds. PHI-minimal — only the client's name + a chart link are sent.
+async function notifyIntakeComplete(client) {
+  try {
+    const to = await resolveNotificationEmail(client.practice_id);
+    if (!to) return;
+    const clientName = [client.first_name, client.last_name].filter(Boolean).join(' ').trim();
+    await email.sendIntakeCompletionEmail({
+      to,
+      clientId: client.id,
+      clientName,
+      completedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.warn('card_setup notifyIntakeComplete failed:', err && err.message);
+  }
 }
 
 // Trim to a string, capping length. Returns '' for non-strings / null.
@@ -170,12 +217,25 @@ exports.handler = async (event) => {
       const city = cleanField(body.city);
       const state = cleanField(body.state);
       const postalCode = cleanField(body.postal_code);
+      const phoneRaw = cleanField(body.phone);
 
       for (const v of [addressLine1, addressLine2, city, state, postalCode]) {
         if (v.length > MAX_FIELD_LEN) return json(400, { error: 'One of the fields is too long.' }, event);
       }
       if (dateOfBirth && !/^\d{4}-\d{2}-\d{2}$/.test(dateOfBirth)) {
         return json(400, { error: 'Date of birth must be YYYY-MM-DD.' }, event);
+      }
+
+      // Optional phone: normalize to E.164 (Twilio SMS requires it). Blank is
+      // fine — a blank never nulls the existing value (coalesce below). A
+      // non-blank value that can't normalize is a clear 400, not stored garbage.
+      let phone = '';
+      if (phoneRaw !== '') {
+        const res = normalizePhone(phoneRaw);
+        if (!res.ok) {
+          return json(400, { error: 'Please enter a valid US phone number.' }, event);
+        }
+        phone = res.value;
       }
 
       const result = await db.query(
@@ -185,9 +245,10 @@ exports.handler = async (event) => {
             address_line2 = coalesce(nullif($3, ''), address_line2),
             city          = coalesce(nullif($4, ''), city),
             state         = coalesce(nullif($5, ''), state),
-            postal_code   = coalesce(nullif($6, ''), postal_code)
-          where id = $7 and is_hidden = false`,
-        [dateOfBirth, addressLine1, addressLine2, city, state, postalCode, clientId]
+            postal_code   = coalesce(nullif($6, ''), postal_code),
+            phone         = coalesce(nullif($7, ''), phone)
+          where id = $8 and is_hidden = false`,
+        [dateOfBirth, addressLine1, addressLine2, city, state, postalCode, phone, clientId]
       );
       if (result.rowCount === 0) return json(404, { error: 'Not found' }, event);
       return json(200, { ok: true }, event);
@@ -267,6 +328,12 @@ exports.handler = async (event) => {
           ]
         );
       }
+
+      // Insurance is the final intake step: card + demographics + insurance are
+      // now on file. Notify the practice admin. Non-blocking — a send failure
+      // (SES not verified yet, etc.) never fails the patient's request.
+      await notifyIntakeComplete(client);
+
       return json(200, { ok: true }, event);
     }
 

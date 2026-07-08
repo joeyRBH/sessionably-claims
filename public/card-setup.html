@@ -295,6 +295,12 @@
           </div>
 
           <div class="field">
+            <label for="dt-phone">Mobile phone <span aria-hidden="true">(optional)</span></label>
+            <input id="dt-phone" class="input" type="tel" autocomplete="tel"
+                   maxlength="30" placeholder="(970) 825-2499">
+          </div>
+
+          <div class="field">
             <label for="dt-address1">Street address</label>
             <input id="dt-address1" class="input" type="text" autocomplete="address-line1"
                    maxlength="200" placeholder="123 Main St">
@@ -415,6 +421,8 @@
 
   <!-- All network calls go through window.ReddablyAPI (no direct fetch). -->
   <script src="./js/api-client.js"></script>
+  <!-- Shared phone-number normalizer to E.164 (window.ReddablyPhone). -->
+  <script src="./js/phone.js"></script>
   <script>
     (function (window, document) {
       'use strict';
@@ -487,6 +495,17 @@
             state: $('dt-state').value.trim(),
             postal_code: $('dt-zip').value.trim(),
           };
+
+          // Optional mobile phone: normalize to E.164 (+1XXXXXXXXXX) for Twilio.
+          // If left blank, omit it (never overwrites the number already on file);
+          // if entered but invalid, block with a clear inline message.
+          var phoneRaw = $('dt-phone').value.trim();
+          if (phoneRaw) {
+            var P = window.ReddablyPhone;
+            var pr = P && P.normalize(phoneRaw);
+            if (!pr || !pr.ok) { showDtError('Please enter a valid US phone number.'); return; }
+            fields.phone = pr.value;
+          }
 
           // Nudge for the claim-critical fields, but never hard-block — the patient
           // can Skip, and staff can fill gaps later in the client chart.

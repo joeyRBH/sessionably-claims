@@ -78,6 +78,7 @@ create table if not exists practices (
   stripe_account_id    text,                                  -- Stripe Connect account
   stripe_customer_id   text,
   stripe_subscription_id text,                                -- Stripe subscription for the VOB add-on
+  notification_email   text,                                  -- optional override recipient for admin notifications (else the practice_admin's email)
   is_active            boolean not null default true,
   created_at           timestamptz not null default now(),
   updated_at           timestamptz not null default now()
@@ -123,6 +124,13 @@ alter table practices add column if not exists city text;
 alter table practices add column if not exists state text;
 alter table practices add column if not exists postal_code text;
 alter table practices add column if not exists country text not null default 'US';
+
+-- Migration (idempotent): optional notification recipient for admin emails (e.g.
+-- the "client completed intake" alert). When null, notifications fall back to the
+-- practice's first active practice_admin email. Declared above for fresh
+-- databases; this keeps a pre-existing database in sync. See
+-- db/migrations/009_add_notification_email_to_practices.sql.
+alter table practices add column if not exists notification_email text;
 
 -- =============================================================================
 -- 3. practice_subscriptions — a practice's current plan.

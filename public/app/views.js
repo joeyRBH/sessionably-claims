@@ -732,8 +732,25 @@
           if (f.required && (val === '' || val === null || val === undefined)) {
             setError(f.name, (f.label || f.name) + ' is required.');
             ok = false;
-          } else {
-            setError(f.name, null);
+            out[f.name] = null;
+            return;
+          }
+          // Optional per-field validation (only when a value is present). A
+          // validate(value) that returns a string is treated as an inline error
+          // message; returning null/undefined passes. transform(value) lets a
+          // field rewrite its collected value (e.g. normalize a phone to E.164).
+          if (val !== '' && val != null && typeof f.validate === 'function') {
+            var msg = f.validate(val);
+            if (msg) {
+              setError(f.name, msg);
+              ok = false;
+              out[f.name] = val;
+              return;
+            }
+          }
+          setError(f.name, null);
+          if (val !== '' && val != null && typeof f.transform === 'function') {
+            val = f.transform(val);
           }
           out[f.name] = val === '' ? null : val;
         });

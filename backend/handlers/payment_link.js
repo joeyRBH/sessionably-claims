@@ -16,6 +16,7 @@ const db = require('../lib/db');
 const { requireAuth } = require('../lib/auth');
 const paymentToken = require('../lib/payment_token');
 const { json, preflight } = require('../lib/response');
+const { normalizePhone } = require('../lib/util');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -76,6 +77,16 @@ exports.handler = async (event) => {
       return json(400, { error: 'This client has no phone number on file.' }, event);
     }
 
+    // Normalize to E.164 for Twilio. New/edited clients are stored normalized, but
+    // a legacy row may hold a raw format — normalize here so the adapter always
+    // gets a valid number, and reject clearly if the stored value can't resolve.
+    const to = normalizePhone(client.phone);
+    if (!to.ok) {
+      return json(400, {
+        error: 'This client\'s phone number is not a valid US number. Update it and try again.',
+      }, event);
+    }
+
     const practiceRes = await db.query(`select name from practices where id = $1 limit 1`, [practiceId]);
     const practiceName = (practiceRes.rows[0] && practiceRes.rows[0].name) || 'Your practice';
 
@@ -95,7 +106,7 @@ exports.handler = async (event) => {
       [client.id, practiceId]
     );
 
-    return json(200, { to: String(client.phone).trim(), body: messageBody }, event);
+    return json(200, { to: to.value, body: messageBody }, event);
   } catch (err) {
     console.error('payment_link error:', err && err.message);
     return json(500, { error: 'Internal server error' }, event);

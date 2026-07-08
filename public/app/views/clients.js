@@ -25,7 +25,18 @@
     { name: 'pronouns',       label: 'Pronouns',       type: 'text' },
     { name: 'email',          label: 'Email',          type: 'email' },
     { name: 'phone',          label: 'Mobile Phone',   type: 'text',
-      placeholder: '+1 (303) 555-0100' },
+      placeholder: '(303) 555-0100',
+      // Accept any common US format; normalize to E.164 (+1XXXXXXXXXX) on submit
+      // — Twilio SMS (the payment-link flow) requires it. Backend re-validates.
+      validate: function (v) {
+        var P = window.ReddablyPhone;
+        return (P && P.normalize(v).ok) ? null : 'Enter a valid US phone number.';
+      },
+      transform: function (v) {
+        var P = window.ReddablyPhone;
+        var r = P && P.normalize(v);
+        return (r && r.ok) ? r.value : v;
+      } },
     { name: 'date_of_birth',  label: 'Date of birth',  type: 'date' },
     { name: 'gender',         label: 'Biological Sex', type: 'select', required: true,
       options: [
@@ -43,6 +54,13 @@
     { name: 'status',         label: 'Status',         type: 'select',
       options: ['awaiting_info', 'ready', 'active', 'inactive'] },
   ];
+
+  // The "New client" form omits date of birth — the client supplies it themselves
+  // in the SMS intake ("Your information" step), keeping PHI entry with the client.
+  // Staff can still correct it later via the Edit client form (full CLIENT_FIELDS).
+  var CREATE_CLIENT_FIELDS = CLIENT_FIELDS.filter(function (f) {
+    return f.name !== 'date_of_birth';
+  });
 
   var INSURANCE_FIELDS = [
     { name: 'carrier_name',            label: 'Carrier',                type: 'text' },
@@ -170,7 +188,7 @@
     function openCreate() {
       R.formModal({
         title: 'New client',
-        fields: CLIENT_FIELDS,
+        fields: CREATE_CLIENT_FIELDS,
         submitLabel: 'Create client',
       }).then(function (values) {
         if (!values) return;
