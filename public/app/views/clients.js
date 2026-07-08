@@ -70,12 +70,10 @@
   });
 
   var INSURANCE_FIELDS = [
-    { name: 'carrier_name',            label: 'Carrier',                type: 'text' },
-    { name: 'member_id',               label: 'Member ID',              type: 'text' },
-    { name: 'group_number',            label: 'Group number',           type: 'text' },
-    { name: 'plan_type',               label: 'Plan type',              type: 'text' },
     { name: 'payer_id',                label: 'Payer ID',               type: 'payer',
       placeholder: 'Search payer name or enter a Payer ID…' },
+    { name: 'member_id',               label: 'Member ID',              type: 'text' },
+    { name: 'group_number',            label: 'Group number',           type: 'text' },
     { name: 'subscriber_relationship', label: 'Subscriber relationship', type: 'select',
       options: ['self', 'spouse', 'child', 'other'] },
     { name: 'subscriber_name',         label: 'Subscriber name',        type: 'text' },
@@ -407,7 +405,7 @@
       var insuranceRows;
       if (insurance && insurance.length) {
         insuranceRows = insurance.map(function (r) {
-          var bits = [r.carrier_name || 'Insurance'];
+          var bits = [r.payer_id ? 'Payer ' + r.payer_id : 'Insurance'];
           if (r.member_id) bits.push('Member ' + r.member_id);
           if (r.oon_reimbursement_rate != null) bits.push(r.oon_reimbursement_rate + '% OON');
           return row(r.is_primary ? 'Primary' : 'Secondary', bits.join('  ·  '));
@@ -550,10 +548,25 @@
       }
 
       function openForm(record) {
+        // Normalize the record into the shape the form inputs expect: the API
+        // returns is_primary as a boolean and subscriber_dob as a timestamp, but
+        // the select wants 'true'/'false' strings and the date input wants a bare
+        // YYYY-MM-DD. payer_id passes through so the payer picker prefills.
+        var values;
+        if (record) {
+          values = {};
+          Object.keys(record).forEach(function (k) { values[k] = record[k]; });
+          values.is_primary = record.is_primary ? 'true' : 'false';
+          if (record.subscriber_dob) {
+            values.subscriber_dob = String(record.subscriber_dob).slice(0, 10);
+          }
+        } else {
+          values = { is_primary: 'true' };
+        }
         R.formModal({
           title: record ? 'Edit insurance' : 'Add insurance',
           fields: INSURANCE_FIELDS,
-          values: record || { is_primary: 'true' },
+          values: values,
           submitLabel: record ? 'Save changes' : 'Add insurance',
         }).then(function (values) {
           if (!values) return;
@@ -853,7 +866,7 @@
         var rows = [];
         records.forEach(function (r) {
           rows.push(h('tr', null, [
-            h('td', null, r.carrier_name || '—'),
+            h('td', null, r.payer_id || '—'),
             h('td', null, r.member_id || '—'),
             h('td', null, r.is_primary
               ? h('span', { class: 'badge badge--success' }, 'Primary')
@@ -868,7 +881,7 @@
         });
         body.appendChild(h('table', { class: 'data-table' }, [
           h('thead', null, h('tr', null, [
-            h('th', null, 'Carrier'),
+            h('th', null, 'Payer ID'),
             h('th', null, 'Member ID'),
             h('th', null, 'Primary'),
             h('th', null, 'OON rate'),
