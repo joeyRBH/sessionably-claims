@@ -149,6 +149,35 @@ output "api_custom_domain_hosted_zone_id_reddably" {
 }
 
 # ─────────────────────────────────────────────────────────────
+# SES (transactional email)
+# ─────────────────────────────────────────────────────────────
+
+output "ses_from_address" {
+  description = "FROM address the backend sends notifications from. Must be on ses_domain and covered by the verified identity."
+  value       = var.ses_from_address
+}
+
+output "ses_domain_verification_record" {
+  description = "TXT record to add at the DNS provider to verify the SES domain identity (name/type/value)."
+  value = {
+    name  = "_amazonses.${aws_ses_domain_identity.reddably.domain}"
+    type  = "TXT"
+    value = aws_ses_domain_identity.reddably.verification_token
+  }
+}
+
+output "ses_dkim_records" {
+  description = "Three CNAME records to add at the DNS provider for SES Easy DKIM (name/type/value). Email will not send until these (and the verification TXT) resolve."
+  value = [
+    for token in aws_ses_domain_dkim.reddably.dkim_tokens : {
+      name  = "${token}._domainkey.${aws_ses_domain_identity.reddably.domain}"
+      type  = "CNAME"
+      value = "${token}.dkim.amazonses.com"
+    }
+  ]
+}
+
+# ─────────────────────────────────────────────────────────────
 # NAT egress (Stedi clearinghouse)
 # ─────────────────────────────────────────────────────────────
 

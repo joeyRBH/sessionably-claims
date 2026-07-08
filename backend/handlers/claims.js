@@ -220,6 +220,19 @@ function missingBillingAddressField(practice) {
   return null;
 }
 
+// The subscriber (patient) needs a date of birth before a claim can be built:
+// the 837P subscriber loop requires it, and without it Stedi rejects the claim.
+// DOB is collected from the client themselves in the SMS intake, so a
+// staff-created client may have none yet — we catch that here and return a clear
+// 422 (fill in DOB on the client chart) instead of letting the submission reach
+// the clearinghouse and 500/502. Returns the missing field name, or null.
+function missingSubscriberField(client) {
+  if (!client) return 'date_of_birth';
+  const dob = client.date_of_birth;
+  if (dob == null || String(dob).trim() === '') return 'date_of_birth';
+  return null;
+}
+
 // Assemble the normalized context an adapter needs (no DB access in adapters).
 async function buildClaimContext(practiceId, claim) {
   const [sessionRes, clientRes, clinicianRes, practiceRes] = await Promise.all([
@@ -456,6 +469,15 @@ async function submitClaim(practiceId, userId, id, event) {
     }, event);
   }
 
+  // The subscriber's date of birth is required by the 837P. A client created by
+  // staff may not have one yet (the client supplies it in the SMS intake), so
+  // catch it here as a clean 422 rather than a downstream 500/502.
+  if (missingSubscriberField(ctx.client)) {
+    return json(422, {
+      error: "Client date of birth is required before submitting claims. Ask the client to complete intake, or add it on the client's chart.",
+    }, event);
+  }
+
   const adapter = getClearinghouse();
 
   let result;
@@ -683,6 +705,7 @@ async function listEvents(practiceId, id, event) {
 // Exported for unit testing (Lambda only calls .handler): the billing-address
 // guard and the set of statuses whose claims may be regenerated from a session.
 exports.missingBillingAddressField = missingBillingAddressField;
+exports.missingSubscriberField = missingSubscriberField;
 exports.REGENERATABLE_STATUSES = REGENERATABLE_STATUSES;
 
 exports.handler = async (event) => {

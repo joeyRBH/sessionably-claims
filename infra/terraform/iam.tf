@@ -56,6 +56,18 @@ data "aws_iam_policy_document" "lambda_runtime" {
     }
   }
 
+  # SES send - scoped to this stack's verified domain identity only. Backs the
+  # transactional notification emails (backend/lib/email.js). SendRawEmail is
+  # included so a future MIME/attachment email reuses the same grant.
+  statement {
+    sid = "SESSendScopedToIdentity"
+    actions = [
+      "ses:SendEmail",
+      "ses:SendRawEmail",
+    ]
+    resources = [aws_ses_domain_identity.reddably.arn]
+  }
+
   # Explicit CloudWatch Logs for this stack's log groups. AWSLambdaVPCAccessExecutionRole
   # already grants these account-wide; restating them scoped keeps the role auditable.
   statement {

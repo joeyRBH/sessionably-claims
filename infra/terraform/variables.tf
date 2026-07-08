@@ -218,6 +218,22 @@ variable "api_domain_name_reddably" {
   default     = "api.reddably.com"
 }
 
+# ─────────────────────────────────────────────────────────────
+# SES (transactional email)
+# ─────────────────────────────────────────────────────────────
+
+variable "ses_domain" {
+  description = "Domain identity verified in SES for sending transactional email (e.g. the intake-completion admin alert). DNS records to verify it are emitted as ses_* outputs and added manually at the DNS provider."
+  type        = string
+  default     = "reddably.com"
+}
+
+variable "ses_from_address" {
+  description = "FROM address used by backend/lib/email.js. Must be on ses_domain. The value is defaulted in the app code too; this variable documents the expected sender and is surfaced in outputs."
+  type        = string
+  default     = "notifications@reddably.com"
+}
+
 variable "create_api_custom_domain" {
   description = <<-EOT
     Two-phase gate for the custom domain. Leave false on the first apply: Terraform

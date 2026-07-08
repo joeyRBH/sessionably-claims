@@ -18,7 +18,7 @@
 const db = require('../lib/db');
 const { requireAuth } = require('../lib/auth');
 const { json, preflight } = require('../lib/response');
-const { normalizeEmail, parseBody } = require('../lib/util');
+const { normalizeEmail, normalizePhone, parseBody } = require('../lib/util');
 
 // Allowed client.status values — mirror the CHECK constraint in db/schema.sql.
 const ALLOWED_STATUSES = ['active', 'awaiting_info', 'ready', 'inactive'];
@@ -33,7 +33,7 @@ const ALLOWED_GENDERS = ['male', 'female', 'unknown'];
 // silently dropped the subscriber address, blocking claim submission). gender and
 // date_of_birth are validated separately (enum / date); these are plain text.
 const OPTIONAL_TEXT_COLUMNS = [
-  'preferred_name', 'pronouns', 'phone',
+  'preferred_name', 'pronouns',
   'address_line1', 'address_line2', 'city', 'state', 'postal_code',
 ];
 
@@ -75,6 +75,19 @@ function cleanText(v) {
 
 function isUUID(v) {
   return typeof v === 'string' && UUID_RE.test(v.trim());
+}
+
+// Parse an optional phone field to E.164, or a validation error. Blank/absent
+// clears the column (null); anything non-blank must normalize to a valid US
+// number. Twilio SMS (the payment-link flow) requires E.164, so we normalize at
+// write time rather than trusting whatever format the client sent.
+//   -> { ok: true, value: '+1XXXXXXXXXX' | null } | { ok: false }
+function parsePhone(v) {
+  const s = cleanText(v);
+  if (s == null) return { ok: true, value: null };
+  const res = normalizePhone(s);
+  if (!res.ok) return { ok: false };
+  return { ok: true, value: res.value };
 }
 
 // Calendar-valid YYYY-MM-DD (rejects e.g. 2020-13-40 before it reaches Postgres).
@@ -206,6 +219,11 @@ async function createClient(practiceId, body, event) {
 
   const email = body.email ? normalizeEmail(body.email) : null;
 
+  const phone = parsePhone(body.phone);
+  if (!phone.ok) {
+    return json(400, { error: 'Invalid phone number. Enter a valid US phone number.' }, event);
+  }
+
   const res = await db.query(
     `insert into clients
        (practice_id, first_name, last_name, preferred_name, pronouns, email, phone,
@@ -221,7 +239,7 @@ async function createClient(practiceId, body, event) {
       cleanText(body.preferred_name),
       cleanText(body.pronouns),
       email,
-      cleanText(body.phone),
+      phone.value,
       dob,
       gender,
       cleanText(body.address_line1),
@@ -296,6 +314,16 @@ async function updateClient(practiceId, id, body, event) {
 
   if ('email' in body) {
     add('email', body.email ? normalizeEmail(body.email) : null);
+  }
+
+  // Phone normalizes to E.164 (Twilio SMS requires it); a blank clears it, and a
+  // non-blank value that can't normalize is a 400 rather than stored garbage.
+  if ('phone' in body) {
+    const phone = parsePhone(body.phone);
+    if (!phone.ok) {
+      return json(400, { error: 'Invalid phone number. Enter a valid US phone number.' }, event);
+    }
+    add('phone', phone.value);
   }
 
   if ('date_of_birth' in body) {
