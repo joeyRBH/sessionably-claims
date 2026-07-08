@@ -56,16 +56,30 @@ data "aws_iam_policy_document" "lambda_runtime" {
     }
   }
 
-  # SES send - scoped to this stack's verified domain identity only. Backs the
-  # transactional notification emails (backend/lib/email.js). SendRawEmail is
-  # included so a future MIME/attachment email reuses the same grant.
+  # SES send - scoped to our sender address, not to a specific identity resource.
+  # Backs the transactional notification emails (backend/lib/email.js); SendRawEmail
+  # is included so a future MIME/attachment email reuses the same grant.
+  #
+  # Resource must be "*" with a ses:FromAddress condition rather than the domain
+  # identity ARN: in SES sandbox mode, SendEmail authorizes against BOTH the sender
+  # AND the recipient identity as resources, so a statement listing only the
+  # reddably.com identity ARN is denied whenever the verified recipient differs
+  # (the production "not authorized ... on identity/<recipient>" failure). The
+  # ses:FromAddress condition keeps this scoped to our from-address while working
+  # in both sandbox and production regardless of recipient.
   statement {
-    sid = "SESSendScopedToIdentity"
+    sid = "SESSendFromNotificationsAddress"
     actions = [
       "ses:SendEmail",
       "ses:SendRawEmail",
     ]
-    resources = [aws_ses_domain_identity.reddably.arn]
+    resources = ["*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "ses:FromAddress"
+      values   = [var.ses_from_address]
+    }
   }
 
   # Explicit CloudWatch Logs for this stack's log groups. AWSLambdaVPCAccessExecutionRole
