@@ -78,10 +78,15 @@ exports.handler = async (event) => {
     }
 
     // Normalize to E.164 for Twilio. New/edited clients are stored normalized, but
-    // a legacy row may hold a raw format — normalize here so the adapter always
-    // gets a valid number, and reject clearly if the stored value can't resolve.
+    // a legacy row (saved before phone normalization) may hold a raw or malformed
+    // value — normalize here so the adapter always gets a valid number, and reject
+    // clearly if the stored value can't resolve. Log the rejection (client id only,
+    // never the number/PHI) so these otherwise-silent 400s are diagnosable in
+    // CloudWatch — a bare 400 emits no log line, which is why legacy-number send
+    // failures looked like "nothing happened".
     const to = normalizePhone(client.phone);
     if (!to.ok) {
+      console.warn('payment_link: stored phone failed E.164 normalization for client', client.id);
       return json(400, {
         error: 'This client\'s phone number is not a valid US number. Update it and try again.',
       }, event);

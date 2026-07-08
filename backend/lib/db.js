@@ -3,7 +3,17 @@
 // Module-scope pg Pool, reused across warm Lambda invocations.
 // Never string-concatenate SQL — use parameterized queries only.
 
-const { Pool } = require('pg');
+const { Pool, types } = require('pg');
+
+// Treat PostgreSQL `date` (OID 1082) as a plain 'YYYY-MM-DD' string instead of a
+// JS Date. By default node-postgres parses a date-only column into a Date at
+// *local* midnight; JSON-serializing that (toISOString) then shifts it by the
+// process timezone, so a date of birth entered as the 14th comes back to the
+// browser as "…T00:00:00Z" and renders as the 13th in Mountain time. Date-only
+// values (date_of_birth, session_date, subscriber_dob, vob_period_start) have no
+// time or zone, so we keep the raw string end to end and never build a Date from
+// it. `timestamptz` (OID 1184) is unaffected and still parses to a Date.
+types.setTypeParser(1082, (value) => value);
 
 // One pool per warm container. Lazily created so requiring this module never
 // throws if DATABASE_URL is briefly unset (e.g. during cold-start config load).

@@ -95,12 +95,29 @@ function buildIntakeCompletionEmail(opts) {
   return { subject, text, html };
 }
 
-// Send the intake-completion notification to the practice admin. Never throws:
-// SES not being verified yet (or any transient failure) must not fail the
-// patient's intake request. Returns { sent: boolean, error?: string }.
+// A pragmatic email-format check: one @, a non-empty local part, and a dotted
+// domain with a 2+ char TLD. Enough to reject a login username like "BigRedd"
+// (which SES rejects with "Missing final '@domain'") without a dependency. The
+// recipient resolver and the practice-settings validator share this.
+function isValidEmail(v) {
+  if (typeof v !== 'string') return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v.trim());
+}
+
+// Send the intake-completion notification to the practice's configured
+// notification email. Never throws: SES not being verified yet (or any transient
+// failure) must not fail the patient's intake request. Returns
+// { sent: boolean, error?: string }.
+//
+// The recipient MUST be a real email address. A missing or malformed value (for
+// example a login username like "BigRedd") is never handed to SES — we skip the
+// send and log so it's diagnosable, instead of attempting a send SES rejects.
 async function sendIntakeCompletionEmail(opts, deps) {
   const o = opts || {};
-  if (!o.to) return { sent: false, error: 'no recipient' };
+  if (!isValidEmail(o.to)) {
+    console.warn('email: notification email not configured');
+    return { sent: false, error: 'notification email not configured' };
+  }
   try {
     const content = buildIntakeCompletionEmail(o);
     await sendEmail(
@@ -127,6 +144,7 @@ function escapeHtml(s) {
 module.exports = {
   FROM_ADDRESS,
   APP_BASE_URL,
+  isValidEmail,
   buildSendEmailInput,
   sendEmail,
   buildIntakeCompletionEmail,

@@ -59,21 +59,19 @@ async function loadClient(clientId) {
   return r.rows[0] || null;
 }
 
-// Resolve the practice's notification recipient for intake alerts: an explicit
-// practices.notification_email override if set, else the first active
-// practice_admin's email. Returns null when no recipient can be found (the caller
-// then simply skips the email). Best-effort; never throws to the request path.
+// Resolve the practice's notification recipient for intake alerts: the explicit
+// practices.notification_email ONLY. There is deliberately no fallback to a staff
+// login — a practice_admin's `email` may be a username (e.g. "BigRedd"), and
+// handing that to SES fails with "Missing final '@domain'". Returns null when
+// no notification_email is set (the caller then simply skips the email); the
+// email helper independently rejects any non-email value. Best-effort; never
+// throws to the request path.
 async function resolveNotificationEmail(practiceId) {
   try {
     const r = await db.query(
-      `select coalesce(
-                nullif(p.notification_email, ''),
-                (select u.email from users u
-                  where u.practice_id = p.id and u.role = 'practice_admin' and u.is_active = true
-                  order by u.created_at asc limit 1)
-              ) as recipient
-         from practices p
-        where p.id = $1
+      `select nullif(notification_email, '') as recipient
+         from practices
+        where id = $1
         limit 1`,
       [practiceId]
     );
