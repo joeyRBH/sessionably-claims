@@ -334,6 +334,14 @@
     summary: function (filters) { return request('GET', '/reports' + buildQuery(filters)); },
   };
 
+  // HIPAA audit log (admin-only; the server enforces the role). Read-only.
+  // filters: { from, to, action, resource_type, resource_id, actor_user_id,
+  // limit, before } — all optional and non-PHI (ids, enums, dot-notation actions,
+  // date bounds). list(filters) -> { audit_log: [...], next_before: <cursor|null> }.
+  var auditLog = {
+    list: function (filters) { return request('GET', '/audit-log' + buildQuery(filters)); },
+  };
+
   window.ReddablyAPI = {
     // config
     API_BASE: API_BASE,
@@ -364,5 +372,6 @@
     vob: vob,
     payers: payers,
     reports: reports,
+    auditLog: auditLog,
   };
 })(window);

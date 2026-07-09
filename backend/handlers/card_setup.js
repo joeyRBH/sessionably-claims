@@ -22,6 +22,7 @@ const db = require('../lib/db');
 const paymentToken = require('../lib/payment_token');
 const { json, preflight } = require('../lib/response');
 const { parseBody, normalizePhone } = require('../lib/util');
+const { audit } = require('../lib/audit');
 const stedi = require('../lib/clearinghouse/stedi');
 const email = require('../lib/email');
 
@@ -131,6 +132,11 @@ exports.handler = async (event) => {
     if (path === 'context') {
       const client = await loadClient(clientId);
       if (!client) return json(404, { error: 'Not found' }, event);
+      await audit(event, { actorType: 'patient_link', practiceId: client.practice_id }, {
+        action: 'patient_link.access',
+        resourceType: 'client',
+        resourceId: client.id,
+      });
       return json(
         200,
         {
@@ -164,7 +170,7 @@ exports.handler = async (event) => {
       if (!paymentMethodId || typeof paymentMethodId !== 'string') {
         return json(400, { error: 'Missing paymentMethodId.' }, event);
       }
-      await db.query(
+      const pmRes = await db.query(
         `update clients
             set payment_method_id = $1,
                 payment_method_brand = $2,
@@ -172,7 +178,8 @@ exports.handler = async (event) => {
                 payment_method_exp_month = $4,
                 payment_method_exp_year = $5,
                 payment_method_set_at = now()
-          where id = $6 and is_hidden = false`,
+          where id = $6 and is_hidden = false
+          returning practice_id`,
         [
           paymentMethodId,
           body.brand || null,
@@ -181,6 +188,11 @@ exports.handler = async (event) => {
           body.exp_year != null ? body.exp_year : null,
           clientId,
         ]
+      );
+      await audit(
+        event,
+        { actorType: 'patient_link', practiceId: pmRes.rows[0] ? pmRes.rows[0].practice_id : null },
+        { action: 'patient_link.save_payment_method', resourceType: 'client', resourceId: clientId }
       );
       return json(200, { ok: true }, event);
     }
@@ -245,10 +257,16 @@ exports.handler = async (event) => {
             state         = coalesce(nullif($5, ''), state),
             postal_code   = coalesce(nullif($6, ''), postal_code),
             phone         = coalesce(nullif($7, ''), phone)
-          where id = $8 and is_hidden = false`,
+          where id = $8 and is_hidden = false
+          returning practice_id`,
         [dateOfBirth, addressLine1, addressLine2, city, state, postalCode, phone, clientId]
       );
       if (result.rowCount === 0) return json(404, { error: 'Not found' }, event);
+      await audit(
+        event,
+        { actorType: 'patient_link', practiceId: result.rows[0] ? result.rows[0].practice_id : null },
+        { action: 'patient_link.save_details', resourceType: 'client', resourceId: clientId }
+      );
       return json(200, { ok: true }, event);
     }
 
@@ -331,6 +349,12 @@ exports.handler = async (event) => {
       // now on file. Notify the practice admin. Non-blocking — a send failure
       // (SES not verified yet, etc.) never fails the patient's request.
       await notifyIntakeComplete(client);
+
+      await audit(event, { actorType: 'patient_link', practiceId: client.practice_id }, {
+        action: 'patient_link.save_insurance',
+        resourceType: 'client',
+        resourceId: client.id,
+      });
 
       return json(200, { ok: true }, event);
     }

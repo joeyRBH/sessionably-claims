@@ -145,6 +145,19 @@
             <span class="nav-link__label">Settings</span>
           </a>
         </li>
+        <!-- Admin-only: revealed for practice_admin in app.js after /me loads. -->
+        <li id="nav-audit-item" hidden>
+          <a class="nav-link" href="#audit">
+            <svg class="icon nav-link__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M12 3l7 3v6c0 4.4-3 7.5-7 9-4-1.5-7-4.6-7-9V6l7-3z"
+                    fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M9 12l2 2 4-4" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span class="nav-link__label">Audit log</span>
+          </a>
+        </li>
       </ul>
     </nav>
 
@@ -179,5 +192,6 @@
   <script src="./views/clinicians.js?v=20260708c"></script>
   <script src="./views/reports.js?v=20260708c"></script>
   <script src="./views/settings.js?v=20260708c"></script>
+  <script src="./views/audit.js?v=20260709a"></script>
 </body>
 </html>

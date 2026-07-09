@@ -7,6 +7,7 @@ const { compare } = require('../lib/password');
 const { sign } = require('../lib/jwt');
 const { json, preflight } = require('../lib/response');
 const { normalizeEmail, publicUser, parseBody } = require('../lib/util');
+const { audit } = require('../lib/audit');
 
 const GENERIC_401 = { error: 'Invalid email or password' };
 
@@ -20,6 +21,13 @@ exports.handler = async (event) => {
     const password = body.password;
 
     if (!email || !password) {
+      // Pre-auth failure: no user/practice context. Email is acceptable in a
+      // security log; it is not patient PHI.
+      await audit(event, {}, {
+        action: 'auth.login_failure',
+        resourceType: 'auth',
+        metadata: { email: email || null },
+      });
       return json(401, GENERIC_401, event);
     }
 
@@ -32,6 +40,11 @@ exports.handler = async (event) => {
     // Always run compare to keep timing uniform whether or not the user exists.
     const ok = await compare(password, user ? user.password_hash : null);
     if (!user || !ok) {
+      await audit(event, {}, {
+        action: 'auth.login_failure',
+        resourceType: 'auth',
+        metadata: { email },
+      });
       return json(401, GENERIC_401, event);
     }
 
@@ -43,6 +56,11 @@ exports.handler = async (event) => {
     }
 
     const token = sign(user);
+    await audit(event, { userId: user.id, practiceId: user.practice_id }, {
+      action: 'auth.login_success',
+      resourceType: 'auth',
+      resourceId: user.id,
+    });
     return json(200, { token, user: publicUser(user) }, event);
   } catch (err) {
     console.error('login error:', err && err.message); // never log credentials
