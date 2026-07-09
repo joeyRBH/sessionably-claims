@@ -313,6 +313,11 @@
     function choose(p) {
       if (!p) return;
       hidden.value = p.payer_id;
+      // Stash the chosen payer's display name so the form can persist it
+      // alongside the payer_id (collect() reads data-payer-name). Cleared on any
+      // raw keystroke below, so it only survives an explicit pick.
+      if (p.name) hidden.setAttribute('data-payer-name', p.name);
+      else hidden.removeAttribute('data-payer-name');
       input.value = p.name ? (p.name + ' (' + p.payer_id + ')') : p.payer_id;
       closeResults();
     }
@@ -358,6 +363,7 @@
     input.addEventListener('input', function () {
       var q = input.value.trim();
       hidden.value = q;              // raw passthrough: submit whatever is typed
+      hidden.removeAttribute('data-payer-name');  // raw text is an id, not a name
       if (timer) { window.clearTimeout(timer); timer = null; }
       if (q.length < 2) { seq++; closeResults(); return; }  // too short: invalidate + hide
       timer = window.setTimeout(function () { runSearch(q); }, 300);
@@ -753,6 +759,14 @@
             val = f.transform(val);
           }
           out[f.name] = val === '' ? null : val;
+          // A payer field can persist the selected payer's display name under a
+          // companion key (e.g. carrier_name). Only emitted when the user picked
+          // a payer from the dropdown — omitted for raw-typed ids or an untouched
+          // edit, so a stored carrier_name is never blanked out.
+          if (f.type === 'payer' && f.payerNameField) {
+            var payerName = controls[f.name].getAttribute('data-payer-name');
+            if (payerName) out[f.payerNameField] = payerName;
+          }
         });
         return ok ? out : null;
       }

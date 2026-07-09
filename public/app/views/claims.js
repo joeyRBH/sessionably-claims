@@ -542,6 +542,67 @@
       ]);
     }
 
+    // --- Patient panel (read-only) -------------------------------------------
+    // Surfaces the demographics the 837 pulls from the client at submit time, so
+    // staff can confirm the claim is complete before submitting. Display only —
+    // sourced from getClaim's additive `patient` / `insurance` blocks; no edits
+    // happen here (the client record is the source of truth, one click away).
+    function patientCard(claim) {
+      var p = claim.patient || {};
+      var ins = claim.insurance || null;
+
+      var name = p.preferred_name
+        || [p.first_name, p.last_name].filter(Boolean).join(' ').trim()
+        || '—';
+
+      // The name links to the client record so a missing field is one click to fix.
+      var nameLink = h('a', {
+        href: '#clients/' + claim.client_id,
+        style: 'color:var(--color-primary);text-decoration:none',
+      }, name);
+
+      var items = [
+        detailItem('Name', nameLink),
+        detailItem('Date of birth', p.date_of_birth ? R.fmtDate(p.date_of_birth) : '—'),
+        detailItem('Gender', p.gender ? humanize(p.gender) : '—'),
+      ];
+      if (ins) {
+        items.push(detailItem('Member ID', ins.member_id || '—'));
+        items.push(detailItem('Payer', ins.carrier_name || ins.payer_id || '—'));
+      }
+
+      var grid = h('div', {
+        style: 'display:grid;grid-template-columns:repeat(auto-fit,minmax(9rem,1fr));' +
+          'gap:var(--space-4)',
+      }, items);
+
+      // DOB is required to submit (the 837 subscriber loop needs it), so call out
+      // its absence with a blocking warning that points to the fix.
+      var warning = p.date_of_birth
+        ? null
+        : h('p', {
+            style: 'margin:0;color:var(--color-warning);font-size:var(--font-size-3)',
+          }, [
+            h('strong', null, 'Missing date of birth — submission will be blocked. '),
+            'Add it on the ',
+            h('a', {
+              href: '#clients/' + claim.client_id,
+              style: 'color:var(--color-primary)',
+            }, 'client record'),
+            '.',
+          ]);
+
+      return h('div', { class: 'card' }, [
+        h('div', { class: 'card__header' }, [
+          h('h2', { class: 'card__title' }, 'Patient'),
+        ]),
+        h('div', { style: 'display:flex;flex-direction:column;gap:var(--space-4)' }, [
+          grid,
+          warning,
+        ]),
+      ]);
+    }
+
     // --- Compose the detail view --------------------------------------------
     function render(claim, events) {
       R.clear(root);
@@ -554,6 +615,7 @@
       var view = h('div', { class: 'view stack' }, [
         backLink(),
         headerCard(claim, contextEl),
+        patientCard(claim),
         eventsCard(events),
       ]);
 

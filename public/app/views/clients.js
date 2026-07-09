@@ -71,6 +71,7 @@
 
   var INSURANCE_FIELDS = [
     { name: 'payer_id',                label: 'Payer ID',               type: 'payer',
+      payerNameField: 'carrier_name',
       placeholder: 'Search payer name or enter a Payer ID…' },
     { name: 'member_id',               label: 'Member ID',              type: 'text' },
     { name: 'group_number',            label: 'Group number',           type: 'text' },
@@ -663,6 +664,7 @@
         var fields = [
           { name: 'member_id',     label: 'Member ID',     type: 'text', required: true },
           { name: 'payer_id',      label: 'Payer ID',      type: 'payer', required: true,
+            payerNameField: 'carrier_name',
             placeholder: 'Search payer name or enter a Payer ID…' },
           { name: 'first_name',    label: 'First name',    type: 'text', required: true },
           { name: 'last_name',     label: 'Last name',     type: 'text', required: true },
@@ -720,12 +722,15 @@
             insurance_record_id: record.id,
           }).then(function (res) {
             showVobResult(res);
-            // Persist the payer id used for this check back onto the record when
-            // it had none — closes the gap where a payer id typed only in the VOB
-            // modal was never saved. Best-effort; failure just skips the write.
-            if (!record.payer_id && v.payer_id) {
-              api.insuranceRecords.update(record.id, { payer_id: v.payer_id })
-                .then(reload, reload);
+            // Persist the payer id (and picked payer name) used for this check
+            // back onto the record when it had none — closes the gap where a payer
+            // chosen only in the VOB modal was never saved, which later makes the
+            // 837P receiver name empty. Best-effort; failure just skips the write.
+            var upd = {};
+            if (!record.payer_id && v.payer_id) upd.payer_id = v.payer_id;
+            if (!record.carrier_name && v.carrier_name) upd.carrier_name = v.carrier_name;
+            if (Object.keys(upd).length) {
+              api.insuranceRecords.update(record.id, upd).then(reload, reload);
             } else {
               reload();
             }
