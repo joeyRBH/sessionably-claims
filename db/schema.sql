@@ -644,10 +644,6 @@ create table if not exists audit_log (
 );
 comment on table audit_log is 'Append-only HIPAA audit trail (45 CFR 164.312(b)). WHO/WHAT/WHICH/WHEN by id and field name only — NEVER PHI values. No app UPDATE/DELETE path; 6-year retention.';
 
-create index if not exists idx_audit_log_practice_occurred on audit_log (practice_id, occurred_at desc);
-create index if not exists idx_audit_log_resource on audit_log (resource_type, resource_id);
-create index if not exists idx_audit_log_actor_occurred on audit_log (actor_user_id, occurred_at desc);
-
 -- Migration (idempotent): bring a pre-existing audit_log (the older
 -- entity_type/entity_id/created_at/inet shape) into line with the HIPAA design
 -- above. Declared in the CREATE for fresh databases; these keep an existing
@@ -680,6 +676,9 @@ begin
     check (actor_type in ('user', 'patient_link', 'system'));
 end $$;
 
+create index if not exists idx_audit_log_practice_occurred on audit_log (practice_id, occurred_at desc);
+create index if not exists idx_audit_log_resource on audit_log (resource_type, resource_id);
+create index if not exists idx_audit_log_actor_occurred on audit_log (actor_user_id, occurred_at desc);
 create index if not exists idx_audit_log_action on audit_log (action);
 
 -- =============================================================================
