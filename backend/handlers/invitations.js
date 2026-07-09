@@ -25,6 +25,7 @@ const db = require('../lib/db');
 const { requireAuth } = require('../lib/auth');
 const { json, preflight } = require('../lib/response');
 const { normalizeEmail, parseBody } = require('../lib/util');
+const { audit } = require('../lib/audit');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -81,7 +82,7 @@ async function loadCaller(userId) {
 
 // --- handlers ----------------------------------------------------------------
 
-async function createInvitation(caller, body, event) {
+async function createInvitation(caller, body, event, authCtx) {
   const email = normalizeEmail(body && body.email);
   if (!email) {
     return json(400, { error: 'Email is required.' }, event);
@@ -114,6 +115,12 @@ async function createInvitation(caller, body, event) {
   );
 
   const row = res.rows[0];
+  await audit(event, authCtx, {
+    action: 'invitation.create',
+    resourceType: 'invitation',
+    resourceId: row.id,
+    metadata: { role: row.role },
+  });
   const link = `${APP_BASE_URL}/invite.html?invite=${row.token}`;
   return json(201, { invitation: shapeInvitation(row), link }, event);
 }
@@ -138,7 +145,7 @@ async function listInvitations(caller, event) {
   return json(200, { invitations: res.rows.map(shapeInvitation) }, event);
 }
 
-async function revokeInvitation(caller, id, event) {
+async function revokeInvitation(caller, id, event, authCtx) {
   if (!isUUID(id)) return json(404, { error: 'Not found' }, event);
 
   const found = await db.query(
@@ -158,6 +165,11 @@ async function revokeInvitation(caller, id, event) {
       returning *`,
     [id, caller.practice_id]
   );
+  await audit(event, authCtx, {
+    action: 'invitation.delete',
+    resourceType: 'invitation',
+    resourceId: id,
+  });
   return json(200, { invitation: shapeInvitation(res.rows[0]) }, event);
 }
 
@@ -183,6 +195,7 @@ exports.handler = async (event) => {
     }
 
     const id = pathId(event);
+    const authCtx = { userId: caller.id, practiceId: caller.practice_id };
 
     // Create and revoke are admin-only; listing is open to any active member.
     if ((method === 'POST' || method === 'DELETE') && caller.role !== 'practice_admin') {
@@ -190,10 +203,10 @@ exports.handler = async (event) => {
     }
 
     if (method === 'POST' && !id) {
-      return await createInvitation(caller, parseBody(event), event);
+      return await createInvitation(caller, parseBody(event), event, authCtx);
     }
     if (method === 'GET' && !id) return await listInvitations(caller, event);
-    if (method === 'DELETE' && id) return await revokeInvitation(caller, id, event);
+    if (method === 'DELETE' && id) return await revokeInvitation(caller, id, event, authCtx);
 
     return json(405, { error: 'Method not allowed' }, event);
   } catch (err) {

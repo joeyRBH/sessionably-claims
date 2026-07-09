@@ -619,28 +619,68 @@ create trigger trg_shareable_links_updated_at
   for each row execute function set_updated_at();
 
 -- =============================================================================
--- audit_log — append-only compliance trail (no updated_at, no trigger).
+-- audit_log — append-only HIPAA compliance trail (no updated_at, no trigger).
 -- =============================================================================
+-- HIPAA 45 CFR 164.312(b) requires recording and examining activity in systems
+-- containing ePHI. This table records WHO did WHAT to WHICH resource WHEN, using
+-- ids and field NAMES only. It MUST NOT contain PHI — never a patient name, DOB,
+-- member id, or diagnosis code in any column or in metadata. The application has
+-- NO UPDATE or DELETE code path for this table (append-only by convention); the
+-- read endpoint (backend/handlers/audit.js) is GET-only. Retain rows for at least
+-- 6 years (HIPAA retention). See backend/lib/audit.js for the write helper.
 create table if not exists audit_log (
   id             uuid primary key default gen_random_uuid(),
-  practice_id    uuid references practices (id) on delete restrict,
-  actor_user_id  uuid references users (id) on delete restrict,
-  actor_type     text not null check (actor_type in ('user', 'client', 'system')),
-  action         text not null,
-  entity_type    text,
-  entity_id      uuid,
-  ip_address     inet,
+  occurred_at    timestamptz not null default now(),
+  practice_id    uuid references practices (id) on delete restrict,  -- nullable: pre-auth events (login failure) have none
+  actor_user_id  uuid references users (id) on delete restrict,      -- nullable: patient-link / system actors have no user
+  actor_type     text not null check (actor_type in ('user', 'patient_link', 'system')),
+  action         text not null,                                      -- dot notation, e.g. 'client.view', 'claim.submit'
+  resource_type  text,                                               -- 'client' | 'insurance_record' | 'session' | 'claim' | 'vob' | 'user' | 'practice' | 'invitation' | 'auth'
+  resource_id    uuid,
+  ip_address     text,                                               -- API GW requestContext.http.sourceIp
   user_agent     text,
-  metadata       jsonb,
-  created_at     timestamptz not null default now()
+  request_id     text,                                               -- Lambda/API GW request id (CloudWatch correlation)
+  metadata       jsonb                                               -- NON-PHI only: e.g. {"fields_changed":["date_of_birth"]}, {"count":25}
 );
-comment on table audit_log is 'Append-only audit trail of PHI access and significant actions (HIPAA).';
+comment on table audit_log is 'Append-only HIPAA audit trail (45 CFR 164.312(b)). WHO/WHAT/WHICH/WHEN by id and field name only — NEVER PHI values. No app UPDATE/DELETE path; 6-year retention.';
 
-create index if not exists idx_audit_log_practice_id on audit_log (practice_id);
-create index if not exists idx_audit_log_actor_user_id on audit_log (actor_user_id);
+create index if not exists idx_audit_log_practice_occurred on audit_log (practice_id, occurred_at desc);
+create index if not exists idx_audit_log_resource on audit_log (resource_type, resource_id);
+create index if not exists idx_audit_log_actor_occurred on audit_log (actor_user_id, occurred_at desc);
+
+-- Migration (idempotent): bring a pre-existing audit_log (the older
+-- entity_type/entity_id/created_at/inet shape) into line with the HIPAA design
+-- above. Declared in the CREATE for fresh databases; these keep an existing
+-- database in sync. See db/migrations/010_add_hipaa_audit_log.sql.
+alter table audit_log add column if not exists occurred_at   timestamptz not null default now();
+alter table audit_log add column if not exists resource_type text;
+alter table audit_log add column if not exists resource_id   uuid;
+alter table audit_log add column if not exists request_id    text;
+
+-- ip_address widened from inet to text (older column used inet). Guarded so it
+-- only runs when the column is not already text (idempotent / re-runnable).
+do $$
+begin
+  if exists (
+    select 1 from information_schema.columns
+     where table_name = 'audit_log' and column_name = 'ip_address' and data_type <> 'text'
+  ) then
+    alter table audit_log alter column ip_address type text using ip_address::text;
+  end if;
+end $$;
+
+-- actor_type: replace the older check (which allowed 'client') with the new set
+-- ('user' | 'patient_link' | 'system'). Drop-then-add so it re-runs cleanly.
+do $$
+begin
+  if exists (select 1 from pg_constraint where conname = 'audit_log_actor_type_check') then
+    alter table audit_log drop constraint audit_log_actor_type_check;
+  end if;
+  alter table audit_log add constraint audit_log_actor_type_check
+    check (actor_type in ('user', 'patient_link', 'system'));
+end $$;
+
 create index if not exists idx_audit_log_action on audit_log (action);
-create index if not exists idx_audit_log_entity on audit_log (entity_type, entity_id);
-create index if not exists idx_audit_log_created_at on audit_log (created_at);
 
 -- =============================================================================
 -- Post-migration data: designate founder accounts (permanent free full access).

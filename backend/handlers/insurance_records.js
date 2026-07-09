@@ -20,6 +20,7 @@ const db = require('../lib/db');
 const { requireAuth } = require('../lib/auth');
 const { json, preflight } = require('../lib/response');
 const { parseBody } = require('../lib/util');
+const { audit, sanitizeFields } = require('../lib/audit');
 const { normalizeEligibility } = require('./vob');
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -168,7 +169,7 @@ async function clientInPractice(practiceId, clientId) {
 
 // --- handlers ----------------------------------------------------------------
 
-async function createRecord(practiceId, body, event) {
+async function createRecord(practiceId, body, event, authCtx) {
   const clientId = cleanText(body.client_id);
   if (!clientId) {
     return json(400, { error: 'Missing required fields: client_id' }, event);
@@ -238,10 +239,16 @@ async function createRecord(practiceId, body, event) {
     ]
   );
 
-  return json(201, { insurance_record: shapeRecord(res.rows[0]) }, event);
+  const created = res.rows[0];
+  await audit(event, authCtx, {
+    action: 'insurance.create',
+    resourceType: 'insurance_record',
+    resourceId: created.id,
+  });
+  return json(201, { insurance_record: shapeRecord(created) }, event);
 }
 
-async function listRecords(practiceId, event) {
+async function listRecords(practiceId, event, authCtx) {
   const params = [practiceId];
   let where = `practice_id = $1 and is_hidden = false`;
 
@@ -260,10 +267,15 @@ async function listRecords(practiceId, event) {
       order by created_at desc`,
     params
   );
+  await audit(event, authCtx, {
+    action: 'insurance.list',
+    resourceType: 'insurance_record',
+    metadata: { count: res.rowCount },
+  });
   return json(200, { insurance_records: res.rows.map(shapeRecord) }, event);
 }
 
-async function getRecord(practiceId, id, event) {
+async function getRecord(practiceId, id, event, authCtx) {
   if (!isUUID(id)) {
     return json(404, { error: 'Not found' }, event);
   }
@@ -276,10 +288,15 @@ async function getRecord(practiceId, id, event) {
   if (res.rowCount === 0) {
     return json(404, { error: 'Not found' }, event);
   }
+  await audit(event, authCtx, {
+    action: 'insurance.view',
+    resourceType: 'insurance_record',
+    resourceId: id,
+  });
   return json(200, { insurance_record: shapeRecord(res.rows[0]) }, event);
 }
 
-async function updateRecord(practiceId, id, body, event) {
+async function updateRecord(practiceId, id, body, event, authCtx) {
   if (!isUUID(id)) {
     return json(404, { error: 'Not found' }, event);
   }
@@ -289,11 +306,21 @@ async function updateRecord(practiceId, id, body, event) {
     return json(400, { error: 'client_id cannot be changed.' }, event);
   }
 
+  // Snapshot the row before the update so we can record WHICH fields changed
+  // (names only). Null when absent — the UPDATE then 404s and we never audit.
+  const beforeRes = await db.query(
+    `select * from insurance_records where id = $1 and practice_id = $2 and is_hidden = false limit 1`,
+    [id, practiceId]
+  );
+  const before = beforeRes.rows[0] || null;
+
   const sets = [];
   const params = [];
+  const changes = {};
   const add = (col, val) => {
     params.push(val);
     sets.push(`${col} = $${params.length}`);
+    changes[col] = val;
   };
 
   // Optional nullable text fields.
@@ -376,10 +403,16 @@ async function updateRecord(practiceId, id, body, event) {
   if (res.rowCount === 0) {
     return json(404, { error: 'Not found' }, event);
   }
+  await audit(event, authCtx, {
+    action: 'insurance.update',
+    resourceType: 'insurance_record',
+    resourceId: id,
+    metadata: { fields_changed: sanitizeFields(before, changes) },
+  });
   return json(200, { insurance_record: shapeRecord(res.rows[0]) }, event);
 }
 
-async function deleteRecord(practiceId, id, event) {
+async function deleteRecord(practiceId, id, event, authCtx) {
   if (!isUUID(id)) {
     return json(404, { error: 'Not found' }, event);
   }
@@ -393,6 +426,11 @@ async function deleteRecord(practiceId, id, event) {
   if (res.rowCount === 0) {
     return json(404, { error: 'Not found' }, event);
   }
+  await audit(event, authCtx, {
+    action: 'insurance.delete',
+    resourceType: 'insurance_record',
+    resourceId: id,
+  });
   return json(200, { deleted: true, id: res.rows[0].id }, event);
 }
 
@@ -419,12 +457,13 @@ exports.handler = async (event) => {
 
     const id = pathId(event);
     const body = method === 'POST' || method === 'PATCH' ? parseBody(event) : null;
+    const authCtx = { userId: auth.user.sub, practiceId };
 
-    if (method === 'POST' && !id) return await createRecord(practiceId, body, event);
-    if (method === 'GET' && !id) return await listRecords(practiceId, event);
-    if (method === 'GET' && id) return await getRecord(practiceId, id, event);
-    if (method === 'PATCH' && id) return await updateRecord(practiceId, id, body, event);
-    if (method === 'DELETE' && id) return await deleteRecord(practiceId, id, event);
+    if (method === 'POST' && !id) return await createRecord(practiceId, body, event, authCtx);
+    if (method === 'GET' && !id) return await listRecords(practiceId, event, authCtx);
+    if (method === 'GET' && id) return await getRecord(practiceId, id, event, authCtx);
+    if (method === 'PATCH' && id) return await updateRecord(practiceId, id, body, event, authCtx);
+    if (method === 'DELETE' && id) return await deleteRecord(practiceId, id, event, authCtx);
 
     return json(405, { error: 'Method not allowed' }, event);
   } catch (err) {

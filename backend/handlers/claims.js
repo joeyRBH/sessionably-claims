@@ -24,6 +24,7 @@ const db = require('../lib/db');
 const { requireAuth } = require('../lib/auth');
 const { json, preflight } = require('../lib/response');
 const { parseBody } = require('../lib/util');
+const { audit, sanitizeFields } = require('../lib/audit');
 const { getClearinghouse } = require('../lib/clearinghouse');
 const {
   primaryInsuranceForClient,
@@ -322,7 +323,7 @@ async function buildClaimContext(practiceId, claim) {
 
 // --- handlers ----------------------------------------------------------------
 
-async function createClaim(practiceId, userId, body, event) {
+async function createClaim(practiceId, userId, body, event, authCtx) {
   const sessionId = cleanText(body.session_id);
   if (!sessionId) {
     return json(400, { error: 'Missing required fields: session_id' }, event);
@@ -369,10 +370,15 @@ async function createClaim(practiceId, userId, body, event) {
     });
   });
 
+  await audit(event, authCtx, {
+    action: 'claim.create',
+    resourceType: 'claim',
+    resourceId: result.id,
+  });
   return json(201, { claim: shapeClaim(result) }, event);
 }
 
-async function listClaims(practiceId, event) {
+async function listClaims(practiceId, event, authCtx) {
   const params = [practiceId];
   // Columns are qualified (c./s./ir.) because the list joins clients, sessions,
   // and the optional insurance record for the table's display fields.
@@ -419,17 +425,27 @@ async function listClaims(practiceId, event) {
       order by c.created_at desc`,
     params
   );
+  await audit(event, authCtx, {
+    action: 'claim.list',
+    resourceType: 'claim',
+    metadata: { count: res.rowCount },
+  });
   return json(200, { claims: res.rows.map(shapeClaimRow) }, event);
 }
 
-async function getClaim(practiceId, id, event) {
+async function getClaim(practiceId, id, event, authCtx) {
   if (!isUUID(id)) return json(404, { error: 'Not found' }, event);
   const row = await loadClaimDetail(practiceId, id);
   if (!row) return json(404, { error: 'Not found' }, event);
+  await audit(event, authCtx, {
+    action: 'claim.view',
+    resourceType: 'claim',
+    resourceId: id,
+  });
   return json(200, { claim: shapeClaimDetail(row) }, event);
 }
 
-async function updateClaim(practiceId, id, body, event) {
+async function updateClaim(practiceId, id, body, event, authCtx) {
   if (!isUUID(id)) return json(404, { error: 'Not found' }, event);
   const claim = await loadClaim(practiceId, id);
   if (!claim) return json(404, { error: 'Not found' }, event);
@@ -444,9 +460,11 @@ async function updateClaim(practiceId, id, body, event) {
 
   const sets = [];
   const params = [];
+  const changes = {};
   const add = (col, val) => {
     params.push(val);
     sets.push(`${col} = $${params.length}`);
+    changes[col] = val;
   };
 
   if ('claim_number' in body) add('claim_number', cleanText(body.claim_number));
@@ -487,10 +505,16 @@ async function updateClaim(practiceId, id, body, event) {
     params
   );
   if (res.rowCount === 0) return json(404, { error: 'Not found' }, event);
+  await audit(event, authCtx, {
+    action: 'claim.update',
+    resourceType: 'claim',
+    resourceId: id,
+    metadata: { fields_changed: sanitizeFields(claim, changes) },
+  });
   return json(200, { claim: shapeClaim(res.rows[0]) }, event);
 }
 
-async function deleteClaim(practiceId, id, event) {
+async function deleteClaim(practiceId, id, event, authCtx) {
   if (!isUUID(id)) return json(404, { error: 'Not found' }, event);
   const claim = await loadClaim(practiceId, id);
   if (!claim) return json(404, { error: 'Not found' }, event);
@@ -504,10 +528,15 @@ async function deleteClaim(practiceId, id, event) {
     [id, practiceId]
   );
   if (res.rowCount === 0) return json(404, { error: 'Not found' }, event);
+  await audit(event, authCtx, {
+    action: 'claim.delete',
+    resourceType: 'claim',
+    resourceId: id,
+  });
   return json(200, { deleted: true, id: res.rows[0].id }, event);
 }
 
-async function submitClaim(practiceId, userId, id, event) {
+async function submitClaim(practiceId, userId, id, event, authCtx) {
   if (!isUUID(id)) return json(404, { error: 'Not found' }, event);
   const claim = await loadClaim(practiceId, id);
   if (!claim) return json(404, { error: 'Not found' }, event);
@@ -595,10 +624,16 @@ async function submitClaim(practiceId, userId, id, event) {
   });
 
   if (!updated) return json(409, { error: 'Claim is no longer in a submittable state.' }, event);
+  await audit(event, authCtx, {
+    action: 'claim.submit',
+    resourceType: 'claim',
+    resourceId: id,
+    metadata: { clearinghouse: adapter.name, status: updated.status },
+  });
   return json(200, { claim: shapeClaim(updated) }, event);
 }
 
-async function refreshClaim(practiceId, userId, id, event) {
+async function refreshClaim(practiceId, userId, id, event, authCtx) {
   if (!isUUID(id)) return json(404, { error: 'Not found' }, event);
   const claim = await loadClaim(practiceId, id);
   if (!claim) return json(404, { error: 'Not found' }, event);
@@ -665,10 +700,16 @@ async function refreshClaim(practiceId, userId, id, event) {
   });
 
   if (!updated) return json(404, { error: 'Not found' }, event);
+  await audit(event, authCtx, {
+    action: 'claim.refresh',
+    resourceType: 'claim',
+    resourceId: id,
+    metadata: { status: updated.status },
+  });
   return json(200, { claim: shapeClaim(updated) }, event);
 }
 
-async function voidClaim(practiceId, userId, id, event) {
+async function voidClaim(practiceId, userId, id, event, authCtx) {
   if (!isUUID(id)) return json(404, { error: 'Not found' }, event);
   const claim = await loadClaim(practiceId, id);
   if (!claim) return json(404, { error: 'Not found' }, event);
@@ -700,6 +741,11 @@ async function voidClaim(practiceId, userId, id, event) {
   });
 
   if (!updated) return json(404, { error: 'Not found' }, event);
+  await audit(event, authCtx, {
+    action: 'claim.void',
+    resourceType: 'claim',
+    resourceId: id,
+  });
   return json(200, { claim: shapeClaim(updated) }, event);
 }
 
@@ -713,7 +759,7 @@ const REGENERATABLE_STATUSES = ['draft', 'denied'];
 // "Edit claim" flow opens the session, saves it, then calls this). Today the only
 // derived field is billed_amount = session.fee; keeping it in one server-side
 // place means the browser never recomputes money over claim rows.
-async function regenerateClaim(practiceId, userId, id, event) {
+async function regenerateClaim(practiceId, userId, id, event, authCtx) {
   if (!isUUID(id)) return json(404, { error: 'Not found' }, event);
   const claim = await loadClaim(practiceId, id);
   if (!claim) return json(404, { error: 'Not found' }, event);
@@ -748,6 +794,11 @@ async function regenerateClaim(practiceId, userId, id, event) {
   });
 
   if (!updated) return json(409, { error: 'Claim is no longer in a regeneratable state.' }, event);
+  await audit(event, authCtx, {
+    action: 'claim.regenerate',
+    resourceType: 'claim',
+    resourceId: id,
+  });
   return json(200, { claim: shapeClaim(updated) }, event);
 }
 
@@ -794,22 +845,23 @@ exports.handler = async (event) => {
       return json(401, { error: 'Unauthorized' }, event);
     }
     const userId = auth.user.sub;
+    const authCtx = { userId, practiceId };
     const id = pathId(event);
     const action = subAction(event);
     const body = method === 'POST' || method === 'PATCH' ? parseBody(event) : null;
 
     // Action sub-routes (id always present) take precedence over base CRUD.
-    if (action === 'submit' && method === 'POST' && id) return await submitClaim(practiceId, userId, id, event);
-    if (action === 'refresh' && method === 'POST' && id) return await refreshClaim(practiceId, userId, id, event);
-    if (action === 'void' && method === 'POST' && id) return await voidClaim(practiceId, userId, id, event);
-    if (action === 'regenerate' && method === 'POST' && id) return await regenerateClaim(practiceId, userId, id, event);
+    if (action === 'submit' && method === 'POST' && id) return await submitClaim(practiceId, userId, id, event, authCtx);
+    if (action === 'refresh' && method === 'POST' && id) return await refreshClaim(practiceId, userId, id, event, authCtx);
+    if (action === 'void' && method === 'POST' && id) return await voidClaim(practiceId, userId, id, event, authCtx);
+    if (action === 'regenerate' && method === 'POST' && id) return await regenerateClaim(practiceId, userId, id, event, authCtx);
     if (action === 'events' && method === 'GET' && id) return await listEvents(practiceId, id, event);
 
-    if (method === 'POST' && !id) return await createClaim(practiceId, userId, body, event);
-    if (method === 'GET' && !id) return await listClaims(practiceId, event);
-    if (method === 'GET' && id) return await getClaim(practiceId, id, event);
-    if (method === 'PATCH' && id) return await updateClaim(practiceId, id, body, event);
-    if (method === 'DELETE' && id) return await deleteClaim(practiceId, id, event);
+    if (method === 'POST' && !id) return await createClaim(practiceId, userId, body, event, authCtx);
+    if (method === 'GET' && !id) return await listClaims(practiceId, event, authCtx);
+    if (method === 'GET' && id) return await getClaim(practiceId, id, event, authCtx);
+    if (method === 'PATCH' && id) return await updateClaim(practiceId, id, body, event, authCtx);
+    if (method === 'DELETE' && id) return await deleteClaim(practiceId, id, event, authCtx);
 
     return json(405, { error: 'Method not allowed' }, event);
   } catch (err) {

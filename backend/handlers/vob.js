@@ -18,6 +18,7 @@ const db = require('../lib/db');
 const { requireAuth } = require('../lib/auth');
 const { json, preflight } = require('../lib/response');
 const { parseBody } = require('../lib/util');
+const { audit } = require('../lib/audit');
 const stedi = require('../lib/clearinghouse/stedi');
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -251,7 +252,7 @@ function normalizeEligibility(data, requestMemberId) {
 
 // --- handler -----------------------------------------------------------------
 
-async function runCheck(ctx, body, event) {
+async function runCheck(ctx, body, event, authCtx) {
   // Plan gate: only paid ('vob') or founder practices may run a check.
   if (ctx.plan !== 'vob' && ctx.plan !== 'founder') {
     return json(403, { error: 'VOB add-on required', upgrade: true }, event);
@@ -373,6 +374,15 @@ async function runCheck(ctx, body, event) {
     console.error('vob check (increment usage) error:', err && err.message);
   }
 
+  // Audit the check. payer id is a directory identifier, not PHI; result_active
+  // is the coverage-status verdict (true/false/null). NEVER log member id/names.
+  await audit(event, authCtx, {
+    action: 'vob.check',
+    resourceType: 'vob',
+    resourceId: insuranceRecordId || null,
+    metadata: { payer_id: payerId, result_active: normalized ? normalized.active : null },
+  });
+
   return json(200, normalized, event);
 }
 
@@ -402,7 +412,8 @@ exports.handler = async (event) => {
       return json(401, { error: 'Unauthorized' }, event);
     }
     const body = parseBody(event);
-    return await runCheck(ctx, body, event);
+    const authCtx = { userId: auth.user.sub, practiceId: ctx.practice_id };
+    return await runCheck(ctx, body, event, authCtx);
   } catch (err) {
     console.error('vob error:', err && err.message);
     return json(500, { error: 'Internal server error' }, event);

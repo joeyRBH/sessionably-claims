@@ -183,6 +183,13 @@
       if (nameEl && fullName) nameEl.textContent = fullName;
       if (initialsEl && (first || last)) initialsEl.textContent = initials(first, last);
       if (practiceEl && practice && practice.name) practiceEl.textContent = practice.name;
+
+      // Reveal the admin-only Audit log nav item for practice admins. The server
+      // also enforces this (GET /audit-log returns 403 to non-admins), so hiding
+      // it here is UX, not the security boundary.
+      var role = (user && user.role) || (practice && practice.role);
+      var auditNav = document.getElementById('nav-audit-item');
+      if (auditNav && role === 'practice_admin') auditNav.hidden = false;
     }).catch(function () {
       /* leave the existing placeholders in place on failure */
     });

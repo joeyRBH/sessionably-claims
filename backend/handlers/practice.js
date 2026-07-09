@@ -20,6 +20,7 @@ const db = require('../lib/db');
 const { requireAuth } = require('../lib/auth');
 const { json, preflight } = require('../lib/response');
 const { parseBody } = require('../lib/util');
+const { audit, sanitizeFields } = require('../lib/audit');
 const { isValidEmail } = require('../lib/email');
 
 const EDIT_ROLES = ['practice_admin', 'billing_staff'];
@@ -94,16 +95,22 @@ async function getPractice(practiceId, event) {
   return json(200, { practice: shapePractice(practice) }, event);
 }
 
-async function updatePractice(practiceId, role, body, event) {
+async function updatePractice(practiceId, role, body, event, authCtx) {
   if (!EDIT_ROLES.includes(role)) {
     return json(403, { error: 'Only a practice admin can edit practice settings.' }, event);
   }
 
+  // Snapshot before the update so the audit records WHICH fields changed (names
+  // only — tax_id changes appear as the field name, never the value).
+  const before = await loadPractice(practiceId);
+
   const sets = [];
   const params = [];
+  const changes = {};
   const add = (col, val) => {
     params.push(val);
     sets.push(`${col} = $${params.length}`);
+    changes[col] = val;
   };
 
   // Name, when provided, must be non-empty (a practice always has a name).
@@ -150,6 +157,12 @@ async function updatePractice(practiceId, role, body, event) {
     params
   );
   if (res.rowCount === 0) return json(404, { error: 'Not found' }, event);
+  await audit(event, authCtx, {
+    action: 'practice.update',
+    resourceType: 'practice',
+    resourceId: practiceId,
+    metadata: { fields_changed: sanitizeFields(before, changes) },
+  });
   return json(200, { practice: shapePractice(res.rows[0]) }, event);
 }
 
@@ -178,7 +191,8 @@ exports.handler = async (event) => {
     if (method === 'GET') return await getPractice(practiceId, event);
     if (method === 'PUT' || method === 'PATCH') {
       const body = parseBody(event);
-      return await updatePractice(practiceId, principal.role, body, event);
+      const authCtx = { userId: auth.user.sub, practiceId };
+      return await updatePractice(practiceId, principal.role, body, event, authCtx);
     }
 
     return json(405, { error: 'Method not allowed' }, event);

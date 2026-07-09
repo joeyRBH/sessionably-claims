@@ -97,6 +97,16 @@ locals {
         { method = "GET", path = "reports" },
       ]
     }
+    audit = {
+      handler = "handlers/audit.handler"
+      # HIPAA audit-log read endpoint (45 CFR 164.312(b)). Practice-scoped from the
+      # token; ADMIN ONLY (403 otherwise). Read-only — the log is append-only and
+      # written by lib/audit.js inside the other handlers. Filters: from/to/action/
+      # resource_type/resource_id/actor_user_id/limit/before.
+      routes = [
+        { method = "GET", path = "audit-log" },
+      ]
+    }
     invitations = {
       handler = "handlers/invitations.handler"
       routes = [

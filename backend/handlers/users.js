@@ -26,6 +26,7 @@ const db = require('../lib/db');
 const { requireAuth } = require('../lib/auth');
 const { json, preflight } = require('../lib/response');
 const { parseBody } = require('../lib/util');
+const { audit, sanitizeFields } = require('../lib/audit');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -152,7 +153,7 @@ async function getUser(practiceId, id, event) {
   return json(200, { user: shapeUser(user) }, event);
 }
 
-async function updateUser(caller, id, body, event) {
+async function updateUser(caller, id, body, event, authCtx) {
   if (!isUUID(id)) return json(404, { error: 'Not found' }, event);
 
   const target = await loadUser(caller.practice_id, id);
@@ -176,9 +177,11 @@ async function updateUser(caller, id, body, event) {
 
   const sets = [];
   const params = [];
+  const changes = {};
   const add = (col, val) => {
     params.push(val);
     sets.push(`${col} = $${params.length}`);
+    changes[col] = val;
   };
 
   // Profile text fields (admin on anyone, or self).
@@ -237,6 +240,12 @@ async function updateUser(caller, id, body, event) {
     params
   );
   if (res.rowCount === 0) return json(404, { error: 'Not found' }, event);
+  await audit(event, authCtx, {
+    action: 'user.update',
+    resourceType: 'user',
+    resourceId: id,
+    metadata: { fields_changed: sanitizeFields(target, changes) },
+  });
   return json(200, { user: shapeUser(res.rows[0]) }, event);
 }
 
@@ -264,9 +273,11 @@ exports.handler = async (event) => {
     const id = pathId(event);
     const body = method === 'PATCH' ? parseBody(event) : null;
 
+    const authCtx = { userId: caller.id, practiceId: caller.practice_id };
+
     if (method === 'GET' && !id) return await listUsers(caller.practice_id, event);
     if (method === 'GET' && id) return await getUser(caller.practice_id, id, event);
-    if (method === 'PATCH' && id) return await updateUser(caller, id, body, event);
+    if (method === 'PATCH' && id) return await updateUser(caller, id, body, event, authCtx);
 
     return json(405, { error: 'Method not allowed' }, event);
   } catch (err) {

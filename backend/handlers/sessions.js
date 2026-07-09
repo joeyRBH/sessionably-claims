@@ -22,6 +22,7 @@ const db = require('../lib/db');
 const { requireAuth } = require('../lib/auth');
 const { json, preflight } = require('../lib/response');
 const { parseBody } = require('../lib/util');
+const { audit, sanitizeFields } = require('../lib/audit');
 const { generateOccurrenceDates, addMonths, MAX_OCCURRENCES } = require('../lib/recurrence');
 const {
   primaryInsuranceForClient,
@@ -176,7 +177,7 @@ async function clinicianInPractice(practiceId, clinicianId) {
 
 // --- handlers ----------------------------------------------------------------
 
-async function createSession(practiceId, body, event) {
+async function createSession(practiceId, body, event, authCtx) {
   const clientId = cleanText(body.client_id);
   const clinicianId = cleanText(body.clinician_id);
   const sessionDate = cleanText(body.session_date);
@@ -257,7 +258,13 @@ async function createSession(practiceId, body, event) {
         status.value,
       ]
     );
-    return json(201, { session: shapeSession(res.rows[0]) }, event);
+    const created = res.rows[0];
+    await audit(event, authCtx, {
+      action: 'session.create',
+      resourceType: 'session',
+      resourceId: created.id,
+    });
+    return json(201, { session: shapeSession(created) }, event);
   }
 
   const endDate = cleanText(body.recurrence_end_date);
@@ -310,6 +317,12 @@ async function createSession(practiceId, body, event) {
     return inserted;
   });
 
+  await audit(event, authCtx, {
+    action: 'session.create',
+    resourceType: 'session',
+    resourceId: rows.length ? rows[0].id : null,
+    metadata: { count: rows.length, recurrence_group_id: groupId },
+  });
   return json(201, {
     sessions: rows.map(shapeSession),
     count: rows.length,
@@ -317,7 +330,7 @@ async function createSession(practiceId, body, event) {
   }, event);
 }
 
-async function listSessions(practiceId, event) {
+async function listSessions(practiceId, event, authCtx) {
   const params = [practiceId];
   let where = `practice_id = $1 and is_hidden = false`;
 
@@ -354,10 +367,15 @@ async function listSessions(practiceId, event) {
       order by session_date desc, created_at desc`,
     params
   );
+  await audit(event, authCtx, {
+    action: 'session.list',
+    resourceType: 'session',
+    metadata: { count: res.rowCount },
+  });
   return json(200, { sessions: res.rows.map(shapeSession) }, event);
 }
 
-async function getSession(practiceId, id, event) {
+async function getSession(practiceId, id, event, authCtx) {
   if (!isUUID(id)) {
     return json(404, { error: 'Not found' }, event);
   }
@@ -370,10 +388,15 @@ async function getSession(practiceId, id, event) {
   if (res.rowCount === 0) {
     return json(404, { error: 'Not found' }, event);
   }
+  await audit(event, authCtx, {
+    action: 'session.view',
+    resourceType: 'session',
+    resourceId: id,
+  });
   return json(200, { session: shapeSession(res.rows[0]) }, event);
 }
 
-async function updateSession(practiceId, userId, id, body, event) {
+async function updateSession(practiceId, userId, id, body, event, authCtx) {
   if (!isUUID(id)) {
     return json(404, { error: 'Not found' }, event);
   }
@@ -383,11 +406,21 @@ async function updateSession(practiceId, userId, id, body, event) {
     return json(400, { error: 'client_id cannot be changed.' }, event);
   }
 
+  // Snapshot before the update so the audit records WHICH fields changed (names
+  // only). Null when the session is absent — the UPDATE 404s and we never audit.
+  const beforeRes = await db.query(
+    `select * from sessions where id = $1 and practice_id = $2 and is_hidden = false limit 1`,
+    [id, practiceId]
+  );
+  const before = beforeRes.rows[0] || null;
+
   const sets = [];
   const params = [];
+  const changes = {};
   const add = (col, val) => {
     params.push(val);
     sets.push(`${col} = $${params.length}`);
+    changes[col] = val;
   };
 
   // When true, this PATCH transitions the session into 'completed', which triggers
@@ -472,6 +505,12 @@ async function updateSession(practiceId, userId, id, body, event) {
     if (res.rowCount === 0) {
       return json(404, { error: 'Not found' }, event);
     }
+    await audit(event, authCtx, {
+      action: 'session.update',
+      resourceType: 'session',
+      resourceId: id,
+      metadata: { fields_changed: sanitizeFields(before, changes) },
+    });
     return json(200, { session: shapeSession(res.rows[0]) }, event);
   }
 
@@ -509,13 +548,22 @@ async function updateSession(practiceId, userId, id, body, event) {
   if (outcome.notFound) {
     return json(404, { error: 'Not found' }, event);
   }
+  await audit(event, authCtx, {
+    action: 'session.update',
+    resourceType: 'session',
+    resourceId: id,
+    metadata: {
+      fields_changed: sanitizeFields(before, changes),
+      claim_created: outcome.claimCreated,
+    },
+  });
   return json(200, {
     session: shapeSession(outcome.session),
     claim_created: outcome.claimCreated,
   }, event);
 }
 
-async function deleteSession(practiceId, id, event) {
+async function deleteSession(practiceId, id, event, authCtx) {
   if (!isUUID(id)) {
     return json(404, { error: 'Not found' }, event);
   }
@@ -529,6 +577,11 @@ async function deleteSession(practiceId, id, event) {
   if (res.rowCount === 0) {
     return json(404, { error: 'Not found' }, event);
   }
+  await audit(event, authCtx, {
+    action: 'session.delete',
+    resourceType: 'session',
+    resourceId: id,
+  });
   return json(200, { deleted: true, id: res.rows[0].id }, event);
 }
 
@@ -557,12 +610,13 @@ exports.handler = async (event) => {
     const body = method === 'POST' || method === 'PATCH' ? parseBody(event) : null;
 
     const userId = auth.user.sub;
+    const authCtx = { userId, practiceId };
 
-    if (method === 'POST' && !id) return await createSession(practiceId, body, event);
-    if (method === 'GET' && !id) return await listSessions(practiceId, event);
-    if (method === 'GET' && id) return await getSession(practiceId, id, event);
-    if (method === 'PATCH' && id) return await updateSession(practiceId, userId, id, body, event);
-    if (method === 'DELETE' && id) return await deleteSession(practiceId, id, event);
+    if (method === 'POST' && !id) return await createSession(practiceId, body, event, authCtx);
+    if (method === 'GET' && !id) return await listSessions(practiceId, event, authCtx);
+    if (method === 'GET' && id) return await getSession(practiceId, id, event, authCtx);
+    if (method === 'PATCH' && id) return await updateSession(practiceId, userId, id, body, event, authCtx);
+    if (method === 'DELETE' && id) return await deleteSession(practiceId, id, event, authCtx);
 
     return json(405, { error: 'Method not allowed' }, event);
   } catch (err) {
