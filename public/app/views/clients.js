@@ -574,7 +574,7 @@
           if (values.is_primary !== null && values.is_primary !== undefined) {
             payload.is_primary = values.is_primary === 'true';
           }
-          payload.client_id = id;
+          if (!record) payload.client_id = id;   // create only — immutable on update
           var p = record
             ? api.insuranceRecords.update(record.id, payload)
             : api.insuranceRecords.create(payload);
@@ -653,6 +653,13 @@
       }
 
       function openVobModal(record) {
+        // When the patient is a dependent on someone else's policy, the payer
+        // matches on the policyholder — so we collect who the policyholder is and
+        // reveal their demographics. Prefill "No" when the stored subscriber
+        // relationship is anything other than self.
+        function onlyDependentFields(v) {
+          return v.patient_is_subscriber === 'false';
+        }
         var fields = [
           { name: 'member_id',     label: 'Member ID',     type: 'text', required: true },
           { name: 'payer_id',      label: 'Payer ID',      type: 'payer', required: true,
@@ -660,13 +667,37 @@
           { name: 'first_name',    label: 'First name',    type: 'text', required: true },
           { name: 'last_name',     label: 'Last name',     type: 'text', required: true },
           { name: 'date_of_birth', label: 'Date of birth', type: 'date', required: true },
+          { name: 'patient_is_subscriber', label: 'Patient is the policyholder', type: 'select',
+            options: [{ value: 'true', label: 'Yes' }, { value: 'false', label: 'No' }] },
+          { name: 'subscriber_first_name', label: 'Policyholder first name', type: 'text',
+            showIf: onlyDependentFields },
+          { name: 'subscriber_last_name',  label: 'Policyholder last name',  type: 'text',
+            showIf: onlyDependentFields },
+          { name: 'subscriber_dob',        label: 'Policyholder date of birth', type: 'date',
+            showIf: onlyDependentFields },
         ];
+        // Split the stored subscriber name on the LAST space → first / last
+        // (a single token becomes a first name only).
+        var subName = String(record.subscriber_name || '').trim();
+        var subFirst = subName;
+        var subLast = '';
+        var lastSpace = subName.lastIndexOf(' ');
+        if (lastSpace > 0) {
+          subFirst = subName.slice(0, lastSpace).trim();
+          subLast = subName.slice(lastSpace + 1).trim();
+        }
+        var rel = record.subscriber_relationship;
+        var isSelf = !rel || rel === 'self';
         var values = {
           member_id: record.member_id || '',
           payer_id: record.payer_id || '',
           first_name: client.first_name || '',
           last_name: client.last_name || '',
           date_of_birth: dateOnly(client.date_of_birth) || dateOnly(record.subscriber_dob),
+          patient_is_subscriber: isSelf ? 'true' : 'false',
+          subscriber_first_name: subFirst,
+          subscriber_last_name: subLast,
+          subscriber_dob: dateOnly(record.subscriber_dob),
         };
         R.formModal({
           title: 'Verify benefits',
@@ -682,6 +713,10 @@
             firstName: v.first_name,
             lastName: v.last_name,
             dateOfBirth: v.date_of_birth,
+            patientIsSubscriber: v.patient_is_subscriber === 'true',
+            subscriberFirstName: v.subscriber_first_name,
+            subscriberLastName: v.subscriber_last_name,
+            subscriberDateOfBirth: v.subscriber_dob,
             insurance_record_id: record.id,
           }).then(function (res) {
             showVobResult(res);
@@ -728,7 +763,9 @@
       // A payer rejection (AAA error) is not the same as inactive coverage: the
       // payer refused the request, so the status is unknown, not "Inactive".
       function vobStatusBadge(res) {
-        if (res.rejected) {
+        // Unknown (payer rejected the request, or the 271 gave no status either
+        // way → active == null) is NOT the same as inactive coverage.
+        if (res.rejected || res.active == null) {
           return h('span', { class: 'badge badge--warning' }, 'Could not verify');
         }
         return res.active

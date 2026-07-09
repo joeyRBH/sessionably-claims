@@ -430,20 +430,38 @@ async function checkEligibility(params) {
   if (p.organizationName) provider.organizationName = p.organizationName;
   if (p.npi) provider.npi = p.npi;
 
+  // Dependent mode: when the patient is a dependent on someone else's policy (no
+  // unique member id of their own), the subscriber loop carries the POLICYHOLDER
+  // (memberId + policyholder demographics when known) and the patient goes in a
+  // `dependents` array. Many payers error without the dependent's DOB, so include
+  // it. When p.dependent is absent (or has no non-empty field) the request is
+  // built exactly as before: patient demographics in the subscriber loop.
+  const dep = p.dependent || null;
+  const depHasValue = !!dep && [dep.firstName, dep.lastName, dep.dateOfBirth]
+    .some((v) => v != null && String(v).trim() !== '');
+
+  const subscriber = { memberId: p.memberId || undefined };
+  if (p.firstName) subscriber.firstName = p.firstName;
+  if (p.lastName) subscriber.lastName = p.lastName;
+  if (ymd(p.dateOfBirth)) subscriber.dateOfBirth = ymd(p.dateOfBirth);
+
   const body = {
     tradingPartnerServiceId,
     provider,
-    subscriber: {
-      memberId: p.memberId || undefined,
-      firstName: p.firstName || undefined,
-      lastName: p.lastName || undefined,
-      dateOfBirth: ymd(p.dateOfBirth) || undefined,
-    },
+    subscriber,
     // Service type 30 = Health Benefit Plan Coverage (general benefits) by default.
     encounter: {
       serviceTypeCodes: [p.serviceType ? String(p.serviceType) : '30'],
     },
   };
+
+  if (depHasValue) {
+    const dependent = {};
+    if (dep.firstName) dependent.firstName = dep.firstName;
+    if (dep.lastName) dependent.lastName = dep.lastName;
+    if (ymd(dep.dateOfBirth)) dependent.dateOfBirth = ymd(dep.dateOfBirth);
+    body.dependents = [dependent];
+  }
 
   const res = await stediPost('/eligibility/v3', body);
 

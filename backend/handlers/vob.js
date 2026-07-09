@@ -151,6 +151,12 @@ function asPercent(v) {
   return Math.round(pct);
 }
 
+// Three-state coverage status:
+//   * explicit active evidence   → true
+//   * explicit inactive evidence → false
+//   * neither (inconclusive 271) → null (unknown)
+// Returning null for "no evidence" avoids the old bug where a payer that simply
+// didn't report status was rendered as "Inactive".
 function deriveActive(data) {
   // Prefer planStatus; fall back to an Active Coverage (code '1') benefit entry.
   const statuses = (data && Array.isArray(data.planStatus)) ? data.planStatus : [];
@@ -158,8 +164,8 @@ function deriveActive(data) {
   const benefits = benefitsArray(data);
   if (benefits.some((b) => b && String(b.code) === '1')) return true;
   if (benefits.some((b) => b && String(b.code) === '6')) return false; // 6 = Inactive
-  if (statuses.length) return false;
-  return false;
+  if (statuses.length) return false; // planStatus present, none active → inactive
+  return null; // no status evidence either way → unknown
 }
 
 function firstNonEmpty(values) {
@@ -262,6 +268,17 @@ async function runCheck(ctx, body, event) {
     return json(400, { error: 'Invalid dateOfBirth. Expected YYYY-MM-DD.' }, event);
   }
 
+  // Dependent support: when the patient is NOT the policyholder, the caller sends
+  // patientIsSubscriber=false plus the policyholder's demographics. The body's
+  // patient fields (firstName/lastName/dateOfBirth) keep their meaning — they
+  // always describe the patient. Defaults to true so existing clients are
+  // unaffected.
+  const patientIsSubscriber = body.patientIsSubscriber !== false;
+  const subscriberDateOfBirth = cleanText(body.subscriberDateOfBirth);
+  if (subscriberDateOfBirth && !isValidDate(subscriberDateOfBirth)) {
+    return json(400, { error: 'Invalid subscriberDateOfBirth. Expected YYYY-MM-DD.' }, event);
+  }
+
   // If an insurance record id is supplied, it must belong to this practice.
   const insuranceRecordId = cleanText(body.insurance_record_id);
   if (insuranceRecordId && !isUUID(insuranceRecordId)) {
@@ -291,6 +308,20 @@ async function runCheck(ctx, body, event) {
     organizationName: ctx.practice_name || undefined,
     serviceType: cleanText(body.serviceType) || undefined,
   };
+
+  // When the patient is a dependent, the subscriber loop must carry the
+  // policyholder (not the patient), and the patient moves into a dependent object.
+  // The body's patient fields (already in stediRequest above) keep their meaning.
+  if (!patientIsSubscriber) {
+    stediRequest.dependent = {
+      firstName: cleanText(body.firstName),
+      lastName: cleanText(body.lastName),
+      dateOfBirth,
+    };
+    stediRequest.firstName = cleanText(body.subscriberFirstName);
+    stediRequest.lastName = cleanText(body.subscriberLastName);
+    stediRequest.dateOfBirth = subscriberDateOfBirth;
+  }
 
   // Try the check, retrying up to 2 more times (3s apart) when the payer returns
   // ONLY transient connectivity rejections (AAA 42 / 80). Any other outcome —
