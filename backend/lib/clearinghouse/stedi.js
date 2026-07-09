@@ -212,7 +212,12 @@ function buildSubmissionBody(ctx) {
       },
     },
     receiver: {
-      organizationName: insurance.carrier_name || undefined,
+      // Stedi matches the payer on tradingPartnerServiceId; the receiver name
+      // just needs to be non-empty. Records created through the payer typeahead
+      // persist a payer_id but not always a carrier_name, so fall back to the
+      // trading-partner id rather than sending an undefined organizationName
+      // (which Stedi rejects with 400 "Receiver: missing field organizationName").
+      organizationName: insurance.carrier_name || tradingPartnerServiceId,
     },
     billing: {
       providerType: 'BillingProvider',

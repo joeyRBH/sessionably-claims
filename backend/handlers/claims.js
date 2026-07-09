@@ -150,6 +150,38 @@ function shapeClaimRow(r) {
   return base;
 }
 
+// Claim-detail shaper — extends shapeClaim with a read-only `patient` block (the
+// client demographics the 837 pulls at submit time) and, when the claim
+// references an insurance record, an `insurance` block. ADDITIVE ONLY: every
+// pre-existing top-level claim field is exactly what shapeClaim returns; this
+// only appends `patient` and `insurance`. Sourced from the loadClaimDetail joins.
+// Keys with no data are null. The PHI here is returned to the authenticated
+// practice for its own claim — it is never logged.
+function shapeClaimDetail(r) {
+  if (!r) return null;
+  const base = shapeClaim(r);
+  base.patient = {
+    first_name: r.client_first_name || null,
+    last_name: r.client_last_name || null,
+    preferred_name: r.client_preferred_name || null,
+    date_of_birth: r.client_date_of_birth || null,
+    gender: r.client_gender || null,
+    address_line1: r.client_address_line1 || null,
+    address_line2: r.client_address_line2 || null,
+    city: r.client_city || null,
+    state: r.client_state || null,
+    postal_code: r.client_postal_code || null,
+  };
+  base.insurance = r.insurance_record_id
+    ? {
+        member_id: r.ins_member_id || null,
+        carrier_name: r.ins_carrier_name || null,
+        payer_id: r.ins_payer_id || null,
+      }
+    : null;
+  return base;
+}
+
 function shapeEvent(r) {
   if (!r) return null;
   return {
@@ -194,6 +226,38 @@ async function loadInsuranceRecord(practiceId, recordId) {
 async function loadClaim(practiceId, id) {
   const res = await db.query(
     `select * from claims where id = $1 and practice_id = $2 and is_hidden = false limit 1`,
+    [id, practiceId]
+  );
+  return res.rows[0] || null;
+}
+
+// loadClaim + the patient demographics and payer identifiers the claim-detail
+// view shows read-only. Kept separate from loadClaim (which submit/void/refresh
+// reuse) so those paths are unaffected. clients is inner-joined (client_id is NOT
+// NULL); the insurance record is optional, so left-join it. Practice-scoped and
+// is_hidden-filtered exactly like loadClaim. Columns are aliased to avoid any
+// collision with the claims.* columns pulled by c.*.
+async function loadClaimDetail(practiceId, id) {
+  const res = await db.query(
+    `select c.*,
+            cl.first_name     as client_first_name,
+            cl.last_name      as client_last_name,
+            cl.preferred_name as client_preferred_name,
+            cl.date_of_birth  as client_date_of_birth,
+            cl.gender         as client_gender,
+            cl.address_line1  as client_address_line1,
+            cl.address_line2  as client_address_line2,
+            cl.city           as client_city,
+            cl.state          as client_state,
+            cl.postal_code    as client_postal_code,
+            ir.member_id      as ins_member_id,
+            ir.carrier_name   as ins_carrier_name,
+            ir.payer_id       as ins_payer_id
+       from claims c
+       join clients cl on cl.id = c.client_id
+       left join insurance_records ir on ir.id = c.insurance_record_id
+      where c.id = $1 and c.practice_id = $2 and c.is_hidden = false
+      limit 1`,
     [id, practiceId]
   );
   return res.rows[0] || null;
@@ -360,9 +424,9 @@ async function listClaims(practiceId, event) {
 
 async function getClaim(practiceId, id, event) {
   if (!isUUID(id)) return json(404, { error: 'Not found' }, event);
-  const claim = await loadClaim(practiceId, id);
-  if (!claim) return json(404, { error: 'Not found' }, event);
-  return json(200, { claim: shapeClaim(claim) }, event);
+  const row = await loadClaimDetail(practiceId, id);
+  if (!row) return json(404, { error: 'Not found' }, event);
+  return json(200, { claim: shapeClaimDetail(row) }, event);
 }
 
 async function updateClaim(practiceId, id, body, event) {
@@ -707,6 +771,9 @@ async function listEvents(practiceId, id, event) {
 exports.missingBillingAddressField = missingBillingAddressField;
 exports.missingSubscriberField = missingSubscriberField;
 exports.REGENERATABLE_STATUSES = REGENERATABLE_STATUSES;
+// Pure shapers exported for unit testing (no DB / network).
+exports.shapeClaim = shapeClaim;
+exports.shapeClaimDetail = shapeClaimDetail;
 
 exports.handler = async (event) => {
   const method = httpMethod(event);
