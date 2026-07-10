@@ -209,6 +209,120 @@
         });
       }
 
+      // --- Calendar sync (per-user, de-identified read-only ICS feed) ----------
+      // Independent of the practice form (its own async load + actions). The feed
+      // never contains client names or any PHI — only initials + a deep link.
+      function calendarCard() {
+        var urlInput = h('input', {
+          class: 'field__control',
+          type: 'text',
+          readonly: 'readonly',
+          value: 'Loading…',
+          style: 'font-family:var(--font-mono, monospace);font-size:var(--font-size-2)',
+          onClick: function () { urlInput.select(); },
+        });
+
+        var copyBtn = h('button', {
+          class: 'btn btn--ghost btn--sm', type: 'button', disabled: 'disabled',
+          onClick: function () {
+            var val = urlInput.value || '';
+            if (!val || val === 'Loading…') return;
+            function done() { R.toast('Feed URL copied', 'success'); }
+            try {
+              if (window.navigator && window.navigator.clipboard) {
+                window.navigator.clipboard.writeText(val).then(done, function () {
+                  urlInput.select(); done();
+                });
+              } else {
+                urlInput.select(); document.execCommand('copy'); done();
+              }
+            } catch (e) { urlInput.select(); }
+          },
+        }, 'Copy');
+
+        var regenBtn = h('button', {
+          class: 'btn btn--ghost btn--sm', type: 'button', disabled: 'disabled',
+          onClick: function () {
+            R.confirmModal({
+              title: 'Regenerate calendar link?',
+              body: 'Your current link stops working immediately. You will need to ' +
+                're-add the new link in any calendar app already subscribed.',
+              confirmLabel: 'Regenerate',
+              danger: true,
+            }).then(function (ok) {
+              if (!ok) return;
+              regenBtn.disabled = true;
+              api.calendar.regenerate().then(function (res) {
+                apply(res && res.calendar_feed);
+                R.toast('Calendar link regenerated', 'success');
+              }).catch(function (err) {
+                regenBtn.disabled = false;
+                R.toast(err.message || 'Could not regenerate link.', 'error');
+              });
+            });
+          },
+        }, 'Regenerate link');
+
+        function apply(feed) {
+          if (!feed || !feed.feed_url) return;
+          urlInput.value = feed.feed_url;
+          copyBtn.disabled = false;
+          regenBtn.disabled = false;
+        }
+
+        // How-to one-liners.
+        function howto(app, steps) {
+          return h('li', { style: 'margin:0 0 var(--space-1)' }, [
+            h('strong', null, app + ': '), steps,
+          ]);
+        }
+
+        var card = h('div', { class: 'card' }, [
+          h('div', { class: 'card__header' }, [
+            h('h2', { class: 'card__title' }, 'Calendar sync'),
+          ]),
+          h('p', {
+            style: 'margin:0 0 var(--space-4);color:var(--color-text-muted);' +
+              'font-size:var(--font-size-3)',
+          }, 'Subscribe to a private, read-only feed of your sessions from Google, ' +
+             'Apple, or Outlook. The feed is de-identified — it shows client initials ' +
+             'and a link back to Reddably only, never names or any health information.'),
+          h('label', { class: 'field' }, [
+            h('span', { class: 'field__label' }, 'Your private feed URL'),
+            h('div', { style: 'display:flex;gap:var(--space-2);align-items:center' }, [
+              urlInput, copyBtn,
+            ]),
+          ]),
+          h('p', {
+            style: 'margin:var(--space-1) 0 var(--space-4);color:var(--color-text-muted);' +
+              'font-size:var(--font-size-2)',
+          }, 'Keep this link private — anyone with it can see your (de-identified) schedule.'),
+          h('ul', {
+            style: 'margin:0 0 var(--space-4);padding-left:var(--space-4);' +
+              'color:var(--color-text-muted);font-size:var(--font-size-2)',
+          }, [
+            howto('Google Calendar', 'Other calendars → + → From URL → paste the link'),
+            howto('Apple Calendar', 'File → New Calendar Subscription → paste the link'),
+            howto('Outlook', 'Add calendar → Subscribe from web → paste the link'),
+          ]),
+          h('div', { style: 'display:flex;gap:var(--space-3);align-items:center' }, [
+            regenBtn,
+            h('span', {
+              style: 'color:var(--color-text-muted);font-size:var(--font-size-2)',
+            }, 'Regenerating immediately disables the old link.'),
+          ]),
+        ]);
+
+        api.calendar.settings().then(function (res) {
+          apply(res && res.calendar_feed);
+          if (!res || !res.calendar_feed) urlInput.value = 'Unavailable';
+        }).catch(function () {
+          urlInput.value = 'Unavailable — reload to try again';
+        });
+
+        return card;
+      }
+
       var form = h('form', { novalidate: 'novalidate', onSubmit: onSubmit }, [
         h('div', { class: 'card' }, [
           h('div', { class: 'card__header' }, [
@@ -236,6 +350,7 @@
           h('h1', { class: 'page-header__title' }, 'Settings'),
         ]),
         form,
+        calendarCard(),
       ]);
 
       root.appendChild(view);

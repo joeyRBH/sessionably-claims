@@ -189,6 +189,19 @@ create trigger trg_users_updated_at
   before update on users
   for each row execute function set_updated_at();
 
+-- Migration (idempotent): per-clinician calendar feed token — an opaque, unique,
+-- 32-byte (64 hex) capability backing the read-only ICS feed at
+-- GET /calendar/{feed_token}.ics. See db/migrations/011_*. Backfill existing rows
+-- and default new rows via pgcrypto's gen_random_bytes (extension enabled above).
+alter table users add column if not exists calendar_feed_token text;
+update users
+   set calendar_feed_token = encode(gen_random_bytes(32), 'hex')
+ where calendar_feed_token is null;
+alter table users
+  alter column calendar_feed_token set default encode(gen_random_bytes(32), 'hex');
+create unique index if not exists idx_users_calendar_feed_token
+  on users (calendar_feed_token);
+
 -- =============================================================================
 -- 5. clients — people receiving care (PHI-heavy).
 -- =============================================================================
@@ -590,6 +603,11 @@ drop trigger if exists trg_invitations_updated_at on invitations;
 create trigger trg_invitations_updated_at
   before update on invitations
   for each row execute function set_updated_at();
+
+-- Migration (idempotent): optional display name captured at invite time, used only
+-- to personalize the invitation email + pending list. Staff name, not PHI. See
+-- db/migrations/012_*.
+alter table invitations add column if not exists invited_name text;
 
 -- =============================================================================
 -- 15. shareable_links — custom slugs per practice.

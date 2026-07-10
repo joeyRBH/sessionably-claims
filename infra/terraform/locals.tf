@@ -115,6 +115,21 @@ locals {
         { method = "DELETE", path = "invitations/{id}" },
       ]
     }
+    calendar = {
+      handler = "handlers/calendar.handler"
+      # De-identified, read-only ICS feed per clinician (ZERO PHI leaves Reddably).
+      # The .ics feed authenticates by the opaque feed_token in the path (calendar
+      # apps can't send a JWT); the literal /settings and /regenerate routes are
+      # Bearer-JWT authed and are more specific than the {feed_token} variable, so
+      # API Gateway routes them first. NOTE: API Gateway cannot place a literal
+      # ".ics" after a path variable, so the feed route captures "{feed_token}" as
+      # "<token>.ics" and the handler strips the suffix.
+      routes = [
+        { method = "GET", path = "calendar/settings" },
+        { method = "POST", path = "calendar/regenerate" },
+        { method = "GET", path = "calendar/{feed_token}" },
+      ]
+    }
     vob = {
       handler = "handlers/vob.handler"
       routes = [

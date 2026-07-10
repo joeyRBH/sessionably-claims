@@ -304,6 +304,15 @@
     revoke: function (id) { return request('DELETE', '/invitations/' + id); },
   };
 
+  // De-identified calendar feed (per-user read-only ICS). settings() returns the
+  // caller's { feed_token, feed_url }; regenerate() rotates the token, instantly
+  // revoking the old feed. The feed itself (GET /calendar/{token}.ics) is fetched
+  // by the user's calendar app directly, never through this client.
+  var calendar = {
+    settings: function () { return request('GET', '/calendar/settings'); },
+    regenerate: function () { return request('POST', '/calendar/regenerate', {}); },
+  };
+
   // Subscription / plan (Instant VOB add-on).
   //   status()      -> { plan, vob_checks_used, vob_period_start }  (Lambda API; DB-only)
   //   activateVob() -> { checkoutUrl }  (Vercel function; Stripe egress) — redirect there
@@ -367,6 +376,7 @@
     users: users,
     practice: practice,
     invitations: invitations,
+    calendar: calendar,
     billing: billing,
     subscription: subscription,
     vob: vob,
