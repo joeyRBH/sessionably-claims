@@ -132,6 +132,76 @@ async function sendIntakeCompletionEmail(opts, deps) {
   }
 }
 
+// Human-readable role label for the invite copy ('clinician' -> 'Clinician').
+function humanizeRole(role) {
+  var known = {
+    practice_admin: 'Practice Admin',
+    clinician: 'Clinician',
+    billing_staff: 'Billing Staff',
+  };
+  return known[role] || '';
+}
+
+// Compose the "join a practice" invitation email. PHI-FREE by construction: the
+// practice name, the invited person's role, an optional greeting name (staff, not
+// a patient), and the single-use accept link — nothing else. Returns
+// { subject, text, html }.
+function buildInvitationEmail(opts) {
+  const o = opts || {};
+  const practiceName = String(o.practiceName || '').trim() || 'a Reddably practice';
+  const inviteUrl = String(o.inviteUrl || '').trim();
+  const roleLabel = humanizeRole(o.role);
+  const invitedName = o.invitedName ? String(o.invitedName).trim() : '';
+  const greeting = invitedName ? `Hi ${invitedName},` : 'Hi,';
+  const asRole = roleLabel ? ` as a ${roleLabel}` : '';
+
+  const subject = `You're invited to join ${practiceName} on Reddably`;
+  const lines = [
+    greeting,
+    '',
+    `You've been invited to join ${practiceName} on Reddably${asRole}.`,
+    '',
+    'Accept your invitation and set a password:',
+    inviteUrl,
+    '',
+    "This link is single-use and expires soon. If you weren't expecting this, " +
+      'you can safely ignore this email.',
+  ];
+  const text = lines.join('\n');
+  const html =
+    `<p>${escapeHtml(greeting)}</p>` +
+    `<p>You've been invited to join <strong>${escapeHtml(practiceName)}</strong> ` +
+    `on Reddably${asRole ? ' as a ' + escapeHtml(roleLabel) : ''}.</p>` +
+    `<p><a href="${escapeHtml(inviteUrl)}">Accept your invitation and set a password</a></p>` +
+    `<p>This link is single-use and expires soon. If you weren't expecting this, ` +
+    `you can safely ignore this email.</p>`;
+  return { subject, text, html };
+}
+
+// Send the clinician invitation. Never throws: SES not being verified yet (sandbox)
+// or any transient failure must NOT fail the admin's create-invite request — the
+// shareable link is still returned so they can send it manually. Returns
+// { sent: boolean, error?: string }. The recipient MUST be a real email address.
+async function sendInvitationEmail(opts, deps) {
+  const o = opts || {};
+  if (!isValidEmail(o.to)) {
+    console.warn('email: invitation recipient is not a valid email');
+    return { sent: false, error: 'invalid recipient' };
+  }
+  try {
+    const content = buildInvitationEmail(o);
+    await sendEmail(
+      { to: o.to, from: o.from, subject: content.subject, text: content.text, html: content.html },
+      deps
+    );
+    return { sent: true };
+  } catch (err) {
+    // Log only the message — never the recipient or the token.
+    console.warn('email: invitation send failed:', err && err.message);
+    return { sent: false, error: (err && err.message) || 'send failed' };
+  }
+}
+
 function escapeHtml(s) {
   return String(s)
     .replace(/&/g, '&amp;')
@@ -145,8 +215,11 @@ module.exports = {
   FROM_ADDRESS,
   APP_BASE_URL,
   isValidEmail,
+  humanizeRole,
   buildSendEmailInput,
   sendEmail,
   buildIntakeCompletionEmail,
   sendIntakeCompletionEmail,
+  buildInvitationEmail,
+  sendInvitationEmail,
 };

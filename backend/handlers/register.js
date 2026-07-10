@@ -7,6 +7,7 @@ const db = require('../lib/db');
 const { hash } = require('../lib/password');
 const { sign } = require('../lib/jwt');
 const { json, preflight } = require('../lib/response');
+const { audit } = require('../lib/audit');
 const {
   normalizeEmail,
   baseSlug,
@@ -18,6 +19,27 @@ const {
 const MAX_SLUG_ATTEMPTS = 5;
 
 const PG_UNIQUE_VIOLATION = '23505';
+
+// Pure invitation-acceptance guard (exported for unit tests). Enforces, in order:
+// single-use (status must be 'pending' — an accepted/revoked/expired row is dead),
+// expiry (expires_at must exist and be in the future), and that the account being
+// created belongs to the invited email (the token alone must not let someone claim
+// an arbitrary address). Returns { ok: true } or { ok: false, code, clientMessage? }.
+function validateInvitationForAccept(invite, providedEmail, nowMs) {
+  if (!invite) return { ok: false, code: 'invalid' };
+  if (invite.status !== 'pending') return { ok: false, code: 'invalid' };
+  if (!invite.expires_at) return { ok: false, code: 'invalid' };
+  const exp = new Date(invite.expires_at).getTime();
+  if (Number.isNaN(exp) || exp <= nowMs) return { ok: false, code: 'expired' };
+  if (normalizeEmail(invite.email) !== normalizeEmail(providedEmail)) {
+    return {
+      ok: false,
+      code: 'email_mismatch',
+      clientMessage: 'This invitation was sent to a different email address.',
+    };
+  }
+  return { ok: true };
+}
 
 function missing(fields, body) {
   return fields.filter((f) => !body[f] || String(body[f]).trim() === '');
@@ -100,29 +122,27 @@ async function registerFromInvitation(body, event) {
   const passwordHash = await hash(body.password);
 
   let user;
+  let acceptedInviteId = null;
   try {
     user = await db.withTransaction(async (client) => {
-      // Lock the invitation row to avoid a concurrent double-accept.
+      // Lock the invitation row to serialize concurrent accepts (the first accept
+      // flips status to 'accepted'; a second blocks here, then reads the updated
+      // row and is rejected by the single-use guard below).
       const inviteRes = await client.query(
-        `select id, practice_id, role, email
+        `select id, practice_id, role, email, status, expires_at
            from invitations
-          where token = $1 and status = 'pending' and expires_at > now()
+          where token = $1
           for update`,
         [body.invite_token]
       );
-      if (inviteRes.rowCount === 0) {
-        const e = new Error('invalid_invitation');
-        e.statusCode = 400;
-        throw e;
-      }
       const invite = inviteRes.rows[0];
 
-      // The account must belong to the invited person — the token alone must not
-      // let someone register an arbitrary email.
-      if (normalizeEmail(invite.email) !== email) {
-        const e = new Error('invitation_email_mismatch');
+      // Single-use + expiry + invited-email match, all enforced server-side.
+      const check = validateInvitationForAccept(invite, email, Date.now());
+      if (!check.ok) {
+        const e = new Error(check.code);
         e.statusCode = 400;
-        e.clientMessage = 'This invitation was sent to a different email address.';
+        if (check.clientMessage) e.clientMessage = check.clientMessage;
         throw e;
       }
 
@@ -147,6 +167,7 @@ async function registerFromInvitation(body, event) {
           where id = $2`,
         [newUser.id, invite.id]
       );
+      acceptedInviteId = invite.id;
       return newUser;
     });
   } catch (err) {
@@ -163,9 +184,20 @@ async function registerFromInvitation(body, event) {
     throw err;
   }
 
+  // Audit the acceptance (HIPAA audit log; no PHI). Actor is the just-created user.
+  await audit(event, { userId: user.id, practiceId: user.practice_id }, {
+    action: 'invitation.accept',
+    resourceType: 'invitation',
+    resourceId: acceptedInviteId,
+    metadata: { role: user.role },
+  });
+
   const token = sign(user);
   return json(201, { token, user: publicUser(user) }, event);
 }
+
+// Exported for unit testing the acceptance guard (Lambda only calls .handler).
+exports.validateInvitationForAccept = validateInvitationForAccept;
 
 exports.handler = async (event) => {
   if (event && event.httpMethod === 'OPTIONS') {

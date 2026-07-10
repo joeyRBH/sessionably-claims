@@ -104,6 +104,7 @@
       R.formModal({
         title: 'Invite a clinician',
         fields: [
+          { name: 'name', label: 'Name', type: 'text' },
           { name: 'email', label: 'Email', type: 'email', required: true },
           { name: 'role', label: 'Role', type: 'select',
             options: [
@@ -113,13 +114,16 @@
             ] },
           { name: 'expires_in_days', label: 'Expires in (days)', type: 'number', placeholder: '7' },
         ],
-        submitLabel: 'Create invite link',
+        submitLabel: 'Send invite',
       }).then(function (result) {
         if (!result) return;
         api.invitations.create(compact(result)).then(function (res) {
-          // Surface the shareable link for the admin to copy and send manually.
+          R.toast(res.email_sent ? 'Invitation emailed' : 'Invite created (email not sent)',
+            res.email_sent ? 'success' : 'info');
+          // Always surface the shareable link too, as a fallback for the admin to
+          // send manually (email delivery is best-effort while SES is in sandbox).
           R.formModal({
-            title: 'Share this invite link',
+            title: res.email_sent ? 'Invitation sent' : 'Share this invite link',
             fields: [
               { name: 'link', label: 'Invite link (copy and share)', type: 'textarea' },
             ],
@@ -200,6 +204,7 @@
 
       var rows = pending.map(function (inv) {
         var cells = [
+          h('td', null, inv.invited_name || '—'),
           h('td', null, inv.email),
           h('td', null, humanize(inv.role)),
           h('td', null, R.fmtDate(inv.expires_at)),
@@ -215,6 +220,7 @@
       });
 
       var head = [
+        h('th', null, 'Name'),
         h('th', null, 'Email'),
         h('th', null, 'Role'),
         h('th', null, 'Expires'),

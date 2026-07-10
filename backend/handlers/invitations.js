@@ -26,12 +26,22 @@ const { requireAuth } = require('../lib/auth');
 const { json, preflight } = require('../lib/response');
 const { normalizeEmail, parseBody } = require('../lib/util');
 const { audit } = require('../lib/audit');
+const { sendInvitationEmail } = require('../lib/email');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const ROLES = ['practice_admin', 'clinician', 'billing_staff'];
 
 const APP_BASE_URL = process.env.APP_BASE_URL || 'https://reddably.com';
+
+// Parse + clamp the invite expiry window. Pure (exported for unit tests): integer
+// days, default 7, clamped to [1, 30]. Returns { days } or { error }.
+function parseExpiryDays(raw) {
+  if (raw == null || raw === '') return { days: 7 };
+  const parsed = parseInt(raw, 10);
+  if (isNaN(parsed)) return { error: 'expires_in_days must be an integer.' };
+  return { days: Math.min(30, Math.max(1, parsed)) };
+}
 
 // --- request helpers ---------------------------------------------------------
 
@@ -59,6 +69,7 @@ function shapeInvitation(row) {
     id: row.id,
     practice_id: row.practice_id,
     invited_by: row.invited_by,
+    invited_name: row.invited_name || null,
     email: row.email,
     role: row.role,
     status: row.status,
@@ -93,36 +104,55 @@ async function createInvitation(caller, body, event, authCtx) {
     return json(400, { error: `Invalid role. Expected one of: ${ROLES.join(', ')}.` }, event);
   }
 
-  // Expiry window: integer days, default 7, clamped to 1–30.
-  let expiresInDays = 7;
-  if (body && body.expires_in_days != null && body.expires_in_days !== '') {
-    const parsed = parseInt(body.expires_in_days, 10);
-    if (isNaN(parsed)) {
-      return json(400, { error: 'expires_in_days must be an integer.' }, event);
-    }
-    expiresInDays = Math.min(30, Math.max(1, parsed));
+  const expiry = parseExpiryDays(body && body.expires_in_days);
+  if (expiry.error) {
+    return json(400, { error: expiry.error }, event);
   }
+
+  // Optional display name (staff, NOT PHI) — used only for the email greeting and
+  // the pending-invites list.
+  const invitedName = body && body.name ? String(body.name).trim() : null;
 
   const token = crypto.randomBytes(32).toString('hex');
 
   const res = await db.query(
     `insert into invitations
-       (practice_id, invited_by, email, role, token, status, expires_at)
+       (practice_id, invited_by, email, role, token, status, expires_at, invited_name)
      values
-       ($1, $2, $3, $4, $5, 'pending', now() + ($6 || ' days')::interval)
+       ($1, $2, $3, $4, $5, 'pending', now() + ($6 || ' days')::interval, $7)
      returning *`,
-    [caller.practice_id, caller.id, email, role, token, expiresInDays]
+    [caller.practice_id, caller.id, email, role, token, expiry.days, invitedName]
   );
 
   const row = res.rows[0];
+  const link = `${APP_BASE_URL}/invite.html?invite=${row.token}`;
+
+  // Email the invite via SES (backend/lib/email.js). Never fatal: SES sandbox /
+  // transient failures must not fail the create — the admin still gets the link to
+  // share manually. The email is PHI-free (practice name + role + link only).
+  let practiceName = '';
+  try {
+    const pRes = await db.query(`select name from practices where id = $1 limit 1`, [caller.practice_id]);
+    practiceName = (pRes.rows[0] && pRes.rows[0].name) || '';
+  } catch (err) {
+    console.warn('invitations: practice name lookup failed:', err && err.message);
+  }
+  const emailResult = await sendInvitationEmail({
+    to: email,
+    practiceName,
+    inviteUrl: link,
+    role: row.role,
+    invitedName,
+  });
+
   await audit(event, authCtx, {
     action: 'invitation.create',
     resourceType: 'invitation',
     resourceId: row.id,
-    metadata: { role: row.role },
+    metadata: { role: row.role, email_sent: emailResult.sent },
   });
-  const link = `${APP_BASE_URL}/invite.html?invite=${row.token}`;
-  return json(201, { invitation: shapeInvitation(row), link }, event);
+
+  return json(201, { invitation: shapeInvitation(row), link, email_sent: emailResult.sent }, event);
 }
 
 async function listInvitations(caller, event) {
@@ -174,6 +204,11 @@ async function revokeInvitation(caller, id, event, authCtx) {
 }
 
 // --- entrypoint --------------------------------------------------------------
+
+// Pure helpers exported for unit tests.
+exports.ROLES = ROLES;
+exports.parseExpiryDays = parseExpiryDays;
+exports.shapeInvitation = shapeInvitation;
 
 exports.handler = async (event) => {
   const method = httpMethod(event);
