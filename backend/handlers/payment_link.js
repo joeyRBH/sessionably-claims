@@ -22,7 +22,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 // card-setup.html is served by the Vercel project at reddably.com/card-setup (it
 // 404s on app.reddably.com), so default to reddably.com — matching the adapter.
-const APP_BASE_URL = (process.env.APP_BASE_URL || 'https://reddably.com').replace(/\/+$/, '');
+const APP_BASE_URL = (process.env.APP_BASE_URL || 'https://claims.sessionably.com').replace(/\/+$/, '');
 
 function httpMethod(event) {
   if (!event) return '';

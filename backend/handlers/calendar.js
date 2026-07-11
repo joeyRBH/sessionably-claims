@@ -33,7 +33,7 @@ const { json, preflight } = require('../lib/response');
 const { audit } = require('../lib/audit');
 
 // Deep-link base for the app shell (matches lib/email.js / payment_link.js).
-const APP_BASE_URL = (process.env.APP_BASE_URL || 'https://reddably.com').replace(/\/+$/, '');
+const APP_BASE_URL = (process.env.APP_BASE_URL || 'https://claims.sessionably.com').replace(/\/+$/, '');
 
 // UID / PRODID domain — stable, opaque, non-PHI.
 const CAL_DOMAIN = 'reddably.com';

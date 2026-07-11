@@ -32,7 +32,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 const ROLES = ['practice_admin', 'clinician', 'billing_staff'];
 
-const APP_BASE_URL = process.env.APP_BASE_URL || 'https://reddably.com';
+const APP_BASE_URL = process.env.APP_BASE_URL || 'https://claims.sessionably.com';
 
 // Parse + clamp the invite expiry window. Pure (exported for unit tests): integer
 // days, default 7, clamped to [1, 30]. Returns { days } or { error }.

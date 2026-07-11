@@ -15,7 +15,7 @@ const { callLambda } = require('../backend/lib/lambda_api');
 const { ALLOWED_ORIGINS } = require('../backend/lib/response');
 
 const VOB_PRICE_CENTS = 2500; // $25.00 / month
-const APP_BASE_URL = process.env.APP_BASE_URL || 'https://app.reddably.com';
+const APP_BASE_URL = process.env.APP_BASE_URL || 'https://claims.sessionably.com';
 
 function applyCors(req, res) {
   const origin = req.headers.origin;

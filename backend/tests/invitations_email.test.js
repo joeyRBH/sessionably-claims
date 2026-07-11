@@ -20,13 +20,13 @@ const invitations = require(path.join(__dirname, '..', 'handlers', 'invitations.
 {
   const content = email.buildInvitationEmail({
     practiceName: 'Riverstone Behavioral',
-    inviteUrl: 'https://reddably.com/invite.html?invite=abc123',
+    inviteUrl: 'https://claims.sessionably.com/invite.html?invite=abc123',
     role: 'clinician',
     invitedName: 'Dana Lee',
   });
 
   assert.ok(/Riverstone Behavioral/.test(content.subject), 'subject names the practice');
-  assert.ok(content.text.includes('https://reddably.com/invite.html?invite=abc123'),
+  assert.ok(content.text.includes('https://claims.sessionably.com/invite.html?invite=abc123'),
     'text body carries the accept link');
   assert.ok(content.text.includes('Riverstone Behavioral'), 'text body names the practice');
   assert.ok(/Clinician/.test(content.text), 'text body states the role');
@@ -44,7 +44,7 @@ const invitations = require(path.join(__dirname, '..', 'handlers', 'invitations.
 {
   const content = email.buildInvitationEmail({
     practiceName: 'Solo Practice',
-    inviteUrl: 'https://reddably.com/invite.html?invite=x',
+    inviteUrl: 'https://claims.sessionably.com/invite.html?invite=x',
     role: 'billing_staff',
   });
   assert.ok(/^Hi,/.test(content.text), 'no name -> generic "Hi," greeting');
@@ -68,7 +68,7 @@ function makeMock(behavior) {
 (async () => {
   const ok = makeMock('ok');
   const okRes = await email.sendInvitationEmail(
-    { to: 'dana@practice.test', practiceName: 'P', inviteUrl: 'https://reddably.com/invite.html?invite=t', role: 'clinician' },
+    { to: 'dana@practice.test', practiceName: 'P', inviteUrl: 'https://claims.sessionably.com/invite.html?invite=t', role: 'clinician' },
     ok.deps
   );
   assert.deepStrictEqual(okRes, { sent: true }, 'successful send reports sent:true');
@@ -77,7 +77,7 @@ function makeMock(behavior) {
 
   const fail = makeMock('throw');
   const failRes = await email.sendInvitationEmail(
-    { to: 'dana@practice.test', practiceName: 'P', inviteUrl: 'https://reddably.com/invite.html?invite=t', role: 'clinician' },
+    { to: 'dana@practice.test', practiceName: 'P', inviteUrl: 'https://claims.sessionably.com/invite.html?invite=t', role: 'clinician' },
     fail.deps
   );
   assert.strictEqual(failRes.sent, false, 'a send failure is swallowed (sent:false), never thrown');
