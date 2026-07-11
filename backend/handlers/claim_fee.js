@@ -132,7 +132,7 @@ exports.handler = async (event) => {
           currency: 'usd',
           customer: client.stripe_customer_id,
           payment_method: client.payment_method_id,
-          description: `Reddably platform fee — claim ${claim.id}`,
+          description: `Sessionably Claims platform fee — claim ${claim.id}`,
           metadata: { claim_id: claim.id, client_id: client.id, practice_id: practice.id },
         },
         event

@@ -148,18 +148,18 @@ function humanizeRole(role) {
 // { subject, text, html }.
 function buildInvitationEmail(opts) {
   const o = opts || {};
-  const practiceName = String(o.practiceName || '').trim() || 'a Reddably practice';
+  const practiceName = String(o.practiceName || '').trim() || 'a Sessionably Claims practice';
   const inviteUrl = String(o.inviteUrl || '').trim();
   const roleLabel = humanizeRole(o.role);
   const invitedName = o.invitedName ? String(o.invitedName).trim() : '';
   const greeting = invitedName ? `Hi ${invitedName},` : 'Hi,';
   const asRole = roleLabel ? ` as a ${roleLabel}` : '';
 
-  const subject = `You're invited to join ${practiceName} on Reddably`;
+  const subject = `You're invited to join ${practiceName} on Sessionably Claims`;
   const lines = [
     greeting,
     '',
-    `You've been invited to join ${practiceName} on Reddably${asRole}.`,
+    `You've been invited to join ${practiceName} on Sessionably Claims${asRole}.`,
     '',
     'Accept your invitation and set a password:',
     inviteUrl,
@@ -171,7 +171,7 @@ function buildInvitationEmail(opts) {
   const html =
     `<p>${escapeHtml(greeting)}</p>` +
     `<p>You've been invited to join <strong>${escapeHtml(practiceName)}</strong> ` +
-    `on Reddably${asRole ? ' as a ' + escapeHtml(roleLabel) : ''}.</p>` +
+    `on Sessionably Claims${asRole ? ' as a ' + escapeHtml(roleLabel) : ''}.</p>` +
     `<p><a href="${escapeHtml(inviteUrl)}">Accept your invitation and set a password</a></p>` +
     `<p>This link is single-use and expires soon. If you weren't expecting this, ` +
     `you can safely ignore this email.</p>`;
