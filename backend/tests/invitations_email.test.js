@@ -72,7 +72,7 @@ function makeMock(behavior) {
     ok.deps
   );
   assert.deepStrictEqual(okRes, { sent: true }, 'successful send reports sent:true');
-  assert.strictEqual(ok.captured.commands[0].Source, 'notifications@reddably.com', 'FROM is the notifications address');
+  assert.strictEqual(ok.captured.commands[0].Source, 'notifications@claims.sessionably.com', 'FROM is the notifications address');
   assert.deepStrictEqual(ok.captured.commands[0].Destination.ToAddresses, ['dana@practice.test'], 'recipient set');
 
   const fail = makeMock('throw');

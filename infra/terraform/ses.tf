@@ -24,3 +24,19 @@ resource "aws_ses_domain_identity" "reddably" {
 resource "aws_ses_domain_dkim" "reddably" {
   domain = aws_ses_domain_identity.reddably.domain
 }
+
+# -----------------------------------------------------------------------------
+# Sessionably Claims identity (claims.sessionably.com). Mirrors the reddably.com
+# identity above and coexists with it — parallel operation during the brand
+# transition. This is the ACTIVE sender domain: ses_from_address defaults to
+# notifications@claims.sessionably.com. Same manual-DNS workflow (verification
+# TXT + three DKIM CNAMEs added by Joey; see the ses_*_sessionably outputs).
+# -----------------------------------------------------------------------------
+
+resource "aws_ses_domain_identity" "sessionably" {
+  domain = var.ses_domain_sessionably
+}
+
+resource "aws_ses_domain_dkim" "sessionably" {
+  domain = aws_ses_domain_identity.sessionably.domain
+}

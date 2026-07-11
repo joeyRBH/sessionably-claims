@@ -201,9 +201,9 @@ variable "logs_kms_key_arn" {
 # ─────────────────────────────────────────────────────────────
 
 variable "allowed_origins" {
-  description = "CORS allow-list for the HTTP API. Locked to the Claimsub and Reddably browser origins."
+  description = "CORS allow-list for the HTTP API. Locked to the Claimsub, Reddably, and Sessionably Claims browser origins."
   type        = list(string)
-  default     = ["https://app.claimsub.com", "https://claimsub.com", "https://app.reddably.com", "https://reddably.com"]
+  default     = ["https://app.claimsub.com", "https://claimsub.com", "https://app.reddably.com", "https://reddably.com", "https://claims.sessionably.com"]
 }
 
 variable "api_domain_name" {
@@ -218,6 +218,12 @@ variable "api_domain_name_reddably" {
   default     = "api.reddably.com"
 }
 
+variable "api_domain_name_sessionably" {
+  description = "Additional Sessionably Claims-branded custom domain served by API Gateway (coexists with api_domain_name and api_domain_name_reddably)."
+  type        = string
+  default     = "api.claims.sessionably.com"
+}
+
 # ─────────────────────────────────────────────────────────────
 # SES (transactional email)
 # ─────────────────────────────────────────────────────────────
@@ -228,10 +234,16 @@ variable "ses_domain" {
   default     = "reddably.com"
 }
 
-variable "ses_from_address" {
-  description = "FROM address used by backend/lib/email.js. Must be on ses_domain. The value is defaulted in the app code too; this variable documents the expected sender and is surfaced in outputs."
+variable "ses_domain_sessionably" {
+  description = "Additional Sessionably Claims SES domain identity, verified for sending transactional email in parallel with ses_domain during the brand transition. DNS records to verify it are emitted as ses_*_sessionably outputs and added manually at the DNS provider."
   type        = string
-  default     = "notifications@reddably.com"
+  default     = "claims.sessionably.com"
+}
+
+variable "ses_from_address" {
+  description = "FROM address used by backend/lib/email.js. Must be on ses_domain_sessionably (the active sender domain). The value is defaulted in the app code too; this variable documents the expected sender, scopes the ses:FromAddress IAM condition, and is surfaced in outputs."
+  type        = string
+  default     = "notifications@claims.sessionably.com"
 }
 
 variable "create_api_custom_domain" {

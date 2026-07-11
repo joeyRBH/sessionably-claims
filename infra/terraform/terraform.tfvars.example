@@ -41,9 +41,13 @@ log_retention_days     = 30
 # logs_kms_key_arn     = ""   # empty = AWS-managed log encryption
 
 # ─── API / custom domain ────────────────────────────────────
-allowed_origins          = ["https://app.claimsub.com", "https://claimsub.com", "https://app.reddably.com", "https://reddably.com"]
-api_domain_name          = "api.claimsub.com"
-api_domain_name_reddably = "api.reddably.com"
+# NOTE: allowed_origins here OVERRIDES the variables.tf default. Keep the
+# Sessionably Claims origin (https://claims.sessionably.com) in this list or CORS
+# will reject the new brand's browser origin even though the default includes it.
+allowed_origins             = ["https://app.claimsub.com", "https://claimsub.com", "https://app.reddably.com", "https://reddably.com", "https://claims.sessionably.com"]
+api_domain_name             = "api.claimsub.com"
+api_domain_name_reddably    = "api.reddably.com"
+api_domain_name_sessionably = "api.claims.sessionably.com"
 
 # Leave false for the first apply (cert request only). Flip to true and re-apply
 # AFTER the ACM cert is ISSUED. See README §DNS repoint.
