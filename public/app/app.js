@@ -44,7 +44,7 @@
         var meta = document.querySelector('meta[name="reddably-api-base"]');
         metaBase = meta && meta.content;
       } catch (e) { /* ignore */ }
-      api.baseUrl = api.API_BASE || window.REDDABLY_API_BASE || metaBase || 'https://api.claimsub.com';
+      api.baseUrl = api.API_BASE || window.REDDABLY_API_BASE || metaBase || 'https://api.claims.sessionably.com';
     }
     return api;
   }

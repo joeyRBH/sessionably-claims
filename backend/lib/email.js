@@ -23,7 +23,7 @@ const FROM_ADDRESS = process.env.SES_FROM_ADDRESS || 'notifications@claims.sessi
 // Base URL for building app deep-links (client chart, etc.). The app shell is
 // served at reddably.com/app/app.html (Vercel serves the static /public tree),
 // so default to reddably.com — matching payment_link.js / invitations.js.
-const APP_BASE_URL = (process.env.APP_BASE_URL || 'https://reddably.com').replace(/\/+$/, '');
+const APP_BASE_URL = (process.env.APP_BASE_URL || 'https://claims.sessionably.com').replace(/\/+$/, '');
 
 // Build the SES SendEmail input from a simple { to, subject, text, html } shape.
 // Pure — no I/O — so tests can assert on Source / Destination / body directly.

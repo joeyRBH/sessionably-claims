@@ -20,7 +20,7 @@
     } catch (e) {
       /* document unavailable — fall through to default */
     }
-    return 'https://api.claimsub.com';
+    return 'https://api.claims.sessionably.com';
   }
 
   var API_BASE = resolveApiBase();

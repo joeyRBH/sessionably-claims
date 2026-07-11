@@ -47,7 +47,7 @@ const SESSION = {
 
   // Description is the deep link ONLY — no name, and it carries the client id.
   assert.ok(
-    flat.includes('DESCRIPTION:https://reddably.com/app/app.html#clients/22222222-2222-2222-2222-222222222222'),
+    flat.includes('DESCRIPTION:https://claims.sessionably.com/app/app.html#clients/22222222-2222-2222-2222-222222222222'),
     'description is the app deep link only'
   );
 

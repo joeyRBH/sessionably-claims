@@ -71,7 +71,7 @@ assert.strictEqual(input.Message.Body.Text.Data, 'body text');
   assert.ok(bodyText.includes('Jordan Rivers'), 'body includes the client name');
   // The chart link must be the exact production URL shape (host + /app/app.html#…),
   // or every email's link 404s.
-  const EXPECTED_CHART_URL = 'https://reddably.com/app/app.html#clients/client-uuid-123';
+  const EXPECTED_CHART_URL = 'https://claims.sessionably.com/app/app.html#clients/client-uuid-123';
   assert.ok(bodyText.includes(EXPECTED_CHART_URL), `body links to ${EXPECTED_CHART_URL}, got:\n${bodyText}`);
   assert.ok(
     sent.Message.Body.Html.Data.includes(EXPECTED_CHART_URL),
