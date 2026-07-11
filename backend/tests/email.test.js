@@ -36,7 +36,7 @@ const input = email.buildSendEmailInput({
   subject: 'Hello',
   text: 'body text',
 });
-assert.strictEqual(input.Source, 'notifications@reddably.com', 'default FROM address');
+assert.strictEqual(input.Source, 'notifications@claims.sessionably.com', 'default FROM address');
 assert.deepStrictEqual(input.Destination.ToAddresses, ['admin@practice.test'], 'recipient');
 assert.strictEqual(input.Message.Subject.Data, 'Hello');
 assert.strictEqual(input.Message.Body.Text.Data, 'body text');
@@ -49,7 +49,7 @@ assert.strictEqual(input.Message.Body.Text.Data, 'body text');
     okMock.deps
   );
   assert.strictEqual(okMock.captured.commands.length, 1, 'client.send called once');
-  assert.strictEqual(okMock.captured.commands[0].Source, 'notifications@reddably.com');
+  assert.strictEqual(okMock.captured.commands[0].Source, 'notifications@claims.sessionably.com');
   assert.deepStrictEqual(okMock.captured.commands[0].Destination.ToAddresses, ['admin@practice.test']);
 
   // --- 3. intake-completion email: correct FROM + recipient, PHI-minimal ----
@@ -65,7 +65,7 @@ assert.strictEqual(input.Message.Body.Text.Data, 'body text');
   );
   assert.strictEqual(res.sent, true, 'reports sent=true on success');
   const sent = okMock2.captured.commands[0];
-  assert.strictEqual(sent.Source, 'notifications@reddably.com', 'FROM is the notifications address');
+  assert.strictEqual(sent.Source, 'notifications@claims.sessionably.com', 'FROM is the notifications address');
   assert.deepStrictEqual(sent.Destination.ToAddresses, ['owner@practice.test'], 'recipient is the admin');
   const bodyText = sent.Message.Body.Text.Data;
   assert.ok(bodyText.includes('Jordan Rivers'), 'body includes the client name');
