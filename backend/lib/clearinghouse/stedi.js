@@ -118,6 +118,34 @@ function genderCode(g) {
   }
 }
 
+// Split an insurance.subscriber_name ("First Last", "First Middle Last") into
+// [firstName, lastName] on the LAST space — mirrors the client portal / insurance
+// form, which stores the policyholder as a single free-text name. A single token
+// (no space) is treated as a first name only, with an empty last name.
+function splitSubscriberName(full) {
+  const s = full == null ? '' : String(full).trim();
+  if (!s) return ['', ''];
+  const i = s.lastIndexOf(' ');
+  if (i <= 0) return [s, ''];
+  return [s.slice(0, i).trim(), s.slice(i + 1).trim()];
+}
+
+// Map an insurance.subscriber_relationship (the patient's relationship TO the
+// policyholder — allowed values self | spouse | child | other, per the insurance
+// form) to the 837P dependent relationshipToSubscriberCode. 'self' never reaches
+// here (it means the patient IS the subscriber — no dependent loop). Unknown /
+// unrecognized values fall back to G8 (other relationship).
+function relationshipToSubscriberCode(rel) {
+  switch (String(rel == null ? '' : rel).trim().toLowerCase()) {
+    case 'spouse':
+      return '01';
+    case 'child':
+      return '19';
+    default:
+      return 'G8';
+  }
+}
+
 // Parse a finite number out of an adjudication field, else null.
 function num(v) {
   if (v == null || v === '') return null;
@@ -202,6 +230,72 @@ function buildSubmissionBody(ctx) {
     ];
   }
 
+  // Dependent mode: when the insurance record names a subscriber relationship
+  // other than 'self', the patient is a dependent on someone else's policy. The
+  // 837P then wants the POLICYHOLDER in the subscriber loop and the PATIENT in a
+  // singular `dependent` object (note: singular here, unlike eligibility's
+  // `dependents` array). Putting the patient in the subscriber loop for a
+  // dependent is what got a live claim rejected with 277CA A3/21 "invalid
+  // patient/subscriber information"; Stedi now also validates the pairing at
+  // submission and returns error 33 on a mismatch, so a wrong shape fails fast.
+  const rel = insurance.subscriber_relationship;
+  const isDependent =
+    rel != null && String(rel).trim() !== '' && String(rel).trim().toLowerCase() !== 'self';
+
+  let subscriber;
+  let dependent = null;
+  if (isDependent) {
+    // Policyholder in the subscriber loop. We only know what the insurance record
+    // carries — the policyholder name (split on the last space) and DOB — so build
+    // by adding present fields only (no empty strings leak in). Gender and address
+    // are unknown for the policyholder and the 837P only requires them when the
+    // subscriber is the patient, so they are omitted here.
+    subscriber = { paymentResponsibilityLevelCode: 'P' };
+    if (insurance.member_id) subscriber.memberId = insurance.member_id;
+    const [subFirst, subLast] = splitSubscriberName(insurance.subscriber_name);
+    if (subFirst) subscriber.firstName = subFirst;
+    if (subLast) subscriber.lastName = subLast;
+    const subDob = ymd(insurance.subscriber_dob);
+    if (subDob) subscriber.dateOfBirth = subDob;
+
+    // Patient in the dependent loop: the same client sources as the subscriber
+    // block below, plus the relationship code. Gender is omitted when unknown (U).
+    dependent = {
+      relationshipToSubscriberCode: relationshipToSubscriberCode(rel),
+    };
+    if (client.first_name) dependent.firstName = client.first_name;
+    if (client.last_name) dependent.lastName = client.last_name;
+    const depDob = ymd(client.date_of_birth);
+    if (depDob) dependent.dateOfBirth = depDob;
+    const depGender = genderCode(client.gender);
+    if (depGender !== 'U') dependent.gender = depGender;
+    dependent.address = {
+      address1: client.address_line1 || undefined,
+      address2: client.address_line2 || undefined,
+      city: client.city || undefined,
+      state: client.state || undefined,
+      postalCode: client.postal_code || undefined,
+    };
+  } else {
+    // Non-dependent (patient IS the subscriber): unchanged from the original shape.
+    // Stedi auto-sets relationship code 18 (self) and no dependent loop is sent.
+    subscriber = {
+      paymentResponsibilityLevelCode: 'P',        // primary payer
+      memberId: insurance.member_id || undefined,
+      firstName: client.first_name || undefined,
+      lastName: client.last_name || undefined,
+      dateOfBirth: ymd(client.date_of_birth) || undefined,
+      gender: genderCode(client.gender),          // 837 requires demographics when patient is subscriber
+      address: {
+        address1: client.address_line1 || undefined,
+        address2: client.address_line2 || undefined,
+        city: client.city || undefined,
+        state: client.state || undefined,
+        postalCode: client.postal_code || undefined,
+      },
+    };
+  }
+
   const body = {
     tradingPartnerServiceId,
     submitter: {
@@ -232,23 +326,13 @@ function buildSubmissionBody(ctx) {
         postalCode: practice.postal_code || undefined,
       },
     },
-    subscriber: {
-      paymentResponsibilityLevelCode: 'P',        // primary payer
-      memberId: insurance.member_id || undefined,
-      firstName: client.first_name || undefined,
-      lastName: client.last_name || undefined,
-      dateOfBirth: ymd(client.date_of_birth) || undefined,
-      gender: genderCode(client.gender),          // 837 requires demographics when patient is subscriber
-      address: {
-        address1: client.address_line1 || undefined,
-        address2: client.address_line2 || undefined,
-        city: client.city || undefined,
-        state: client.state || undefined,
-        postalCode: client.postal_code || undefined,
-      },
-    },
+    subscriber,
     claimInformation,
   };
+
+  // Only present in dependent mode; omitted entirely otherwise so the
+  // non-dependent body stays byte-identical to the original.
+  if (dependent) body.dependent = dependent;
 
   return { body, tradingPartnerServiceId, billingNpi };
 }
