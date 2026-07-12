@@ -599,6 +599,160 @@ async function searchPayers(query) {
     .filter((p) => p.payer_id);
 }
 
+// -----------------------------------------------------------------------------
+// ERA enrollment (Enrollments API) — per-practice payer enrollment for electronic
+// remittance. Powers handlers/payer_enrollments.js. This API lives on its OWN host
+// (not the medical-network base), but authenticates with the same raw STEDI_API_KEY.
+//
+//   base : https://enrollments.us.stedi.com/2024-09-01
+//   auth : Authorization: <STEDI_API_KEY>
+//
+// No PHI ever crosses these calls — the payloads are practice/payer trading-partner
+// data (name, NPI, tax id, business contact, payer id), so on failure we still keep
+// error messages terse and never echo the request/response body.
+// -----------------------------------------------------------------------------
+const ENROLLMENTS_BASE =
+  process.env.STEDI_ENROLLMENTS_BASE_URL ||
+  'https://enrollments.us.stedi.com/2024-09-01';
+
+// Shared transport for the enrollments API: any method, JSON body when present,
+// optional query object, same 15s AbortController bound as the other calls. The
+// path/URL is never echoed in the timeout error (defensive, matches the others).
+async function enrollmentsFetch(method, path, body, query) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), STEDI_TIMEOUT_MS);
+  let url = `${ENROLLMENTS_BASE}${path}`;
+  if (query) {
+    const qs = Object.keys(query)
+      .filter((k) => query[k] != null && query[k] !== '')
+      .map((k) => `${encodeURIComponent(k)}=${encodeURIComponent(query[k])}`)
+      .join('&');
+    if (qs) url += `?${qs}`;
+  }
+  try {
+    const opts = {
+      method,
+      headers: { Authorization: apiKey(), Accept: 'application/json' },
+      signal: controller.signal,
+    };
+    if (body != null) {
+      opts.headers['Content-Type'] = 'application/json';
+      opts.body = JSON.stringify(body);
+    }
+    return await fetch(url, opts);
+  } catch (err) {
+    if (err && err.name === 'AbortError') {
+      throw new Error(`Stedi enrollments request to ${path} timed out after ${STEDI_TIMEOUT_MS}ms`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Tax ids must be digits only (no dashes) on the enrollments API.
+function digitsOnly(v) {
+  return String(v == null ? '' : v).replace(/\D/g, '');
+}
+
+// Build the enrollments contact block from a normalized contact object. Only
+// present fields are sent (no empty strings), matching the rest of the adapter.
+function enrollmentContact(contact) {
+  const c = contact || {};
+  const out = {};
+  if (c.firstName) out.firstName = c.firstName;
+  if (c.lastName) out.lastName = c.lastName;
+  if (c.email) out.email = c.email;
+  if (c.phone) out.phone = c.phone;
+  if (c.streetAddress1) out.streetAddress1 = c.streetAddress1;
+  if (c.city) out.city = c.city;
+  if (c.state) out.state = c.state;
+  if (c.zipCode) out.zipCode = c.zipCode;
+  return out;
+}
+
+// ensureEnrollmentProvider(practice, contact) -> providerId.
+// A provider must exist (one per practice TIN) before any enrollment. When the
+// practice already carries a stedi_provider_id, reuse it (no network). Otherwise
+// POST /providers and return the new id for the caller to persist. NPI + taxId
+// pairs are unique on Stedi's side, so a re-create for the same pair 409s — the
+// caller persists the id the first time so this stays a one-time cost.
+async function ensureEnrollmentProvider(practice, contact) {
+  const p = practice || {};
+  if (p.stedi_provider_id) return p.stedi_provider_id;
+
+  const body = {
+    name: p.name || undefined,
+    npi: p.npi || undefined,
+    taxIdType: 'EIN',
+    taxId: digitsOnly(p.tax_id),
+    contacts: [enrollmentContact(contact)],
+  };
+
+  const res = await enrollmentsFetch('POST', '/providers', body);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data || !data.id) {
+    throw new Error(`Stedi provider creation failed (HTTP ${res.status})`);
+  }
+  return data.id;
+}
+
+// createPayerEnrollment({ providerId, payerIdOrAlias, contact, userEmail })
+//   -> { id, status }. Submits an ERA (claimPayment) enrollment immediately with
+// status STEDI_ACTION_REQUIRED (DRAFT would be "not yet submitted" — unused in v1).
+async function createPayerEnrollment({ providerId, payerIdOrAlias, contact, userEmail }) {
+  const body = {
+    transactions: { claimPayment: { enroll: true } },
+    primaryContact: enrollmentContact(contact),
+    userEmail: userEmail || undefined,
+    payer: { idOrAlias: String(payerIdOrAlias == null ? '' : payerIdOrAlias) },
+    provider: { id: providerId },
+    status: 'STEDI_ACTION_REQUIRED',
+  };
+
+  const res = await enrollmentsFetch('POST', '/enrollments', body);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data || !data.id) {
+    throw new Error(`Stedi enrollment creation failed (HTTP ${res.status})`);
+  }
+  return { id: data.id, status: data.status || 'STEDI_ACTION_REQUIRED' };
+}
+
+// getEnrollmentStatus(stediEnrollmentId) -> { status, reason }. GET a single
+// enrollment; `reason` is populated when the payer/Stedi needs manual action.
+async function getEnrollmentStatus(stediEnrollmentId) {
+  const res = await enrollmentsFetch(
+    'GET',
+    `/enrollments/${encodeURIComponent(String(stediEnrollmentId))}`
+  );
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(`Stedi enrollment status check failed (HTTP ${res.status})`);
+  }
+  return { status: data.status || null, reason: data.reason || null };
+}
+
+// listEnrollments({ npi, taxId }) -> array of raw enrollment objects for the
+// practice's provider, used to import enrollments created outside the app. Filters
+// server-side by provider NPI + tax id when supported; the caller additionally
+// de-dupes against locally-stored stedi_enrollment_ids for idempotency.
+async function listEnrollments({ npi, taxId } = {}) {
+  // Filters are plural array params on the List Enrollments API; a single value
+  // each is accepted. providerNpis / providerTaxIds (NOT the singular forms).
+  const query = {};
+  if (npi) query.providerNpis = digitsOnly(npi);
+  if (taxId) query.providerTaxIds = digitsOnly(taxId);
+
+  const res = await enrollmentsFetch('GET', '/enrollments', null, query);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(`Stedi enrollment list failed (HTTP ${res.status})`);
+  }
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data && data.items)) return data.items;
+  return [];
+}
+
 module.exports = {
   name,
   submitClaim,
@@ -607,6 +761,11 @@ module.exports = {
   searchPayers,
   mapStatus,
   firstStatus,
+  // ERA enrollment (Enrollments API).
+  ensureEnrollmentProvider,
+  createPayerEnrollment,
+  getEnrollmentStatus,
+  listEnrollments,
   // Exposed for unit testing (pure, no network).
   buildSubmissionBody,
   parseSubmissionRejection,

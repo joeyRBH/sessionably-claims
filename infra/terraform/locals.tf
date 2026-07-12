@@ -144,6 +144,17 @@ locals {
         { method = "GET", path = "payers/search" },
       ]
     }
+    payer_enrollments = {
+      handler = "handlers/payer_enrollments.handler"
+      # Per-practice ERA (electronic remittance) enrollments. List refreshes stale
+      # non-terminal rows from the clearinghouse (and imports ones created outside
+      # the app); create is practice_admin-only; sync forces a single-row refresh.
+      routes = [
+        { method = "GET", path = "payer-enrollments" },
+        { method = "POST", path = "payer-enrollments" },
+        { method = "POST", path = "payer-enrollments/{id}/sync" },
+      ]
+    }
     subscription = {
       handler = "handlers/subscription.handler"
       # DB-only status route stays on the Lambda API. The Stripe-facing

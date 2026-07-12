@@ -79,6 +79,8 @@ create table if not exists practices (
   stripe_customer_id   text,
   stripe_subscription_id text,                                -- Stripe subscription for the VOB add-on
   notification_email   text,                                  -- optional override recipient for admin notifications (else the practice_admin's email)
+  phone                text,                                  -- practice contact phone (ERA enrollment provider/primary contact)
+  stedi_provider_id    text,                                  -- clearinghouse enrollment "provider" handle (one per practice TIN); minted lazily on first ERA enrollment
   is_active            boolean not null default true,
   created_at           timestamptz not null default now(),
   updated_at           timestamptz not null default now()
@@ -131,6 +133,15 @@ alter table practices add column if not exists country text not null default 'US
 -- databases; this keeps a pre-existing database in sync. See
 -- db/migrations/009_add_notification_email_to_practices.sql.
 alter table practices add column if not exists notification_email text;
+
+-- Migration (idempotent): practice contact phone + the clearinghouse ERA-enrollment
+-- provider handle. `phone` feeds the provider/primary contact on the enrollments
+-- API; `stedi_provider_id` is minted once per practice TIN (NPI + tax id) the first
+-- time the practice enrolls with any payer and reused for every subsequent payer.
+-- Declared above for fresh databases; these keep a pre-existing database in sync.
+-- See db/migrations/013_add_payer_enrollments.sql.
+alter table practices add column if not exists phone text;
+alter table practices add column if not exists stedi_provider_id text;
 
 -- =============================================================================
 -- 3. practice_subscriptions — a practice's current plan.
@@ -637,6 +648,43 @@ create trigger trg_shareable_links_updated_at
   for each row execute function set_updated_at();
 
 -- =============================================================================
+-- 16. payer_enrollments — per-practice ERA (electronic remittance) enrollments.
+-- =============================================================================
+-- One row per payer per transaction type the practice has enrolled for through
+-- the clearinghouse enrollments API. Enrollment is per-practice (TIN-level), not
+-- per-clinician: it is keyed only on practice_id + payer_id + transaction_type.
+-- `stedi_enrollment_id` is the clearinghouse's enrollment handle (used to poll
+-- status); `status` mirrors the clearinghouse lifecycle verbatim
+-- (STEDI_ACTION_REQUIRED → PROVISIONING → LIVE, plus PROVIDER_ACTION_REQUIRED /
+-- CANCELED), and `status_reason` carries the clearinghouse's manual-step
+-- instructions when the payer needs something from the practice. No PHI: this is
+-- practice/payer trading-partner data only.
+create table if not exists payer_enrollments (
+  id                       uuid primary key default gen_random_uuid(),
+  practice_id              uuid not null references practices (id) on delete restrict,
+  payer_id                 text not null,                       -- the payer id/alias we enrolled with
+  payer_name               text,
+  transaction_type         text not null default 'claimPayment',
+  stedi_enrollment_id      text unique,                         -- clearinghouse enrollment handle (poll status by this)
+  status                   text not null default 'requested',   -- mirrors the clearinghouse enrollment lifecycle
+  status_reason            text,                                -- clearinghouse manual-step instructions (surfaced verbatim in the UI)
+  requested_effective_date date,
+  last_synced_at           timestamptz,                         -- last time status was refreshed from the clearinghouse
+  created_at               timestamptz not null default now(),
+  updated_at               timestamptz not null default now(),
+  unique (practice_id, payer_id, transaction_type)
+);
+comment on table payer_enrollments is 'Per-practice ERA (electronic remittance) enrollments with payers, one row per payer + transaction type. No PHI.';
+
+create index if not exists idx_payer_enrollments_practice_id on payer_enrollments (practice_id);
+create index if not exists idx_payer_enrollments_status on payer_enrollments (status);
+
+drop trigger if exists trg_payer_enrollments_updated_at on payer_enrollments;
+create trigger trg_payer_enrollments_updated_at
+  before update on payer_enrollments
+  for each row execute function set_updated_at();
+
+-- =============================================================================
 -- audit_log — append-only HIPAA compliance trail (no updated_at, no trigger).
 -- =============================================================================
 -- HIPAA 45 CFR 164.312(b) requires recording and examining activity in systems
@@ -653,7 +701,7 @@ create table if not exists audit_log (
   actor_user_id  uuid references users (id) on delete restrict,      -- nullable: patient-link / system actors have no user
   actor_type     text not null check (actor_type in ('user', 'patient_link', 'system')),
   action         text not null,                                      -- dot notation, e.g. 'client.view', 'claim.submit'
-  resource_type  text,                                               -- 'client' | 'insurance_record' | 'session' | 'claim' | 'vob' | 'user' | 'practice' | 'invitation' | 'auth'
+  resource_type  text,                                               -- 'client' | 'insurance_record' | 'session' | 'claim' | 'vob' | 'user' | 'practice' | 'invitation' | 'auth' | 'payer_enrollment'
   resource_id    uuid,
   ip_address     text,                                               -- API GW requestContext.http.sourceIp
   user_agent     text,

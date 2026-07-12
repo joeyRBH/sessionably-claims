@@ -190,6 +190,10 @@
       var role = (user && user.role) || (practice && practice.role);
       var auditNav = document.getElementById('nav-audit-item');
       if (auditNav && role === 'practice_admin') auditNav.hidden = false;
+      // Payer ERA enrollments are practice_admin-only too (the view guards again,
+      // and the mutation endpoint 403s non-admins — this is UX, not the boundary).
+      var enrollNav = document.getElementById('nav-enrollments-item');
+      if (enrollNav && role === 'practice_admin') enrollNav.hidden = false;
     }).catch(function () {
       /* leave the existing placeholders in place on failure */
     });

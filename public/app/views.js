@@ -830,6 +830,25 @@
   }
 
   // ---------------------------------------------------------------------------
+  // White-label scrub — the clearinghouse vendor must be invisible to app users.
+  // Any text that originates from the clearinghouse (e.g. an enrollment's manual-
+  // step instructions) is passed through this before it is rendered: the vendor
+  // name is replaced with a generic phrase, and any vendor URL is replaced with a
+  // "see your enrollment contact" pointer (never a clickable link to their site).
+  // Case-insensitive; null-safe (returns '' for nullish input).
+  // ---------------------------------------------------------------------------
+  function scrubVendor(text) {
+    if (text == null) return '';
+    var s = String(text);
+    // Strip vendor URLs first (before the bare-word pass would mangle the host).
+    s = s.replace(/https?:\/\/\S*stedi\.com\S*/gi, '(see your enrollment contact)');
+    s = s.replace(/\bstedi\.com\b/gi, '(see your enrollment contact)');
+    // Then the bare brand name anywhere it appears.
+    s = s.replace(/stedi/gi, 'the clearinghouse');
+    return s;
+  }
+
+  // ---------------------------------------------------------------------------
   // Status badge — tone mapping shared across sessions / claims / clients.
   // ---------------------------------------------------------------------------
   var BADGE_TONES = {
@@ -955,5 +974,6 @@
     fmtMoney: fmtMoney,
     fmtDate: fmtDate,
     statusBadge: statusBadge,
+    scrubVendor: scrubVendor,
   };
 })(window, document);
