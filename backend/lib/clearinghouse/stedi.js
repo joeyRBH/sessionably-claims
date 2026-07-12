@@ -7,7 +7,7 @@
 //   base   : https://healthcare.us.stedi.com/2024-04-01/change/medicalnetwork
 //   auth   : Authorization: <STEDI_API_KEY>   (raw key, every request)
 //   submit : POST {base}/professionalclaims/v3/submission   application/json
-//   status : POST {base}/claimstatus/v3/status              application/json
+//   status : POST {base}/claimstatus/v2                      application/json
 //
 // Runs on Node 20+ (global fetch). The handler stores whatever submitClaim()
 // returns as `raw` into claims.clearinghouse_payload, so we persist the
@@ -418,7 +418,132 @@ async function submitClaim(ctx) {
   };
 }
 
-// Map a Stedi claimStatus code (numeric or descriptive) to the Reddably enum.
+// Build the real-time claim-status (276/277) request body from the claim context.
+// Pure (no network) so it can be unit-tested; getStatus() POSTs whatever this
+// returns. Stedi recommends a MINIMAL base request — over-specifying degrades
+// matching — so we send only tradingPartnerServiceId, the encounter dates, the
+// billing provider, and the subscriber.
+//
+// Sourcing mirrors buildSubmissionBody exactly, because the 276 must describe the
+// same parties as the 837 that was filed:
+//   * tradingPartnerServiceId — the payer id used at submission. Prefer the value
+//     persisted on the claim at submit time (clearinghouse_payload), then the
+//     insurance record's payer_id.
+//   * providers[BillingProvider] — the practice (organizationName + NPI), same
+//     billing loop the 837 used (persisted billing_npi, else practice/clinician).
+//   * subscriber — the POLICYHOLDER, who is NOT necessarily the patient. On a
+//     dependent claim the policyholder is on the insurance record; when the patient
+//     IS the subscriber ('self' / no relationship) the patient (client) is used.
+//     No dependent block is sent — the base request matches on the subscriber.
+// Any required field that is missing throws a descriptive error naming the field.
+function buildStatusBody(ctx) {
+  const claim = (ctx && ctx.claim) || {};
+  const insurance = (ctx && ctx.insurance) || {};
+  const client = (ctx && ctx.client) || {};
+  const clinician = (ctx && ctx.clinician) || {};
+  const practice = (ctx && ctx.practice) || {};
+  const session = (ctx && ctx.session) || {};
+  const payload = claim.clearinghouse_payload || {};
+
+  const tradingPartnerServiceId = payload.tradingPartnerServiceId || insurance.payer_id;
+  if (!tradingPartnerServiceId) {
+    throw new Error('Stedi status check requires tradingPartnerServiceId (payer id used at submission).');
+  }
+
+  const billingNpi = payload.billing_npi || practice.npi || clinician.npi || null;
+  if (!billingNpi) {
+    throw new Error('Stedi status check requires the billing provider npi.');
+  }
+  const organizationName = practice.name || null;
+  if (!organizationName) {
+    throw new Error('Stedi status check requires the billing provider organizationName (practice name).');
+  }
+
+  // Single-session claims: the beginning and end dates of service are the same day.
+  const dos = ymd(session.session_date);
+  if (!dos) {
+    throw new Error('Stedi status check requires the session date of service.');
+  }
+
+  const rel = insurance.subscriber_relationship;
+  const isDependent =
+    rel != null && String(rel).trim() !== '' && String(rel).trim().toLowerCase() !== 'self';
+
+  const memberId = insurance.member_id;
+  if (!memberId) {
+    throw new Error('Stedi status check requires the subscriber memberId.');
+  }
+
+  let firstName;
+  let lastName;
+  let dateOfBirth;
+  if (isDependent) {
+    [firstName, lastName] = splitSubscriberName(insurance.subscriber_name);
+    dateOfBirth = ymd(insurance.subscriber_dob);
+  } else {
+    firstName = client.first_name || '';
+    lastName = client.last_name || '';
+    dateOfBirth = ymd(client.date_of_birth);
+  }
+  if (!firstName) throw new Error('Stedi status check requires the subscriber firstName.');
+  if (!lastName) throw new Error('Stedi status check requires the subscriber lastName.');
+  if (!dateOfBirth) throw new Error('Stedi status check requires the subscriber dateOfBirth.');
+
+  const body = {
+    tradingPartnerServiceId,
+    encounter: {
+      beginningDateOfService: dos,
+      endDateOfService: dos,
+    },
+    providers: [
+      {
+        providerType: 'BillingProvider',
+        organizationName,
+        npi: billingNpi,
+      },
+    ],
+    subscriber: {
+      firstName,
+      lastName,
+      dateOfBirth,
+      memberId,
+    },
+  };
+
+  return { body, tradingPartnerServiceId, billingNpi };
+}
+
+// Map a 277 claimStatusCategoryCode to the Reddably claim enum. The category code
+// is the authoritative lifecycle bucket (its finer statusCode is only a fallback):
+//
+//   F  Finalized              → paid   (F2 = Finalized/Denial → denied)
+//   P  Pending                → processing
+//   R  Request for more info  → info_requested
+//   A1 / A2 / A5 Received/Accepted → submitted
+//   A3 / A6 / A7 / A8 Rejected at acknowledgement → denied
+//
+// Anything else — A4 (Not Found), D0 (search unsuccessful), E (errors), unknown —
+// returns null so the caller treats it as a non-fatal "no update" (the claim keeps
+// its current status) rather than force-mapping it.
+function mapStatusCategory(cat) {
+  const c = String(cat == null ? '' : cat).trim().toUpperCase();
+  if (!c) return null;
+  if (c === 'F2') return 'denied';
+  switch (c[0]) {
+    case 'F': return 'paid';
+    case 'P': return 'processing';
+    case 'R': return 'info_requested';
+    default: break;
+  }
+  if (c === 'A1' || c === 'A2' || c === 'A5') return 'submitted';
+  if (c === 'A3' || c === 'A6' || c === 'A7' || c === 'A8') return 'denied';
+  return null;
+}
+
+// Map a Stedi claim statusCode (numeric or descriptive) to the Reddably enum.
+// Fallback only — used when a response carries a statusCode but no category code we
+// recognize. Returns null for values we can't place, so the caller can treat the
+// response as "no update" rather than guessing.
 function mapStatus(code) {
   const c = code == null ? '' : String(code).trim().toLowerCase();
   switch (c) {
@@ -436,48 +561,61 @@ function mapStatus(code) {
     case 'pending':
       return 'processing';
     default:
-      return 'submitted';
+      return null;
   }
 }
 
-// Pull the most relevant claim-status object out of Stedi's response, tolerating
-// a few shapes ({ claims: [{ claimStatus }] }, { claimStatus }, flat).
+// Pull the most relevant claim-status object out of Stedi's response, tolerating a
+// few shapes ({ claims: [{ claimStatus }] }, { claimStatus }, a bare claim object).
+// Returns null when there is no claim-status object at all — a no-match 200 carries
+// an empty (or absent) claims array, and returning `data` itself here would make
+// that no-match look like a real status. The caller reads null as "no update".
 function firstStatus(data) {
-  if (!data) return null;
-  const claims = data.claims || (data.claim ? [data.claim] : null);
+  if (!data || typeof data !== 'object') return null;
+  const claims = Array.isArray(data.claims) ? data.claims : (data.claim ? [data.claim] : null);
   if (Array.isArray(claims) && claims.length) {
     const last = claims[claims.length - 1];
     return last.claimStatus || last.status || last;
   }
-  return data.claimStatus || data.status || data;
+  if (data.claimStatus && typeof data.claimStatus === 'object') return data.claimStatus;
+  if (data.status && typeof data.status === 'object') return data.status;
+  return null;
 }
 
-async function getStatus({ control_number, claim }) {
-  const payload = (claim && claim.clearinghouse_payload) || {};
-  const tradingPartnerServiceId = payload.tradingPartnerServiceId || undefined;
-  const billingNpi = payload.billing_npi || undefined;
+async function getStatus({ control_number, claim, ctx }) {
+  // Prefer the assembled context (subscriber / provider / DOS) the handler passes
+  // so the 276 mirrors the 837 that was filed; fall back to a claim-only ctx for
+  // direct callers. buildStatusBody throws (naming the field) on missing data.
+  const { body } = buildStatusBody(ctx || { claim });
 
-  const provider = {};
-  if (billingNpi) provider.npi = billingNpi;
-
-  const res = await stediPost('/claimstatus/v3/status', {
-    tradingPartnerServiceId,
-    controlNumber: control_number,
-    provider,
-  });
+  const res = await stediPost('/claimstatus/v2', body);
 
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(`Stedi status check failed (HTTP ${res.status}): ${JSON.stringify(data)}`);
+    // Never echo the response body — it can carry PHI (member id, name, DOB).
+    throw new Error(`Stedi status check failed (HTTP ${res.status})`);
   }
 
-  const info = firstStatus(data) || {};
-  const code =
+  // Status is derived from the response body, NEVER the HTTP status: a no-match
+  // comes back HTTP 200. When no claim-status object is present, or its category
+  // is one we don't map (Not Found, etc.), report a non-fatal "no update" so the
+  // claim keeps its current status.
+  const info = firstStatus(data);
+  if (!info) return { no_update: true, raw: data };
+
+  const category =
     info.claimStatusCategoryCode != null ? info.claimStatusCategoryCode
       : info.statusCategoryCode != null ? info.statusCategoryCode
-        : info.statusCode != null ? info.statusCode
-          : info.code;
-  const status = mapStatus(code);
+        : null;
+  const statusCode =
+    info.statusCode != null ? info.statusCode
+      : info.claimStatusCode != null ? info.claimStatusCode
+        : info.code != null ? info.code
+          : null;
+
+  let status = mapStatusCategory(category);
+  if (status == null && statusCode != null) status = mapStatus(statusCode);
+  if (status == null) return { no_update: true, raw: data };
 
   // Adjudication amounts live under a few possible keys; absent → null.
   const adj = info.adjudication || info.monetaryAmounts || info;
@@ -760,6 +898,7 @@ module.exports = {
   checkEligibility,
   searchPayers,
   mapStatus,
+  mapStatusCategory,
   firstStatus,
   // ERA enrollment (Enrollments API).
   ensureEnrollmentProvider,
@@ -768,6 +907,7 @@ module.exports = {
   listEnrollments,
   // Exposed for unit testing (pure, no network).
   buildSubmissionBody,
+  buildStatusBody,
   parseSubmissionRejection,
   patientControlNumber,
   boundControlNumber,

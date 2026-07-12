@@ -646,7 +646,7 @@ async function submitClaim(practiceId, userId, id, event, authCtx) {
       eventType: 'submitted',
       statusFrom: 'draft',
       statusTo: 'submitted',
-      note: `Submitted via ${adapter.name}.`,
+      note: 'Submitted electronically.',
       payload: result.raw,
     });
     return row;
@@ -671,15 +671,40 @@ async function refreshClaim(practiceId, userId, id, event, authCtx) {
   }
 
   const adapter = getClearinghouse();
+
+  // Assemble the same normalized context submitClaim used, so the status request
+  // mirrors the 837 that was filed (subscriber = policyholder, billing provider,
+  // dates of service). Adapters never touch the DB.
+  const ctx = await buildClaimContext(practiceId, claim);
+
   let status;
   try {
-    status = await adapter.getStatus({ control_number: claim.control_number, claim });
+    status = await adapter.getStatus({ control_number: claim.control_number, claim, ctx });
   } catch (err) {
+    // (c) Upstream failure — network/timeout, or a required field the adapter
+    // named as missing. Keep the user-facing message generic (it can echo PHI).
     console.error('claims refresh (clearinghouse) error:', err && err.message);
     return json(502, { error: 'Clearinghouse status check failed.' }, event);
   }
 
-  const newStatus = status && status.status;
+  // (b) Valid response, but the payer has no matching claim / no new status yet.
+  // The claim keeps its current status; return 200 so the UI can show an info
+  // message ("Payer has no update yet") rather than a scary error.
+  if (!status || status.no_update) {
+    await audit(event, authCtx, {
+      action: 'claim.refresh',
+      resourceType: 'claim',
+      resourceId: id,
+      metadata: { status: claim.status, outcome: 'no_update' },
+    });
+    return json(200, {
+      claim: shapeClaim(claim),
+      outcome: 'no_update',
+      message: 'Payer has no update yet.',
+    }, event);
+  }
+
+  const newStatus = status.status;
   if (!CLAIM_STATUSES.includes(newStatus)) {
     console.error('claims refresh: adapter returned unknown status');
     return json(502, { error: 'Clearinghouse returned an unrecognized status.' }, event);
@@ -690,6 +715,8 @@ async function refreshClaim(practiceId, userId, id, event, authCtx) {
     const p = parseMoney(v);
     return p.ok ? p.value : null;
   };
+
+  const changed = newStatus !== claim.status;
 
   const updated = await db.withTransaction(async (client) => {
     const res = await client.query(
@@ -713,7 +740,7 @@ async function refreshClaim(practiceId, userId, id, event, authCtx) {
     );
     if (res.rowCount === 0) return null;
     const row = res.rows[0];
-    if (newStatus !== claim.status) {
+    if (changed) {
       await logEvent(client, {
         practiceId,
         claimId: row.id,
@@ -721,7 +748,7 @@ async function refreshClaim(practiceId, userId, id, event, authCtx) {
         eventType: eventTypeForStatus(newStatus),
         statusFrom: claim.status,
         statusTo: newStatus,
-        note: `Status updated via ${adapter.name}.`,
+        note: 'Status updated from payer response.',
         payload: status.raw,
       });
     }
@@ -733,9 +760,16 @@ async function refreshClaim(practiceId, userId, id, event, authCtx) {
     action: 'claim.refresh',
     resourceType: 'claim',
     resourceId: id,
-    metadata: { status: updated.status },
+    metadata: { status: updated.status, outcome: changed ? 'updated' : 'no_update' },
   });
-  return json(200, { claim: shapeClaim(updated) }, event);
+
+  // (a) Status updated, or (b) a valid response that matched our current status
+  // with no change. Both are 200; the outcome/message let the UI pick the toast.
+  return json(200, {
+    claim: shapeClaim(updated),
+    outcome: changed ? 'updated' : 'no_update',
+    message: changed ? 'Status updated from payer response.' : 'Payer has no update yet.',
+  }, event);
 }
 
 async function voidClaim(practiceId, userId, id, event, authCtx) {

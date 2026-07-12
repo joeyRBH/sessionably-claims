@@ -291,11 +291,21 @@
     }
 
     function doRefresh() {
-      api.claims.refresh(id).then(function () {
-        R.toast('Status refreshed', 'success');
+      api.claims.refresh(id).then(function (res) {
+        // The refresh endpoint returns a structured outcome: 'updated' when the
+        // payer moved the claim, 'no_update' when there is no matching claim or no
+        // new status yet. Show the matching toast (never a vendor name).
+        if (res && res.outcome === 'no_update') {
+          R.toast((res && res.message) || 'Payer has no update yet.', 'info');
+        } else {
+          var st = res && res.claim && res.claim.status;
+          R.toast(st ? ('Status updated: ' + humanize(st))
+                     : ((res && res.message) || 'Status updated'), 'success');
+        }
         load();
       }).catch(function (err) {
-        R.toast(err.message, 'error');
+        // A failure message may echo the clearinghouse — scrub the vendor name.
+        R.toast(R.scrubVendor(err && err.message) || 'Could not refresh status.', 'error');
       });
     }
 
@@ -525,7 +535,9 @@
           h('span', { class: 'timeline__time' }, R.fmtDate(ev.created_at)),
         ]),
         ev.note
-          ? h('p', { style: 'margin:0;font-size:var(--font-size-3);color:var(--color-text)' }, ev.note)
+          // Scrub any clearinghouse vendor name from historical notes (older rows
+          // persisted "… via stedi."); new notes are already neutral.
+          ? h('p', { style: 'margin:0;font-size:var(--font-size-3);color:var(--color-text)' }, R.scrubVendor(ev.note))
           : null,
       ]);
     }
