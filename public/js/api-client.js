@@ -336,6 +336,17 @@
     search: function (q) { return request('GET', '/payers/search' + buildQuery({ q: q })); },
   };
 
+  // Per-practice ERA (electronic remittance) enrollments. Practice-scoped from the
+  // token; create is practice_admin-only (server-enforced). No PHI.
+  //   list()             -> { payer_enrollments: [...], sync_error }
+  //   create({payer_id, payer_name}) -> { payer_enrollment: {...} }
+  //   sync(id)           -> { payer_enrollment: {...}, sync_error }
+  var payerEnrollments = {
+    list: function () { return request('GET', '/payer-enrollments'); },
+    create: function (payload) { return request('POST', '/payer-enrollments', payload); },
+    sync: function (id) { return request('POST', '/payer-enrollments/' + id + '/sync', {}); },
+  };
+
   // Practice analytics (Reports view). Server-side aggregation; practice-scoped
   // from the token. filters: { start, end } as YYYY-MM-DD (both optional; non-PHI
   // date bounds only). summary(filters) -> { report: {...} }.
@@ -381,6 +392,7 @@
     subscription: subscription,
     vob: vob,
     payers: payers,
+    payerEnrollments: payerEnrollments,
     reports: reports,
     auditLog: auditLog,
   };

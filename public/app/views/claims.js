@@ -283,7 +283,9 @@
           R.toast('Claim submitted', 'success');
           load();
         }).catch(function (err) {
-          R.toast(err.message, 'error');
+          // A submit failure may carry a clearinghouse rejection message — scrub
+          // the vendor name before showing it.
+          R.toast(R.scrubVendor(err && err.message) || 'Claim submission failed', 'error');
         });
       });
     }
@@ -460,7 +462,6 @@
         detailItem('Allowed', R.fmtMoney(claim.allowed_amount)),
         detailItem('Reimbursed', R.fmtMoney(claim.reimbursed_amount)),
         detailItem('Patient responsibility', R.fmtMoney(claim.patient_responsibility)),
-        detailItem('Clearinghouse', claim.clearinghouse || '—'),
         detailItem('Control #', claim.control_number || '—'),
         detailItem('Submitted', R.fmtDate(claim.submitted_at)),
       ]);
@@ -468,7 +469,7 @@
       var denial = claim.denial_reason
         ? h('p', {
             style: 'margin:0;color:var(--color-danger);font-size:var(--font-size-3)',
-          }, [h('strong', null, 'Denial reason: '), claim.denial_reason])
+          }, [h('strong', null, 'Denial reason: '), R.scrubVendor(claim.denial_reason)])
         : null;
 
       return h('div', { class: 'card' }, [
