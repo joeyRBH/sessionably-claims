@@ -298,6 +298,26 @@ function missingSubscriberField(client) {
   return null;
 }
 
+// When the patient is a dependent on someone else's policy (the insurance record
+// names a subscriber_relationship other than 'self'), the 837P puts the
+// POLICYHOLDER in the subscriber loop and requires their name + date of birth.
+// Those come from the insurance record (subscriber_name / subscriber_dob), which
+// may be blank on a staff-created record — catch it here as a clean 422 rather
+// than letting Stedi reject with an opaque error. Returns true when the record is
+// a dependent record missing the policyholder name or DOB.
+function missingDependentPolicyholderField(insurance) {
+  if (!insurance) return false;
+  const rel = insurance.subscriber_relationship;
+  const isDependent =
+    rel != null && String(rel).trim() !== '' && String(rel).trim().toLowerCase() !== 'self';
+  if (!isDependent) return false;
+  const name = insurance.subscriber_name;
+  const dob = insurance.subscriber_dob;
+  if (name == null || String(name).trim() === '') return true;
+  if (dob == null || String(dob).trim() === '') return true;
+  return false;
+}
+
 // Assemble the normalized context an adapter needs (no DB access in adapters).
 async function buildClaimContext(practiceId, claim) {
   const [sessionRes, clientRes, clinicianRes, practiceRes] = await Promise.all([
@@ -571,6 +591,15 @@ async function submitClaim(practiceId, userId, id, event, authCtx) {
     }, event);
   }
 
+  // Dependent claims put the policyholder in the 837P subscriber loop, which
+  // requires their name and date of birth. Block early with a clean 422 rather
+  // than letting the incomplete record reach Stedi as an opaque error.
+  if (missingDependentPolicyholderField(ctx.insurance)) {
+    return json(422, {
+      error: 'Policyholder name and date of birth are required on the insurance record before submitting a dependent claim. Edit the client\'s insurance to add them.',
+    }, event);
+  }
+
   const adapter = getClearinghouse();
 
   let result;
@@ -821,6 +850,7 @@ async function listEvents(practiceId, id, event) {
 // guard and the set of statuses whose claims may be regenerated from a session.
 exports.missingBillingAddressField = missingBillingAddressField;
 exports.missingSubscriberField = missingSubscriberField;
+exports.missingDependentPolicyholderField = missingDependentPolicyholderField;
 exports.REGENERATABLE_STATUSES = REGENERATABLE_STATUSES;
 // Pure shapers exported for unit testing (no DB / network).
 exports.shapeClaim = shapeClaim;
