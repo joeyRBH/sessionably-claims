@@ -153,16 +153,23 @@ function missingEnrollmentFields(caller, practice) {
 
 // --- import (enrollments created outside the app) ----------------------------
 
-// Pull the payer id, status, reason, and enrollment id out of a raw clearinghouse
-// enrollment object, tolerating a few field shapes. Returns null when there is no
-// usable enrollment id (nothing to key an idempotent import on).
+// Digits only (strip dashes/spaces) — mirrors the adapter helper. Used to compare
+// provider NPI / tax id between the remote enrollment and this practice.
+function digitsOnly(v) {
+  return String(v == null ? '' : v).replace(/\D/g, '');
+}
+
+// Pull the payer id, name, status, reason, and enrollment id out of a raw List
+// Enrollments item (shapes per the spec). Returns null when there is no usable
+// enrollment id (nothing to key an idempotent import on).
 function extractRemoteEnrollment(item) {
   if (!item || typeof item !== 'object') return null;
-  const stediId = item.id || item.enrollmentId || null;
+  const stediId = item.id || null;
   if (!stediId) return null;
   const payer = item.payer || {};
-  const payerId = payer.idOrAlias || payer.primaryPayerId || payer.payerId || payer.id || null;
-  const payerName = payer.displayName || payer.name || null;
+  // The id used at creation (e.g. "60054"), falling back to the canonical Stedi id.
+  const payerId = payer.submittedPayerIdOrAlias || payer.stediPayerId || null;
+  const payerName = payer.name || null;
   return {
     stediId: String(stediId),
     payerId: payerId != null ? String(payerId) : null,
@@ -177,11 +184,26 @@ function extractRemoteEnrollment(item) {
 // so a failure surfaces as sync_error rather than failing the list.
 async function importRemoteEnrollments(practiceId, practice) {
   const remote = await stedi.listEnrollments({ npi: practice.npi, taxId: practice.tax_id });
+  const practiceNpi = digitsOnly(practice.npi);
+  const practiceTaxId = digitsOnly(practice.tax_id);
+
   for (const raw of remote) {
+    // Only import ERA (claimPayment) enrollments — the only type the app manages.
+    // The flag is present only on ERA enrollments, so a missing/false value skips.
+    if (!(raw && raw.transactions && raw.transactions.claimPayment && raw.transactions.claimPayment.enroll === true)) {
+      continue;
+    }
+    // Identity guard: the remote enrollment's provider must match THIS practice's
+    // NPI + tax id. A filter regression (or a shared clearinghouse account) must
+    // never cross-import another practice's enrollments.
+    const provider = (raw && raw.provider) || {};
+    if (digitsOnly(provider.npi) !== practiceNpi || digitsOnly(provider.taxId) !== practiceTaxId) {
+      continue;
+    }
+
     const e = extractRemoteEnrollment(raw);
     if (!e || !e.payerId) continue;
-    // Only import ERA (claimPayment) enrollments — the only type the app manages.
-    // When the type is unknown on the remote object, default to claimPayment.
+
     await db.query(
       `insert into payer_enrollments
          (practice_id, payer_id, payer_name, transaction_type,

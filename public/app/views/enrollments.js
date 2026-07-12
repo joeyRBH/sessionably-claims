@@ -32,6 +32,8 @@
         return { label: 'Live', tone: 'success' };
       case 'PROVIDER_ACTION_REQUIRED':
         return { label: 'Action needed', tone: 'warning' };
+      case 'REJECTED':
+        return { label: 'Rejected', tone: 'warning' };
       case 'CANCELED':
       case 'CANCELLED':
         return { label: 'Canceled', tone: 'muted' };

@@ -217,29 +217,60 @@ async function testHandler422() {
   console.log('PASS handler 422 (missing practice fields)');
 }
 
-async function testImportIdempotency() {
+// A List Enrollments item shaped per the spec: payer.submittedPayerIdOrAlias /
+// stediPayerId / name, provider.npi / taxId, transactions.claimPayment.enroll.
+function remoteItem(overrides) {
+  return Object.assign({
+    id: 'ENR_AETNA',
+    status: 'PROVISIONING',
+    reason: null,
+    payer: { submittedPayerIdOrAlias: '60054', stediPayerId: 'AETNA', name: 'Aetna' },
+    provider: { npi: '1234567890', taxId: '123456789' },
+    transactions: { claimPayment: { enroll: true } },
+  }, overrides || {});
+}
+
+const IMPORT_PRACTICE = {
+  id: PRACTICE_ID, name: 'Riverstone', is_active: true,
+  npi: '1234567890', tax_id: '12-3456789',   // dashed; digits match provider.taxId
+  address_line1: '1 Main St', city: 'Austin', state: 'TX', postal_code: '78701',
+  stedi_provider_id: 'prov_123',
+};
+
+function resetImportState(practice) {
   installDbStub();
   state.table = [];
   state.caller = {
     id: CALLER_ID, practice_id: PRACTICE_ID, role: 'practice_admin',
     first_name: 'Ada', last_name: 'Admin', email: 'ada@practice.example', is_active: true,
   };
-  state.practice = {
-    id: PRACTICE_ID, name: 'Riverstone', is_active: true,
-    npi: '1234567890', tax_id: '12-3456789',
-    address_line1: '1 Main St', city: 'Austin', state: 'TX', postal_code: '78701',
-    stedi_provider_id: 'prov_123',
-  };
-
-  stediLib.listEnrollments = async () => ([
-    { id: 'ENR_AETNA', status: 'PROVISIONING', payer: { idOrAlias: '60054', displayName: 'Aetna' } },
-  ]);
+  state.practice = practice || IMPORT_PRACTICE;
   stediLib.getEnrollmentStatus = async () => ({ status: 'PROVISIONING', reason: null });
+}
+
+// The adapter's real listEnrollments builds the query string; assert it uses the
+// plural param names. Runs before the import tests overwrite the module function.
+async function testListEnrollmentsUrl() {
+  const calls = stubFetch({ status: 200, body: { items: [] } });
+  await stedi.listEnrollments({ npi: '1234567890', taxId: '12-3456789' });
+  assert.strictEqual(calls.length, 1);
+  const url = calls[0].url;
+  assert.ok(/[?&]providerNpis=1234567890(&|$)/.test(url), 'providerNpis in query: ' + url);
+  assert.ok(/[?&]providerTaxIds=123456789(&|$)/.test(url), 'providerTaxIds (digits) in query: ' + url);
+  assert.strictEqual(calls[0].opts.method, 'GET');
+  console.log('PASS listEnrollments (providerNpis / providerTaxIds query)');
+}
+
+async function testImportIdempotency() {
+  resetImportState();
+  stediLib.listEnrollments = async () => ([remoteItem()]);
 
   const first = await handler(getEvent());
   assert.strictEqual(first.statusCode, 200);
   const firstBody = JSON.parse(first.body);
   assert.strictEqual(firstBody.payer_enrollments.length, 1, 'imported once');
+  assert.strictEqual(firstBody.payer_enrollments[0].payer_id, '60054', 'payer id from submittedPayerIdOrAlias');
+  assert.strictEqual(firstBody.payer_enrollments[0].payer_name, 'Aetna', 'payer name from payer.name');
   assert.strictEqual(firstBody.sync_error, false, 'no sync error');
 
   const second = await handler(getEvent());
@@ -249,13 +280,45 @@ async function testImportIdempotency() {
   console.log('PASS handler import idempotency (same stedi_enrollment_id → one row)');
 }
 
+async function testImportProviderMismatchSkipped() {
+  resetImportState();
+  // Same practice, but the remote enrollment belongs to a DIFFERENT provider NPI.
+  stediLib.listEnrollments = async () => ([
+    remoteItem({ id: 'ENR_OTHER', provider: { npi: '9999999999', taxId: '123456789' } }),
+  ]);
+
+  const res = await handler(getEvent());
+  const body = JSON.parse(res.body);
+  assert.strictEqual(body.payer_enrollments.length, 0, 'mismatched-provider enrollment is NOT imported');
+  assert.strictEqual(state.table.length, 0, 'identity guard blocks the cross-import');
+  console.log('PASS handler import skips provider-NPI mismatch (no cross-import)');
+}
+
+async function testImportNonClaimPaymentSkipped() {
+  resetImportState();
+  // Matching provider, but not an ERA (claimPayment) enrollment.
+  stediLib.listEnrollments = async () => ([
+    remoteItem({ id: 'ENR_STATUS', transactions: { claimStatus: { enroll: true } } }),
+    remoteItem({ id: 'ENR_FALSE', transactions: { claimPayment: { enroll: false } } }),
+  ]);
+
+  const res = await handler(getEvent());
+  const body = JSON.parse(res.body);
+  assert.strictEqual(body.payer_enrollments.length, 0, 'non-claimPayment enrollments are NOT imported');
+  assert.strictEqual(state.table.length, 0, 'only ERA enrollments import');
+  console.log('PASS handler import skips non-claimPayment enrollments');
+}
+
 (async function main() {
   await testEnsureProvider();
   await testEnsureProviderReuse();
   await testCreateEnrollment();
   await testGetStatus();
   await testHandler422();
+  await testListEnrollmentsUrl();
   await testImportIdempotency();
+  await testImportProviderMismatchSkipped();
+  await testImportNonClaimPaymentSkipped();
   console.log('PASS payer_enrollments.test.js');
 })().catch((err) => {
   console.error('FAIL payer_enrollments.test.js');

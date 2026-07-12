@@ -737,9 +737,11 @@ async function getEnrollmentStatus(stediEnrollmentId) {
 // server-side by provider NPI + tax id when supported; the caller additionally
 // de-dupes against locally-stored stedi_enrollment_ids for idempotency.
 async function listEnrollments({ npi, taxId } = {}) {
+  // Filters are plural array params on the List Enrollments API; a single value
+  // each is accepted. providerNpis / providerTaxIds (NOT the singular forms).
   const query = {};
-  if (npi) query.providerNpi = digitsOnly(npi);
-  if (taxId) query.providerTaxId = digitsOnly(taxId);
+  if (npi) query.providerNpis = digitsOnly(npi);
+  if (taxId) query.providerTaxIds = digitsOnly(taxId);
 
   const res = await enrollmentsFetch('GET', '/enrollments', null, query);
   const data = await res.json().catch(() => ({}));
