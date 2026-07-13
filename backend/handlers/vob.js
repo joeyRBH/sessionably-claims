@@ -304,6 +304,137 @@ function normalizeEligibility(data, requestMemberId) {
   };
 }
 
+// --- payer-record reconciliation --------------------------------------------
+//
+// A successful (non-rejected) 271 often echoes the payer's OWN record of the
+// subscriber and, for a dependent check, the dependent — the corrected member id,
+// names, and DOBs. We compare those against what we have stored and surface the
+// differences so staff can fix an intake mistake (the real failure: a parent
+// entered her own DOB as the child's, plus a member id with extra card-prefix
+// digits). Pure + null-safe; exported so the insurance_records read path can
+// derive the same list from the persisted benefits_raw.
+
+function cleanStr(v) {
+  if (v == null) return '';
+  return String(v).trim();
+}
+
+// Case-insensitive, whitespace-collapsed name key for comparison.
+function normName(v) {
+  return cleanStr(v).replace(/\s+/g, ' ').toLowerCase();
+}
+
+// Date-only key 'YYYY-MM-DD' from a pg date (JS Date / 'YYYY-MM-DD…' string) or a
+// Stedi 'YYYYMMDD' string. Null when unparseable.
+function dateKey(v) {
+  if (v == null || v === '') return null;
+  let iso;
+  if (v instanceof Date) {
+    iso = v.toISOString().slice(0, 10);
+  } else {
+    const s = String(v).trim();
+    if (/^\d{8}$/.test(s)) iso = `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`;
+    else iso = s.slice(0, 10);
+  }
+  return /^\d{4}-\d{2}-\d{2}$/.test(iso) ? iso : null;
+}
+
+// The payer's subscriber demographics (data.subscriber), or null. Fields live at
+// data.subscriber.{firstName,lastName,dateOfBirth,memberId}.
+function payerSubscriber(data) {
+  const s = data && data.subscriber;
+  if (!s || typeof s !== 'object') return null;
+  return {
+    firstName: cleanStr(s.firstName) || null,
+    lastName: cleanStr(s.lastName) || null,
+    dateOfBirth: cleanStr(s.dateOfBirth) || null,
+    memberId: cleanStr(s.memberId) || null,
+  };
+}
+
+// The payer's dependent demographics (data.dependents[0]), or null when there is
+// no dependent loop or it carries no demographic fields.
+function payerDependent(data) {
+  const d = firstDependent(data);
+  if (!d || typeof d !== 'object') return null;
+  const out = {
+    firstName: cleanStr(d.firstName) || null,
+    lastName: cleanStr(d.lastName) || null,
+    dateOfBirth: cleanStr(d.dateOfBirth) || null,
+  };
+  if (!out.firstName && !out.lastName && !out.dateOfBirth) return null;
+  return out;
+}
+
+// Compare payer-returned demographics against the stored insurance + client
+// records. Returns [{ field, stored, payer_returned }]. A field is reported ONLY
+// when both sides carry a value and they differ (normalized: case-insensitive
+// names, date-only DOBs, exact member id). Never auto-applies.
+//
+// Which record each field maps to is derived from the response SHAPE, so it works
+// for both the live check and the read-path re-derivation (no mode flag needed):
+//   * a dependent loop present → subscriber = policyholder (insurance record),
+//     dependent = patient (client record);
+//   * no dependent loop → the subscriber loop describes the patient (a self policy,
+//     or a dependent matched as subscriber via the fallback) → the client record.
+// The member id always maps to the insurance record.
+function computeDiscrepancies(data, records) {
+  const insurance = (records && records.insurance) || null;
+  const client = (records && records.client) || null;
+  const out = [];
+  const sub = payerSubscriber(data);
+  const dep = payerDependent(data);
+
+  const pushName = (field, storedVal, payerVal) => {
+    const s = cleanStr(storedVal);
+    const p = cleanStr(payerVal);
+    if (s !== '' && p !== '' && normName(s) !== normName(p)) {
+      out.push({ field, stored: s, payer_returned: p });
+    }
+  };
+  const pushExact = (field, storedVal, payerVal) => {
+    const s = cleanStr(storedVal);
+    const p = cleanStr(payerVal);
+    if (s !== '' && p !== '' && s !== p) {
+      out.push({ field, stored: s, payer_returned: p });
+    }
+  };
+  const pushDate = (field, storedVal, payerVal) => {
+    const s = dateKey(storedVal);
+    const p = dateKey(payerVal);
+    if (s && p && s !== p) {
+      out.push({ field, stored: s, payer_returned: p });
+    }
+  };
+
+  // Member id (subscriber loop) → insurance record, always.
+  if (sub && insurance) {
+    pushExact('member_id', insurance.member_id, sub.memberId);
+  }
+
+  if (dep) {
+    // Dependent check: subscriber = policyholder → insurance record.
+    if (sub && insurance) {
+      const payerName = [sub.firstName, sub.lastName].filter(Boolean).join(' ').trim();
+      pushName('subscriber_name', insurance.subscriber_name, payerName);
+      pushDate('subscriber_dob', insurance.subscriber_dob, sub.dateOfBirth);
+    }
+    // Dependent = patient → client record.
+    if (client) {
+      pushName('first_name', client.first_name, dep.firstName);
+      pushName('last_name', client.last_name, dep.lastName);
+      pushDate('date_of_birth', client.date_of_birth, dep.dateOfBirth);
+    }
+  } else if (sub && client) {
+    // No dependent loop: the subscriber loop describes the patient → client record.
+    pushName('first_name', client.first_name, sub.firstName);
+    pushName('last_name', client.last_name, sub.lastName);
+    pushDate('date_of_birth', client.date_of_birth, sub.dateOfBirth);
+  }
+
+  return out;
+}
+
 // --- handler -----------------------------------------------------------------
 
 async function runCheck(ctx, body, event, authCtx) {
@@ -429,6 +560,36 @@ async function runCheck(ctx, body, event, authCtx) {
     }
   }
 
+  // Reconcile the payer's echoed demographics against our stored records. Only on
+  // a successful (non-rejected) check, and only when we have a record to compare
+  // against. The discrepancies are derived from the SAME stediResponse we persist,
+  // so the insurance_records read path can re-derive the identical list on reload.
+  let discrepancies = [];
+  if (insuranceRecordId && normalized && !normalized.rejected) {
+    try {
+      const recRes = await db.query(
+        `select member_id, subscriber_name, subscriber_dob, client_id
+           from insurance_records
+          where id = $1 and practice_id = $2 and is_hidden = false limit 1`,
+        [insuranceRecordId, ctx.practice_id]
+      );
+      const rec = recRes.rows[0] || null;
+      if (rec) {
+        const cliRes = await db.query(
+          `select first_name, last_name, date_of_birth
+             from clients
+            where id = $1 and practice_id = $2 and is_hidden = false limit 1`,
+          [rec.client_id, ctx.practice_id]
+        );
+        discrepancies = computeDiscrepancies(stediResponse, { insurance: rec, client: cliRes.rows[0] || null });
+      }
+    } catch (err) {
+      // Reconciliation is best-effort — a failure must not lose the benefit result.
+      console.error('vob check (reconcile) error:', err && err.message);
+    }
+  }
+  if (normalized) normalized.discrepancies = discrepancies;
+
   // Persist the raw benefits payload on the insurance record, if one was given.
   if (insuranceRecordId) {
     try {
@@ -463,7 +624,8 @@ async function runCheck(ctx, body, event, authCtx) {
     action: 'vob.check',
     resourceType: 'vob',
     resourceId: insuranceRecordId || null,
-    metadata: { payer_id: payerId, result_active: normalized ? normalized.active : null },
+    // discrepancy_count is a plain count (never the differing values) — safe for the log.
+    metadata: { payer_id: payerId, result_active: normalized ? normalized.active : null, discrepancy_count: discrepancies.length },
   });
 
   return json(200, normalized, event);
@@ -473,6 +635,7 @@ async function runCheck(ctx, body, event, authCtx) {
 exports.normalizeEligibility = normalizeEligibility;
 exports.sanitizeMemberId = sanitizeMemberId;
 exports.isPatientLevelRejection = isPatientLevelRejection;
+exports.computeDiscrepancies = computeDiscrepancies;
 
 exports.handler = async (event) => {
   const method = httpMethod(event);

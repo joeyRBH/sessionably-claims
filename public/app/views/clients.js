@@ -725,7 +725,7 @@
             subscriberDateOfBirth: v.subscriber_dob,
             insurance_record_id: record.id,
           }).then(function (res) {
-            showVobResult(res);
+            showVobResult(res, record, res && res.discrepancies);
             // Persist the payer id (and picked payer name) used for this check
             // back onto the record when it had none — closes the gap where a payer
             // chosen only in the VOB modal was never saved, which later makes the
@@ -768,6 +768,107 @@
         ]);
       }
 
+      // --- Payer-record reconciliation ------------------------------------
+      // The VOB check compares the payer's echoed demographics against our stored
+      // records; differences come back as res.discrepancies (live) and, derived
+      // from the stored check, record.benefits_discrepancies (persistent). Member
+      // ID corrections update the insurance record; patient name/DOB corrections
+      // update the client record. Nothing is applied without an explicit confirm.
+      var DISCREPANCY_FIELD_LABELS = {
+        member_id: 'Member ID',
+        subscriber_name: 'Policyholder name',
+        subscriber_dob: 'Policyholder DOB',
+        first_name: 'First name',
+        last_name: 'Last name',
+        date_of_birth: 'Date of birth',
+      };
+      var INSURANCE_FIELDS = { member_id: 1, subscriber_name: 1, subscriber_dob: 1 };
+      var CLIENT_FIELDS = { first_name: 1, last_name: 1, date_of_birth: 1 };
+
+      function fieldLabel(f) { return DISCREPANCY_FIELD_LABELS[f] || f; }
+
+      function applyCorrections(record, discrepancies) {
+        var insUpd = {};
+        var cliUpd = {};
+        (discrepancies || []).forEach(function (d) {
+          if (!d || !d.field) return;
+          if (INSURANCE_FIELDS[d.field]) insUpd[d.field] = d.payer_returned;
+          else if (CLIENT_FIELDS[d.field]) cliUpd[d.field] = d.payer_returned;
+        });
+        if (!Object.keys(insUpd).length && !Object.keys(cliUpd).length) return;
+
+        var summary = (discrepancies || []).map(function (d) {
+          return h('li', { style: 'margin:0 0 var(--space-1)' },
+            fieldLabel(d.field) + ' → ' + (d.payer_returned || '—'));
+        });
+        R.confirmModal({
+          title: 'Apply payer corrections?',
+          body: h('div', { class: 'stack', style: 'gap:var(--space-2)' }, [
+            h('p', { style: 'margin:0' }, 'Update the stored records to match the payer:'),
+            h('ul', { style: 'margin:0;padding-left:var(--space-5)' }, summary),
+          ]),
+          confirmLabel: 'Apply corrections',
+          cancelLabel: 'Cancel',
+        }).then(function (ok) {
+          if (!ok) return;
+          var calls = [];
+          // Only the differing fields are sent; each update endpoint is audited
+          // (action + field NAMES only, no PHI values).
+          if (Object.keys(insUpd).length) calls.push(api.insuranceRecords.update(record.id, insUpd));
+          if (Object.keys(cliUpd).length) calls.push(api.clients.update(id, cliUpd));
+          Promise.all(calls).then(function () {
+            R.toast('Records updated to match the payer', 'success');
+            reload();
+          }).catch(function (err) {
+            R.toast((err && err.message) || 'Could not apply corrections.', 'error');
+          });
+        });
+      }
+
+      // The "Payer records differ" panel. Returns null when there is nothing to
+      // reconcile. Shared by the live result modal and the persistent row.
+      function discrepancyPanel(record, discrepancies) {
+        if (!discrepancies || !discrepancies.length) return null;
+        var rows = discrepancies.map(function (d) {
+          return h('tr', null, [
+            h('td', null, fieldLabel(d.field)),
+            h('td', { style: 'color:var(--color-text-muted)' }, d.stored || '—'),
+            h('td', { style: 'font-weight:var(--font-weight-medium)' }, d.payer_returned || '—'),
+          ]);
+        });
+        return h('div', {
+          class: 'stack',
+          style: 'gap:var(--space-3);padding:var(--space-3);border-radius:var(--radius-2);'
+            + 'background:var(--color-surface-sunken);'
+            + 'border-left:3px solid var(--color-warning)',
+        }, [
+          h('div', { style: 'display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap' }, [
+            h('span', { class: 'badge badge--warning' }, 'Payer records differ'),
+            h('span', { style: 'color:var(--color-text-muted);font-size:var(--font-size-2)' },
+              'The payer returned different details than we have on file.'),
+          ]),
+          h('table', { class: 'data-table' }, [
+            h('thead', null, h('tr', null, [
+              h('th', null, 'Field'),
+              h('th', null, 'On file'),
+              h('th', null, 'Payer'),
+            ])),
+            h('tbody', null, rows),
+          ]),
+          h('div', null, h('button', {
+            class: 'btn btn--primary btn--sm', type: 'button',
+            onClick: function (e) { e.stopPropagation(); applyCorrections(record, discrepancies); },
+          }, 'Apply payer corrections')),
+        ]);
+      }
+
+      // Persistent sub-row beneath an insurance row, from the stored check.
+      function discrepancyRow(record) {
+        var panel = discrepancyPanel(record, record.benefits_discrepancies);
+        if (!panel) return null;
+        return h('tr', null, h('td', { colspan: '5', style: 'padding-top:0' }, panel));
+      }
+
       // Status badge shared by the live modal and the persistent summary card.
       // A payer rejection (AAA error) is not the same as inactive coverage: the
       // payer refused the request, so the status is unknown, not "Inactive".
@@ -783,8 +884,9 @@
       }
 
       // Render the full benefit result — used both for a fresh check response and
-      // for a stored summary reopened from the insurance row (same shape).
-      function showVobResult(res) {
+      // for a stored summary reopened from the insurance row (same shape). When a
+      // record + discrepancies are passed, the reconciliation panel is appended.
+      function showVobResult(res, record, discrepancies) {
         res = res || {};
         var ded = res.deductible || {};
         var oop = res.outOfPocket || {};
@@ -822,6 +924,9 @@
 
         children.push(meter('Deductible (individual)', ded.met, ded.individual));
         children.push(meter('Out-of-pocket (individual)', oop.met, oop.individual));
+
+        var panel = record ? discrepancyPanel(record, discrepancies) : null;
+        if (panel) children.push(panel);
 
         var bodyNode = h('div', { class: 'stack', style: 'gap:var(--space-4)' }, children);
         R.confirmModal({
@@ -868,7 +973,7 @@
             'Last verified ' + R.fmtDate(record.benefits_checked_at)),
           h('button', {
             class: 'btn btn--ghost btn--sm', type: 'button',
-            onClick: function (e) { e.stopPropagation(); showVobResult(s); },
+            onClick: function (e) { e.stopPropagation(); showVobResult(s, record, record.benefits_discrepancies); },
           }, 'View result'),
         ]));
 
@@ -924,6 +1029,8 @@
           ]));
           var summary = vobSummaryRow(r);
           if (summary) rows.push(summary);
+          var disc = discrepancyRow(r);
+          if (disc) rows.push(disc);
         });
         body.appendChild(h('table', { class: 'data-table' }, [
           h('thead', null, h('tr', null, [
