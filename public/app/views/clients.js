@@ -695,7 +695,11 @@
           payer_id: record.payer_id || '',
           first_name: client.first_name || '',
           last_name: client.last_name || '',
-          date_of_birth: dateOnly(client.date_of_birth) || dateOnly(record.subscriber_dob),
+          // Patient DOB comes ONLY from the client record (or stays empty). It must
+          // never fall back to the policyholder's DOB — on a dependent policy the
+          // subscriber_dob is a different person, and prefilling it here would send
+          // the wrong patient date of birth to the payer.
+          date_of_birth: dateOnly(client.date_of_birth),
           patient_is_subscriber: isSelf ? 'true' : 'false',
           subscriber_first_name: subFirst,
           subscriber_last_name: subLast,

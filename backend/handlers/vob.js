@@ -105,8 +105,44 @@ function isRetryableRejection(normalized) {
   return codes.length > 0 && codes.every((c) => RETRYABLE_AAA_CODES.has(String(c)));
 }
 
+// Patient-level AAA rejections: 64 (Invalid/Missing Patient ID), 65 (Invalid/
+// Missing Patient Name), 67 (Patient Not Found), 68 (Duplicate Patient ID). Per
+// Stedi's eligibility-troubleshooting guidance, most payers can still match a
+// dependent submitted AS the subscriber (patient demographics + family member ID
+// in the subscriber loop), so these are the codes that trigger the fallback.
+const PATIENT_LEVEL_AAA_CODES = new Set(['64', '65', '67', '68']);
+
+// True only when the response is rejected AND every rejection code is patient-level.
+// A mix of patient-level and other codes (e.g. 65 + 42) does NOT qualify.
+function isPatientLevelRejection(normalized) {
+  if (!normalized || !normalized.rejected) return false;
+  const codes = (normalized.rejections || []).map((r) => r && r.code);
+  return codes.length > 0 && codes.every((c) => PATIENT_LEVEL_AAA_CODES.has(String(c)));
+}
+
+// Nested dependent loop (data.dependents[0]) — present when the payer returns the
+// patient's benefits under a dependent rather than at the subscriber level. Null-safe.
+function firstDependent(data) {
+  return (data && Array.isArray(data.dependents) && data.dependents[0]) || null;
+}
+
 function benefitsArray(data) {
-  return (data && Array.isArray(data.benefitsInformation)) ? data.benefitsInformation : [];
+  const top = (data && Array.isArray(data.benefitsInformation)) ? data.benefitsInformation : [];
+  const dep = firstDependent(data);
+  const depBenefits = (dep && Array.isArray(dep.benefitsInformation)) ? dep.benefitsInformation : [];
+  // Union the dependent-loop benefits in only when present, so a response without a
+  // dependent loop returns the exact same array (reference) as before.
+  return depBenefits.length ? top.concat(depBenefits) : top;
+}
+
+// Plan-status entries, unioning the subscriber-level (data.planStatus) and the
+// dependent-loop (data.dependents[0].planStatus) arrays. Null-safe; when no
+// dependent loop is present the top-level array is returned unchanged.
+function planStatusArray(data) {
+  const top = (data && Array.isArray(data.planStatus)) ? data.planStatus : [];
+  const dep = firstDependent(data);
+  const depStatus = (dep && Array.isArray(dep.planStatus)) ? dep.planStatus : [];
+  return depStatus.length ? top.concat(depStatus) : top;
 }
 
 // True when an entry is flagged out-of-network (inPlanNetworkIndicatorCode 'N').
@@ -159,8 +195,9 @@ function asPercent(v) {
 // Returning null for "no evidence" avoids the old bug where a payer that simply
 // didn't report status was rendered as "Inactive".
 function deriveActive(data) {
-  // Prefer planStatus; fall back to an Active Coverage (code '1') benefit entry.
-  const statuses = (data && Array.isArray(data.planStatus)) ? data.planStatus : [];
+  // Prefer planStatus (subscriber + dependent loops); fall back to an Active
+  // Coverage (code '1') benefit entry.
+  const statuses = planStatusArray(data);
   if (statuses.some((s) => s && String(s.statusCode) === '1')) return true;
   const benefits = benefitsArray(data);
   if (benefits.some((b) => b && String(b.code) === '1')) return true;
@@ -185,8 +222,25 @@ function collectRejections(data) {
   const raw = [];
   if (data && Array.isArray(data.errors)) raw.push(...data.errors);
   if (data && Array.isArray(data.aaaErrors)) raw.push(...data.aaaErrors);
-  return raw
-    .filter((e) => e && typeof e === 'object')
+  // AAA errors can also arrive nested in the subscriber loop and (for a dependent
+  // check) in the dependent loop. Union them in, then dedupe identical code +
+  // description pairs so the same rejection reported at two levels is shown once.
+  if (data && data.subscriber && Array.isArray(data.subscriber.aaaErrors)) {
+    raw.push(...data.subscriber.aaaErrors);
+  }
+  const dep = firstDependent(data);
+  if (dep && Array.isArray(dep.aaaErrors)) raw.push(...dep.aaaErrors);
+  const seen = new Set();
+  const deduped = [];
+  for (const e of raw) {
+    if (!e || typeof e !== 'object') continue;
+    const key = (e.code != null ? String(e.code) : '') + ' '
+      + (e.description != null ? String(e.description) : '');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(e);
+  }
+  return deduped
     .slice(0, 5)
     .map((e) => ({
       code: e.code != null ? String(e.code) : null,
@@ -299,7 +353,11 @@ async function runCheck(ctx, body, event, authCtx) {
   // NPI: prefer the request, then the practice NPI, then the calling user's NPI.
   const npi = cleanText(body.npi) || ctx.practice_npi || ctx.user_npi || null;
 
-  const stediRequest = {
+  // The patient-as-subscriber request: the patient's own demographics in the
+  // subscriber loop, no dependent object. This is both the default request (when
+  // the patient IS the policyholder) and the shape the dependent fallback retries
+  // with, so it is captured once here and reused below.
+  const patientAsSubscriberRequest = {
     memberId,
     payerId,
     firstName: cleanText(body.firstName),
@@ -312,7 +370,8 @@ async function runCheck(ctx, body, event, authCtx) {
 
   // When the patient is a dependent, the subscriber loop must carry the
   // policyholder (not the patient), and the patient moves into a dependent object.
-  // The body's patient fields (already in stediRequest above) keep their meaning.
+  // The body's patient fields keep their meaning.
+  const stediRequest = Object.assign({}, patientAsSubscriberRequest);
   if (!patientIsSubscriber) {
     stediRequest.dependent = {
       firstName: cleanText(body.firstName),
@@ -344,6 +403,30 @@ async function runCheck(ctx, body, event, authCtx) {
       continue;
     }
     break;
+  }
+
+  // Dependent fallback: a dependent-mode check that was rejected with ONLY
+  // patient-level AAA codes (64/65/67/68) is retried ONCE as patient-as-subscriber
+  // (patient demographics + the family member ID in the subscriber loop, no
+  // dependent object). Most payers match a dependent this way. This is separate
+  // from and in addition to the transient AAA 42/80 retry loop above.
+  if (!patientIsSubscriber && isPatientLevelRejection(normalized)) {
+    try {
+      const fallbackResponse = await stedi.checkEligibility(patientAsSubscriberRequest);
+      const fallbackNormalized = normalizeEligibility(fallbackResponse, memberId);
+      // Only adopt the fallback when it is NOT itself rejected; otherwise the
+      // original dependent-mode result is returned unchanged.
+      if (!fallbackNormalized.rejected) {
+        console.log('vob dependent fallback used');
+        stediResponse = fallbackResponse;
+        normalized = fallbackNormalized;
+        normalized.fallbackUsed = true;
+      }
+    } catch (err) {
+      // A transport error on the fallback must not fail the request — keep the
+      // original dependent-mode result. Never log PHI.
+      console.error('vob dependent fallback (stedi) error');
+    }
   }
 
   // Persist the raw benefits payload on the insurance record, if one was given.
@@ -389,6 +472,7 @@ async function runCheck(ctx, body, event, authCtx) {
 // Exported for unit-style verification of the 271 normalization (no PHI, no DB).
 exports.normalizeEligibility = normalizeEligibility;
 exports.sanitizeMemberId = sanitizeMemberId;
+exports.isPatientLevelRejection = isPatientLevelRejection;
 
 exports.handler = async (event) => {
   const method = httpMethod(event);
