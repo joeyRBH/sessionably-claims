@@ -21,7 +21,7 @@ const { requireAuth } = require('../lib/auth');
 const { json, preflight } = require('../lib/response');
 const { parseBody } = require('../lib/util');
 const { audit, sanitizeFields } = require('../lib/audit');
-const { normalizeEligibility } = require('./vob');
+const { normalizeEligibility, computeDiscrepancies } = require('./vob');
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -115,6 +115,24 @@ function benefitsSummary(r) {
   return summary;
 }
 
+// Re-derive the payer/record discrepancies from the persisted benefits_raw, the
+// stored insurance fields, and the joined client demographics — the SAME list the
+// VOB check returned live, so the "Payer records differ" panel survives reload and
+// self-heals once corrections are applied. Returns [] when there is no stored
+// check or the client join is absent (create/update rows carry no client columns).
+function benefitsDiscrepancies(r) {
+  if (!r || r.benefits_raw == null) return [];
+  if (!('client_first_name' in r)) return []; // only the read (list/get) join carries these
+  try {
+    return computeDiscrepancies(r.benefits_raw, {
+      insurance: { member_id: r.member_id, subscriber_name: r.subscriber_name, subscriber_dob: r.subscriber_dob },
+      client: { first_name: r.client_first_name, last_name: r.client_last_name, date_of_birth: r.client_dob },
+    });
+  } catch (e) {
+    return [];
+  }
+}
+
 // Shape an insurance_records row for the API. All fields belong to the caller's
 // own practice, so the full record (including PHI) is safe to return to them.
 function shapeRecord(r) {
@@ -137,6 +155,7 @@ function shapeRecord(r) {
     benefits_checked_at: r.benefits_checked_at,
     benefits_raw: r.benefits_raw,
     benefits_summary: benefitsSummary(r),
+    benefits_discrepancies: benefitsDiscrepancies(r),
     is_primary: r.is_primary,
     is_hidden: r.is_hidden,
     created_at: r.created_at,
@@ -250,7 +269,7 @@ async function createRecord(practiceId, body, event, authCtx) {
 
 async function listRecords(practiceId, event, authCtx) {
   const params = [practiceId];
-  let where = `practice_id = $1 and is_hidden = false`;
+  let where = `ir.practice_id = $1 and ir.is_hidden = false`;
 
   const clientId = queryParam(event, 'client_id');
   if (clientId != null && clientId !== '') {
@@ -258,13 +277,20 @@ async function listRecords(practiceId, event, authCtx) {
       return json(400, { error: 'Invalid client_id.' }, event);
     }
     params.push(clientId);
-    where += ` and client_id = $${params.length}`;
+    where += ` and ir.client_id = $${params.length}`;
   }
 
+  // Left-join the client for the demographics the discrepancy re-derivation needs
+  // (first/last name, DOB). ir.* keeps every existing record field unchanged.
   const res = await db.query(
-    `select * from insurance_records
+    `select ir.*,
+            cl.first_name    as client_first_name,
+            cl.last_name     as client_last_name,
+            cl.date_of_birth as client_dob
+       from insurance_records ir
+       left join clients cl on cl.id = ir.client_id
       where ${where}
-      order by created_at desc`,
+      order by ir.created_at desc`,
     params
   );
   await audit(event, authCtx, {
@@ -280,8 +306,13 @@ async function getRecord(practiceId, id, event, authCtx) {
     return json(404, { error: 'Not found' }, event);
   }
   const res = await db.query(
-    `select * from insurance_records
-      where id = $1 and practice_id = $2 and is_hidden = false
+    `select ir.*,
+            cl.first_name    as client_first_name,
+            cl.last_name     as client_last_name,
+            cl.date_of_birth as client_dob
+       from insurance_records ir
+       left join clients cl on cl.id = ir.client_id
+      where ir.id = $1 and ir.practice_id = $2 and ir.is_hidden = false
       limit 1`,
     [id, practiceId]
   );
