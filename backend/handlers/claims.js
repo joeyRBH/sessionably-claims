@@ -318,6 +318,98 @@ function missingDependentPolicyholderField(insurance) {
   return false;
 }
 
+// --- pre-submission sanity warnings (soft; NEVER hard-block) -----------------
+//
+// Computed server-side from the LIVE client + insurance records at submit time.
+// These surface likely intake mistakes (a parent completing a minor's intake with
+// their own DOB, a member id carrying extra card-prefix digits, an adult tagged as
+// a child dependent) that nothing else catches. They are advisory: the submit
+// proceeds when the caller passes confirmed:true. Messages may embed non-PHI
+// context (an age); only the CODES are ever written to the audit log.
+
+// Date-only key ('YYYY-MM-DD') for a pg date (JS Date or 'YYYY-MM-DD…' string), or null.
+function dateOnlyKey(v) {
+  if (v == null || v === '') return null;
+  const iso = v instanceof Date ? v.toISOString().slice(0, 10) : String(v).slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(iso) ? iso : null;
+}
+
+// Whole years between a date of birth and a reference date (default: now, UTC).
+// Null when the DOB can't be parsed. UTC math avoids timezone drift (Lambda = UTC).
+function ageInYears(dob, asOf) {
+  const key = dateOnlyKey(dob);
+  if (!key) return null;
+  const [by, bm, bd] = key.split('-').map(Number);
+  const ref = asOf instanceof Date ? asOf : new Date();
+  let age = ref.getUTCFullYear() - by;
+  const monthDelta = (ref.getUTCMonth() + 1) - bm;
+  if (monthDelta < 0 || (monthDelta === 0 && ref.getUTCDate() < bd)) age -= 1;
+  return age;
+}
+
+// Evaluate soft pre-submission warnings from { client, insurance }. Returns an
+// array of { code, message }. Pure and DB-free so it can be unit-tested; the
+// `asOf` param (default now) makes the age rule deterministic in tests.
+function evaluateSubmissionWarnings(ctx, asOf) {
+  const client = (ctx && ctx.client) || null;
+  const insurance = (ctx && ctx.insurance) || null;
+  const warnings = [];
+
+  const rel = insurance && insurance.subscriber_relationship
+    ? String(insurance.subscriber_relationship).trim().toLowerCase()
+    : '';
+  const isDependent = rel !== '' && rel !== 'self';
+
+  // 1. A "child" dependent who is an adult (>= 26) is usually a mis-tagged record.
+  if (rel === 'child' && client) {
+    const age = ageInYears(client.date_of_birth, asOf);
+    if (age != null && age >= 26) {
+      warnings.push({
+        code: 'child_dependent_adult_age',
+        message: `Patient is listed as a child dependent but is ${age} years old.`,
+      });
+    }
+  }
+
+  // 2. Patient and policyholder sharing a DOB on a dependent policy is a red flag
+  //    (e.g. a parent who entered their own DOB as the child's).
+  if (isDependent && client && insurance) {
+    const patientDob = dateOnlyKey(client.date_of_birth);
+    const subscriberDob = dateOnlyKey(insurance.subscriber_dob);
+    if (patientDob && subscriberDob && patientDob === subscriberDob) {
+      warnings.push({
+        code: 'patient_policyholder_same_dob',
+        message: 'Patient and policyholder have the same date of birth.',
+      });
+    }
+  }
+
+  // 3. A dependent claim with no policyholder name on the insurance record.
+  if (isDependent && insurance) {
+    const name = insurance.subscriber_name;
+    if (name == null || String(name).trim() === '') {
+      warnings.push({
+        code: 'dependent_missing_policyholder_name',
+        message: 'Dependent claim has no policyholder name.',
+      });
+    }
+  }
+
+  // 4. Member ID length outside the usual 5–20 characters (extra card-prefix
+  //    digits, a truncated id). Only when a member id is actually present.
+  if (insurance) {
+    const memberId = insurance.member_id == null ? '' : String(insurance.member_id).trim();
+    if (memberId !== '' && (memberId.length < 5 || memberId.length > 20)) {
+      warnings.push({
+        code: 'member_id_length_unusual',
+        message: 'Member ID length looks unusual.',
+      });
+    }
+  }
+
+  return warnings;
+}
+
 // Assemble the normalized context an adapter needs (no DB access in adapters).
 async function buildClaimContext(practiceId, claim) {
   const [sessionRes, clientRes, clinicianRes, practiceRes] = await Promise.all([
@@ -556,7 +648,7 @@ async function deleteClaim(practiceId, id, event, authCtx) {
   return json(200, { deleted: true, id: res.rows[0].id }, event);
 }
 
-async function submitClaim(practiceId, userId, id, event, authCtx) {
+async function submitClaim(practiceId, userId, id, body, event, authCtx) {
   if (!isUUID(id)) return json(404, { error: 'Not found' }, event);
   const claim = await loadClaim(practiceId, id);
   if (!claim) return json(404, { error: 'Not found' }, event);
@@ -598,6 +690,22 @@ async function submitClaim(practiceId, userId, id, event, authCtx) {
     return json(422, {
       error: 'Policyholder name and date of birth are required on the insurance record before submitting a dependent claim. Edit the client\'s insurance to add them.',
     }, event);
+  }
+
+  // Soft pre-submission sanity check. Warnings never hard-block: without an
+  // explicit confirmed:true the submit is held and the warnings are returned so
+  // the UI can list them and offer "Submit anyway". Audit records CODES only —
+  // the messages may embed non-PHI context but are never written to the log.
+  const confirmed = body && body.confirmed === true;
+  const warnings = evaluateSubmissionWarnings(ctx);
+  if (warnings.length && !confirmed) {
+    await audit(event, authCtx, {
+      action: 'claim.submit_warned',
+      resourceType: 'claim',
+      resourceId: id,
+      metadata: { warning_codes: warnings.map((w) => w.code) },
+    });
+    return json(200, { requires_confirmation: true, warnings }, event);
   }
 
   const adapter = getClearinghouse();
@@ -657,7 +765,11 @@ async function submitClaim(practiceId, userId, id, event, authCtx) {
     action: 'claim.submit',
     resourceType: 'claim',
     resourceId: id,
-    metadata: { clearinghouse: adapter.name, status: updated.status },
+    // When the caller confirmed past sanity warnings, record which ones by CODE
+    // (never the messages) so the override is auditable without leaking PHI.
+    metadata: warnings.length
+      ? { clearinghouse: adapter.name, status: updated.status, override_warning_codes: warnings.map((w) => w.code) }
+      : { clearinghouse: adapter.name, status: updated.status },
   });
   return json(200, { claim: shapeClaim(updated) }, event);
 }
@@ -885,6 +997,8 @@ async function listEvents(practiceId, id, event) {
 exports.missingBillingAddressField = missingBillingAddressField;
 exports.missingSubscriberField = missingSubscriberField;
 exports.missingDependentPolicyholderField = missingDependentPolicyholderField;
+exports.evaluateSubmissionWarnings = evaluateSubmissionWarnings;
+exports.ageInYears = ageInYears;
 exports.REGENERATABLE_STATUSES = REGENERATABLE_STATUSES;
 // Pure shapers exported for unit testing (no DB / network).
 exports.shapeClaim = shapeClaim;
@@ -915,7 +1029,7 @@ exports.handler = async (event) => {
     const body = method === 'POST' || method === 'PATCH' ? parseBody(event) : null;
 
     // Action sub-routes (id always present) take precedence over base CRUD.
-    if (action === 'submit' && method === 'POST' && id) return await submitClaim(practiceId, userId, id, event, authCtx);
+    if (action === 'submit' && method === 'POST' && id) return await submitClaim(practiceId, userId, id, body, event, authCtx);
     if (action === 'refresh' && method === 'POST' && id) return await refreshClaim(practiceId, userId, id, event, authCtx);
     if (action === 'void' && method === 'POST' && id) return await voidClaim(practiceId, userId, id, event, authCtx);
     if (action === 'regenerate' && method === 'POST' && id) return await regenerateClaim(practiceId, userId, id, event, authCtx);
