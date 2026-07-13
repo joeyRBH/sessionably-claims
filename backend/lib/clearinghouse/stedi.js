@@ -106,6 +106,25 @@ function ymd(d) {
   return /^\d{8}$/.test(digits) ? digits : null;
 }
 
+// Shift a YYYYMMDD string by N calendar days and return YYYYMMDD. UTC math avoids
+// timezone drift. Returns null when the input is not a valid YYYYMMDD.
+function shiftYmd(ymdStr, deltaDays) {
+  if (!ymdStr || !/^\d{8}$/.test(ymdStr)) return null;
+  const dt = new Date(Date.UTC(
+    Number(ymdStr.slice(0, 4)),
+    Number(ymdStr.slice(4, 6)) - 1,
+    Number(ymdStr.slice(6, 8))
+  ));
+  dt.setUTCDate(dt.getUTCDate() + deltaDays);
+  return dt.toISOString().slice(0, 10).replace(/-/g, '');
+}
+
+// Today as YYYYMMDD (UTC). Kept as a helper so status-request date capping has a
+// single source of "now".
+function todayYmd() {
+  return new Date().toISOString().slice(0, 10).replace(/-/g, '');
+}
+
 // Map a clients.gender value to the 837 demographic code (M / F / U).
 function genderCode(g) {
   switch (g) {
@@ -459,11 +478,18 @@ function buildStatusBody(ctx) {
     throw new Error('Stedi status check requires the billing provider organizationName (practice name).');
   }
 
-  // Single-session claims: the beginning and end dates of service are the same day.
+  // Payers may store a service date that differs by a day or two from ours, so we
+  // query a ±7-day window around the claim's date of service rather than a single
+  // day, which improves matching. The end is capped at today (a payer can't have a
+  // status for a future service date, and some reject a future endDateOfService).
   const dos = ymd(session.session_date);
   if (!dos) {
     throw new Error('Stedi status check requires the session date of service.');
   }
+  const beginningDateOfService = shiftYmd(dos, -7);
+  let endDateOfService = shiftYmd(dos, 7);
+  const today = todayYmd();
+  if (endDateOfService > today) endDateOfService = today;
 
   const rel = insurance.subscriber_relationship;
   const isDependent =
@@ -489,12 +515,34 @@ function buildStatusBody(ctx) {
   if (!lastName) throw new Error('Stedi status check requires the subscriber lastName.');
   if (!dateOfBirth) throw new Error('Stedi status check requires the subscriber dateOfBirth.');
 
+  // With no dependent object Stedi treats the subscriber as the patient, and when
+  // dateOfBirth is present it REQUIRES gender. Source it the same way the 837 did:
+  // the patient's (client) gender when the patient is the subscriber, the
+  // policyholder's persisted gender on a dependent claim (not currently captured →
+  // unknown). Map to Stedi's M/F; omit gender entirely when unknown/unmappable
+  // (docs allow omitting gender when unknown) while keeping dateOfBirth.
+  const gender = genderCode(isDependent ? insurance.subscriber_gender : client.gender);
+
+  const subscriber = {
+    firstName,
+    lastName,
+    dateOfBirth,
+    memberId,
+  };
+  if (gender === 'M' || gender === 'F') subscriber.gender = gender;
+
+  const encounter = {
+    beginningDateOfService,
+    endDateOfService,
+  };
+  // Several payers require the submitted charge to match a claim; send it as a
+  // string decimal ("135.00") only when the claim carries a billed amount.
+  const billed = num(claim.billed_amount);
+  if (billed != null) encounter.submittedAmount = billed.toFixed(2);
+
   const body = {
     tradingPartnerServiceId,
-    encounter: {
-      beginningDateOfService: dos,
-      endDateOfService: dos,
-    },
+    encounter,
     providers: [
       {
         providerType: 'BillingProvider',
@@ -502,12 +550,7 @@ function buildStatusBody(ctx) {
         npi: billingNpi,
       },
     ],
-    subscriber: {
-      firstName,
-      lastName,
-      dateOfBirth,
-      memberId,
-    },
+    subscriber,
   };
 
   return { body, tradingPartnerServiceId, billingNpi };
@@ -582,6 +625,30 @@ function firstStatus(data) {
   return null;
 }
 
+// Pull ONLY the structural hint attributes from a Stedi error body — the error
+// code and the offending field/location/path that name WHICH field was wrong.
+// Never the field values, messages, or any PHI (names/DOB/member id), which the
+// human-readable message text can echo. Returns compact "code=.. field=.." strings.
+function statusErrorHints(data) {
+  if (!data || typeof data !== 'object') return [];
+  const arr = Array.isArray(data.errors) ? data.errors
+    : Array.isArray(data.fieldErrors) ? data.fieldErrors
+      : (data.error && typeof data.error === 'object') ? [data.error]
+        : (data.code != null || data.field != null || data.location != null || data.path != null) ? [data]
+          : [];
+  const out = [];
+  for (const e of arr) {
+    if (!e || typeof e !== 'object') continue;
+    const parts = [];
+    if (e.code != null) parts.push(`code=${String(e.code)}`);
+    if (e.field != null) parts.push(`field=${String(e.field)}`);
+    if (e.location != null) parts.push(`location=${String(e.location)}`);
+    if (e.path != null) parts.push(`path=${String(e.path)}`);
+    if (parts.length) out.push(parts.join(' '));
+  }
+  return out.slice(0, 5);
+}
+
 async function getStatus({ control_number, claim, ctx }) {
   // Prefer the assembled context (subscriber / provider / DOS) the handler passes
   // so the 276 mirrors the 837 that was filed; fall back to a claim-only ctx for
@@ -592,6 +659,15 @@ async function getStatus({ control_number, claim, ctx }) {
 
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
+    // On a 4xx, Stedi names the offending field(s) in the error body; log ONLY the
+    // structural attributes (error code, field/location) to aid debugging — never
+    // field values or the message text, which can carry PHI (member id, name, DOB).
+    if (res.status >= 400 && res.status < 500) {
+      const hints = statusErrorHints(data);
+      if (hints.length) {
+        console.error(`Stedi status check ${res.status} fields: ${hints.join('; ')}`);
+      }
+    }
     // Never echo the response body — it can carry PHI (member id, name, DOB).
     throw new Error(`Stedi status check failed (HTTP ${res.status})`);
   }
