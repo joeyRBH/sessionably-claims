@@ -160,6 +160,27 @@
     }
     select.input { appearance: none; -webkit-appearance: none; background-image: none; }
 
+    /* Small helper text under a field (e.g. the member-ID guidance). */
+    .field-help {
+      margin: var(--space-1) 0 0;
+      font-size: var(--font-size-2);
+      color: var(--color-text-muted);
+    }
+    .field-help[hidden] { display: none; }
+
+    /* Inline soft-confirm box (patient/policyholder same DOB). Never hard-blocks. */
+    .confirm-box {
+      margin-top: var(--space-4);
+      padding: var(--space-4);
+      border-radius: var(--radius-2);
+      background: var(--color-surface-sunken);
+      border: var(--border-width-1) solid var(--color-border-strong);
+    }
+    .confirm-box[hidden] { display: none; }
+    .confirm-box__text { margin: 0 0 var(--space-3); font-size: var(--font-size-3); color: var(--color-text); }
+    .confirm-box .btn { margin-top: 0; }
+    .confirm-box .btn-link { margin-top: var(--space-2); }
+
     /* Payer type-ahead (insurance-company field). Results drop below the input;
        free-text always still works. Mobile-first: comfortable tap targets. */
     .payer-picker { position: relative; }
@@ -289,8 +310,19 @@
           claims. It only takes a moment.</p>
 
         <form id="details-form" novalidate>
+          <!-- Identity question — UI-only (never persisted). Drives who the fields
+               below are about so a parent completing a minor's intake can't misread
+               them as their own. -->
           <div class="field">
-            <label for="dt-dob">Date of birth</label>
+            <label for="dt-whofilling" id="dt-whofilling-label">Are you the patient, or are you completing this for them?</label>
+            <select id="dt-whofilling" class="input">
+              <option value="self">I'm the patient</option>
+              <option value="behalf">I'm completing this for them</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label for="dt-dob" id="dt-dob-label">Date of birth</label>
             <input id="dt-dob" class="input" type="date" autocomplete="bday">
           </div>
 
@@ -361,9 +393,11 @@
           </div>
 
           <div class="field">
-            <label for="ins-member">Member ID</label>
+            <label for="ins-member" id="ins-member-label">Member ID</label>
             <input id="ins-member" class="input" type="text" autocomplete="off"
-                   maxlength="200" placeholder="The ID on your insurance card">
+                   maxlength="200" placeholder="The ID on the insurance card">
+            <p id="ins-member-help" class="field-help">Enter the member ID exactly as it appears on the insurance card.</p>
+            <p id="ins-member-holder-hint" class="field-help" hidden></p>
           </div>
 
           <div class="field">
@@ -393,6 +427,14 @@
               <label for="ins-holder-dob">Policyholder date of birth</label>
               <input id="ins-holder-dob" class="input" type="date">
             </div>
+          </div>
+
+          <!-- Soft confirm shown when the patient's and policyholder's DOBs match.
+               Never hard-blocks — "Yes" continues the save. -->
+          <div id="ins-dob-confirm" class="confirm-box" hidden>
+            <p id="ins-dob-confirm-text" class="confirm-box__text">The patient's and policyholder's dates of birth are identical — is that right?</p>
+            <button id="ins-dob-confirm-yes" class="btn" type="button">Yes, that's correct</button>
+            <button id="ins-dob-confirm-no" class="btn-link" type="button">Let me fix it</button>
           </div>
 
           <p id="ins-error" class="msg msg--error" role="alert" aria-live="polite" hidden></p>
@@ -466,6 +508,83 @@
       if (!token) { showFatal(); return; }
       if (!API || !API.billing) { showFatal('This page failed to load. Please try again.'); return; }
 
+      // --- Patient identity context (UI-only; never persisted) ------------------
+      // The intake link is client-specific, so we can address the patient by name.
+      // This drives first-name labels, the "not your own" hint, the member-id
+      // policyholder hint, and the DOB-equals-policyholder soft confirm. All of it
+      // is presentation only — the who-is-filling-this-out answer is never sent to
+      // the server. Defaults are safe if the name lookup fails.
+      function capitalize(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
+
+      var intake = {
+        firstName: '',
+        filledBy: 'self', // 'self' (the patient) or 'behalf' (someone else)
+        onBehalf: function () { return this.filledBy === 'behalf'; },
+        // Possessive for labels: "Alexander’s" / "the patient’s".
+        possessive: function () {
+          return this.firstName ? this.firstName + '’s' : 'the patient’s';
+        },
+        // Plain subject: "Alexander" / "the patient".
+        subject: function () { return this.firstName || 'the patient'; },
+      };
+
+      // Show the parent-policyholder member-ID hint only when someone else is
+      // completing intake AND the policyholder is a parent (relationship 'child').
+      function syncMemberHolderHint() {
+        var hint = $('ins-member-holder-hint');
+        if (!hint) return;
+        var relEl = $('ins-relationship');
+        var rel = relEl ? relEl.value : 'self';
+        if (intake.onBehalf() && rel === 'child') {
+          hint.textContent = 'If ' + intake.subject() + ' is covered on a parent’s plan, '
+            + 'this ID may be the policyholder’s — copy it exactly from the card.';
+          hint.hidden = false;
+        } else {
+          hint.textContent = '';
+          hint.hidden = true;
+        }
+      }
+
+      // Apply the patient's name + fill-mode to every label that names who the
+      // fields are about. Idempotent; safe to call repeatedly.
+      function applyIntakeLabels() {
+        var q = $('dt-whofilling-label');
+        if (q) {
+          q.textContent = intake.firstName
+            ? ('Are you ' + intake.firstName + ', or are you completing this for them?')
+            : 'Are you the patient, or are you completing this for them?';
+        }
+        var sel = $('dt-whofilling');
+        if (sel && sel.options.length >= 2) {
+          sel.options[0].textContent = intake.firstName ? ('I’m ' + intake.firstName) : 'I’m the patient';
+          sel.options[1].textContent = intake.firstName
+            ? ('I’m completing this for ' + intake.firstName)
+            : 'I’m completing this for them';
+        }
+        var dobLabel = $('dt-dob-label');
+        if (dobLabel) dobLabel.textContent = capitalize(intake.possessive()) + ' date of birth';
+        var midLabel = $('ins-member-label');
+        if (midLabel) midLabel.textContent = capitalize(intake.possessive()) + ' member ID';
+        syncMemberHolderHint();
+      }
+
+      // Keep intake.filledBy in sync with the identity select, then re-label.
+      (function bindIdentityQuestion() {
+        var sel = $('dt-whofilling');
+        if (!sel) return;
+        sel.addEventListener('change', function () {
+          intake.filledBy = this.value === 'behalf' ? 'behalf' : 'self';
+          applyIntakeLabels();
+        });
+      })();
+
+      // Initial pass (generic wording), then refine once the name resolves.
+      applyIntakeLabels();
+      API.billing.context(token).then(function (ctx) {
+        if (ctx && ctx.first_name) intake.firstName = String(ctx.first_name).trim();
+        applyIntakeLabels();
+      }).catch(function () { /* keep generic wording */ });
+
       // --- Your-details step (shown after the card saves) -----------------------
       // Collects date of birth + current address, persists them to the client,
       // then advances to the insurance step. Skippable. Bound once at load.
@@ -486,6 +605,9 @@
           e.preventDefault();
           if (saving) return;
           clearDtError();
+
+          // Read the identity answer straight from the control so it is always current.
+          intake.filledBy = $('dt-whofilling').value === 'behalf' ? 'behalf' : 'self';
 
           var fields = {
             date_of_birth: $('dt-dob').value.trim(),
@@ -509,9 +631,13 @@
 
           // Nudge for the claim-critical fields, but never hard-block — the patient
           // can Skip, and staff can fill gaps later in the client chart.
-          if (!fields.date_of_birth) { showDtError('Please enter your date of birth.'); return; }
+          if (!fields.date_of_birth) {
+            showDtError('Please enter ' + intake.possessive() + ' date of birth'
+              + (intake.onBehalf() ? ' — not your own.' : '.'));
+            return;
+          }
           if (!fields.address_line1 || !fields.city || !fields.state || !fields.postal_code) {
-            showDtError('Please enter your full address.');
+            showDtError('Please enter ' + intake.possessive() + ' full address.');
             return;
           }
 
@@ -671,6 +797,8 @@
         // Policyholder name/DOB only apply when the patient is NOT the policyholder.
         function syncHolderFields() {
           holderFields.hidden = relationship.value === 'self';
+          // The parent-policyholder member-ID hint depends on the relationship too.
+          syncMemberHolderHint();
         }
         relationship.addEventListener('change', syncHolderFields);
         syncHolderFields();
@@ -680,10 +808,52 @@
         $('ins-skip').addEventListener('click', function () { finishInsurance(); });
 
         var saving = false;
+        var pendingFields = null;
+
+        function saveInsurance(fields) {
+          saving = true;
+          $('ins-submit').disabled = true;
+          $('ins-submit-label').textContent = 'Saving…';
+          API.billing.saveInsurance(token, fields).then(function () {
+            finishInsurance();
+          }).catch(function (err) {
+            showInsError((err && err.message) || 'Could not save your insurance. Please try again.');
+            saving = false;
+            $('ins-submit').disabled = false;
+            $('ins-submit-label').textContent = 'Save insurance';
+          });
+        }
+
+        // Soft confirm: on a non-self policy, warn when the patient's DOB (from the
+        // details step) matches the policyholder's DOB entered here — the classic
+        // "parent entered their own DOB for the child" mistake. Never hard-blocks.
+        function hideDobConfirm() { $('ins-dob-confirm').hidden = true; }
+        function needsDobConfirm() {
+          if (relationship.value === 'self') return false;
+          var patientDob = ($('dt-dob').value || '').trim();
+          var holderDob = ($('ins-holder-dob').value || '').trim();
+          return patientDob !== '' && holderDob !== '' && patientDob === holderDob;
+        }
+        function showDobConfirm() {
+          $('ins-dob-confirm-text').textContent = capitalize(intake.possessive())
+            + ' and the policyholder’s dates of birth are identical — is that right?';
+          $('ins-dob-confirm').hidden = false;
+        }
+        $('ins-dob-confirm-yes').addEventListener('click', function () {
+          hideDobConfirm();
+          if (pendingFields) saveInsurance(pendingFields);
+        });
+        $('ins-dob-confirm-no').addEventListener('click', function () {
+          hideDobConfirm();
+          var f = $('ins-holder-dob');
+          if (f) f.focus();
+        });
+
         $('insurance-form').addEventListener('submit', function (e) {
           e.preventDefault();
           if (saving) return;
           clearInsError();
+          hideDobConfirm();
 
           var isSelf = relationship.value === 'self';
           var fields = {
@@ -701,21 +871,14 @@
             fields.subscriber_dob = $('ins-holder-dob').value.trim();
           }
 
-          if (!fields.carrier_name) { showInsError('Please enter your insurance company.'); return; }
-          if (!fields.member_id) { showInsError('Please enter your member ID.'); return; }
+          if (!fields.carrier_name) { showInsError('Please enter ' + intake.possessive() + ' insurance company.'); return; }
+          if (!fields.member_id) { showInsError('Please enter ' + intake.possessive() + ' member ID.'); return; }
 
-          saving = true;
-          $('ins-submit').disabled = true;
-          $('ins-submit-label').textContent = 'Saving…';
-
-          API.billing.saveInsurance(token, fields).then(function () {
-            finishInsurance();
-          }).catch(function (err) {
-            showInsError((err && err.message) || 'Could not save your insurance. Please try again.');
-            saving = false;
-            $('ins-submit').disabled = false;
-            $('ins-submit-label').textContent = 'Save insurance';
-          });
+          // Passed validation. If the DOBs collide, surface the soft confirm and
+          // hold the save until the patient acknowledges; otherwise save now.
+          pendingFields = fields;
+          if (needsDobConfirm()) { showDobConfirm(); return; }
+          saveInsurance(fields);
         });
       })();
 

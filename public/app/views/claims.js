@@ -279,14 +279,45 @@
         confirmLabel: 'Submit',
       }).then(function (ok) {
         if (!ok) return;
-        api.claims.submit(id).then(function () {
-          R.toast('Claim submitted', 'success');
-          load();
-        }).catch(function (err) {
-          // A submit failure may carry a clearinghouse rejection message — scrub
-          // the vendor name before showing it.
-          R.toast(R.scrubVendor(err && err.message) || 'Claim submission failed', 'error');
-        });
+        send(false);
+      });
+    }
+
+    // Send the claim. On the first pass (confirmed=false) the server may return a
+    // soft-warning gate: { requires_confirmation, warnings }. We list the warnings
+    // and, only on explicit "Submit anyway", resend with confirmed=true.
+    function send(confirmed) {
+      api.claims.submit(id, { confirmed: confirmed }).then(function (res) {
+        if (res && res.requires_confirmation && res.warnings && res.warnings.length) {
+          confirmWarnings(res.warnings);
+          return;
+        }
+        R.toast('Claim submitted', 'success');
+        load();
+      }).catch(function (err) {
+        // A submit failure may carry a clearinghouse rejection message — scrub
+        // the vendor name before showing it.
+        R.toast(R.scrubVendor(err && err.message) || 'Claim submission failed', 'error');
+      });
+    }
+
+    // Modal listing the server's pre-submission warnings. "Submit anyway" resends
+    // with confirmed=true; "Cancel" leaves the claim a draft (nothing was sent).
+    function confirmWarnings(warnings) {
+      var items = warnings.map(function (w) {
+        return h('li', { style: 'margin:0 0 var(--space-2)' }, (w && w.message) || 'Please review this claim.');
+      });
+      var body = h('div', { class: 'stack', style: 'gap:var(--space-3)' }, [
+        h('p', { style: 'margin:0' }, 'Please review before submitting:'),
+        h('ul', { style: 'margin:0;padding-left:var(--space-5)' }, items),
+      ]);
+      R.confirmModal({
+        title: 'Double-check this claim',
+        body: body,
+        confirmLabel: 'Submit anyway',
+        cancelLabel: 'Cancel',
+      }).then(function (ok) {
+        if (ok) send(true);
       });
     }
 

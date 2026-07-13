@@ -185,6 +185,13 @@
   // These take a short-lived signed token in the body, not the staff bearer token,
   // and run as Vercel functions (Stripe egress) → target VERCEL_BASE.
   var billing = {
+    // Resolve the client behind the signed token (first/last name, email) so the
+    // intake page can address the patient by name. Hits the Lambda API (card_setup
+    // handler) directly — the token is the credential, in the body. No PHI in the
+    // URL. -> { client_id, practice_id, first_name, last_name, email, ... }.
+    context: function (token) {
+      return request('POST', '/card-setup/context', { token: token });
+    },
     setupIntent: function (token) {
       return request('POST', '/setup-intent', { token: token }, VERCEL_BASE);
     },
@@ -267,11 +274,16 @@
     create: function (payload) { return request('POST', '/claims', payload); },
     update: function (id, payload) { return request('PATCH', '/claims/' + id, payload); },
     remove: function (id) { return request('DELETE', '/claims/' + id); },
-    // lifecycle actions
-    submit: function (id) {
-      return request('POST', '/claims/' + id + '/submit', {}).then(function (res) {
-        // Best-effort platform-fee charge via Vercel; never blocks or fails the submit.
-        chargeClaimFee(id);
+    // lifecycle actions. submit(id, { confirmed }) — pass confirmed:true to
+    // proceed past the server's soft pre-submission warnings. Without it, a claim
+    // that trips a warning comes back { requires_confirmation:true, warnings:[…] }
+    // and is NOT submitted (so no fee is charged).
+    submit: function (id, opts) {
+      var payload = opts && opts.confirmed ? { confirmed: true } : {};
+      return request('POST', '/claims/' + id + '/submit', payload).then(function (res) {
+        // Only charge the platform fee when the claim was actually submitted —
+        // never on the warning gate. Best-effort via Vercel; never blocks submit.
+        if (!res || !res.requires_confirmation) chargeClaimFee(id);
         return res;
       });
     },
