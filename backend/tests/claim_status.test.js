@@ -31,31 +31,52 @@ const clinician = { npi: '9998887770' };
 const selfCtx = {
   claim: {
     control_number: 'ABC123',
+    billed_amount: '135.00',
     clearinghouse_payload: { tradingPartnerServiceId: '60054', billing_npi: '1234567890' },
   },
   practice,
   clinician,
-  client: { first_name: 'Jordan', last_name: 'Lee', date_of_birth: '1988-03-04' },
+  client: { first_name: 'Jordan', last_name: 'Lee', date_of_birth: '1988-03-04', gender: 'male' },
   insurance: { payer_id: '60054', member_id: 'M100', subscriber_relationship: 'self' },
   session: { session_date: '2026-06-15' },
 };
 
-// --- 1. Self claim: correct path body, YYYYMMDD dates, subscriber = patient ---
+// --- 1. Self claim: correct path body, subscriber = patient, ±7-day DOS window,
+//        M/F gender (required when subscriber=patient + DOB), and submittedAmount.
+// DOS 2026-06-15 → begin 06-08, end 06-22 (end < today, so not capped).
 const selfBuilt = stedi.buildStatusBody(selfCtx);
 assert.deepStrictEqual(
   selfBuilt.body,
   {
     tradingPartnerServiceId: '60054',
-    encounter: { beginningDateOfService: '20260615', endDateOfService: '20260615' },
+    encounter: {
+      beginningDateOfService: '20260608',
+      endDateOfService: '20260622',
+      submittedAmount: '135.00',
+    },
     providers: [
       { providerType: 'BillingProvider', organizationName: 'Ink & Oxblood Group', npi: '1234567890' },
     ],
-    subscriber: { firstName: 'Jordan', lastName: 'Lee', dateOfBirth: '19880304', memberId: 'M100' },
+    subscriber: {
+      firstName: 'Jordan', lastName: 'Lee', dateOfBirth: '19880304', memberId: 'M100', gender: 'M',
+    },
   },
-  'self claim: subscriber = patient; DOS begin=end in YYYYMMDD; BillingProvider only'
+  'self claim: subscriber=patient; ±7-day YYYYMMDD window; gender M; submittedAmount; BillingProvider only'
 );
 // No dependent block ever — the base request matches on the subscriber loop.
 assert.ok(!('dependent' in selfBuilt.body), 'no dependent block on a status request');
+
+// Gender is OMITTED (not 'U') when the client gender is missing/unmappable, and
+// dateOfBirth is still sent.
+const noGenderBuilt = stedi.buildStatusBody({
+  ...selfCtx,
+  client: { first_name: 'Jordan', last_name: 'Lee', date_of_birth: '1988-03-04' },
+});
+assert.ok(!('gender' in noGenderBuilt.body.subscriber), 'unknown gender → gender key omitted');
+assert.strictEqual(noGenderBuilt.body.subscriber.dateOfBirth, '19880304', 'dateOfBirth kept when gender omitted');
+// submittedAmount is omitted when the claim carries no billed amount.
+const noAmountBuilt = stedi.buildStatusBody({ ...selfCtx, claim: { ...selfCtx.claim, billed_amount: null } });
+assert.ok(!('submittedAmount' in noAmountBuilt.body.encounter), 'no billed amount → submittedAmount omitted');
 
 // --- 2. Dependent claim: subscriber = policyholder (from the insurance record) --
 const depCtx = {
