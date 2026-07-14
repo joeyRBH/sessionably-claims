@@ -323,12 +323,50 @@
         return card;
       }
 
+      // Practice NPI verification: a practice that bills as an organization must
+      // use a Type-2 (organizational) NPI. Verify against NPPES and warn on a
+      // Type-1 (individual) NPI — the mismatch that gets claims rejected.
+      var npiStatus = h('p', {
+        style: 'margin:var(--space-1) 0 0;font-size:var(--font-size-2);min-height:1.2em;color:var(--color-text-muted)',
+      }, '');
+      function setNpiStatus(msg, color) { npiStatus.textContent = msg || ''; npiStatus.style.color = color; }
+      var verifyNpiBtn = h('button', { class: 'btn btn--ghost btn--sm', type: 'button',
+        onClick: function () {
+          var npi = String((controls.npi && controls.npi.value) || '').replace(/\D/g, '');
+          if (npi.length !== 10) { setNpiStatus('Enter a 10-digit NPI.', 'var(--color-danger, #b00020)'); return; }
+          setNpiStatus('Checking the NPPES registry…', 'var(--color-text-muted)');
+          api.providers.verifyNpi(npi).then(function (r) {
+            if (!r.found) { setNpiStatus('No NPPES record found for that NPI.', 'var(--color-danger, #b00020)'); return; }
+            var nm = r.entityType === 'non_person_entity'
+              ? (r.name.organizationName || '')
+              : ((r.name.firstName || '') + ' ' + (r.name.lastName || '')).trim();
+            if (r.enumerationType === 'NPI-2') {
+              setNpiStatus('✓ Organization NPI (Type-2): ' + nm, 'var(--color-success, #2e7d32)');
+            } else {
+              setNpiStatus('This is an individual (Type-1) NPI registered to ' + nm +
+                '. To bill as an organization, use the organization’s own Type-2 NPI — or set individual billing on the Clinicians page.',
+                'var(--color-warning, #8a6d00)');
+            }
+          }).catch(function (err) {
+            if (err && err.status === 503) {
+              setNpiStatus('NPPES is temporarily unavailable — try again shortly.', 'var(--color-warning, #8a6d00)');
+            } else {
+              setNpiStatus(R.scrubVendor((err && err.message) || 'Verification failed.'), 'var(--color-danger, #b00020)');
+            }
+          });
+        },
+      }, 'Verify NPI with NPPES');
+
       var form = h('form', { novalidate: 'novalidate', onSubmit: onSubmit }, [
         h('div', { class: 'card' }, [
           h('div', { class: 'card__header' }, [
             h('h2', { class: 'card__title' }, 'Practice details'),
           ]),
           grid(IDENTITY_FIELDS),
+          h('div', { style: 'display:flex;gap:var(--space-3);align-items:center;margin-top:var(--space-3)' }, [
+            verifyNpiBtn,
+          ]),
+          npiStatus,
         ]),
         h('div', { class: 'card' }, [
           h('div', { class: 'card__header' }, [

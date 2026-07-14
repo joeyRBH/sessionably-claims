@@ -966,6 +966,7 @@
     renderEmpty: renderEmpty,
     // overlays / feedback
     toast: toast,
+    openModal: openModal,
     confirmModal: confirmModal,
     formModal: formModal,
     createPayerPicker: createPayerPicker,

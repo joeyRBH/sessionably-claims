@@ -359,6 +359,19 @@
     sync: function (id) { return request('POST', '/payer-enrollments/' + id + '/sync', {}); },
   };
 
+  // Provider billing identity. verifyNpi(npi) checks an NPI against the NPPES
+  // registry (no PHI) -> { found, enumerationType, entityType, name, ... } or
+  // { found:false }. billingProfile.get/save read+write a provider's per-clinician
+  // billing profile (person vs organization). The TIN is only ever sent in the
+  // save body (never a URL) and comes back masked. Practice scope is server-side.
+  var providers = {
+    verifyNpi: function (npi) { return request('POST', '/providers/verify-npi', { npi: npi }); },
+    billingProfile: {
+      get: function (userId) { return request('GET', '/providers/' + userId + '/billing-profile'); },
+      save: function (userId, payload) { return request('PUT', '/providers/' + userId + '/billing-profile', payload); },
+    },
+  };
+
   // Practice analytics (Reports view). Server-side aggregation; practice-scoped
   // from the token. filters: { start, end } as YYYY-MM-DD (both optional; non-PHI
   // date bounds only). summary(filters) -> { report: {...} }.
@@ -405,6 +418,7 @@
     vob: vob,
     payers: payers,
     payerEnrollments: payerEnrollments,
+    providers: providers,
     reports: reports,
     auditLog: auditLog,
   };

@@ -77,6 +77,32 @@
     return !!(cu && cu.user && cu.user.role === 'practice_admin');
   }
 
+  function currentUserId() {
+    var cu = R.currentUser;
+    return (cu && cu.user && cu.user.id) || null;
+  }
+
+  // A clinician may edit only their OWN billing profile; admin/billing_staff any.
+  function canEditBilling(user) {
+    if (isAdmin()) return true;
+    var cu = R.currentUser;
+    var role = cu && cu.user && cu.user.role;
+    if (role === 'billing_staff') return true;
+    return user && user.id === currentUserId();
+  }
+
+  var STATUS_COLORS = {
+    muted: 'var(--color-text-muted)',
+    success: 'var(--color-success, #2e7d32)',
+    warn: 'var(--color-warning, #8a6d00)',
+    error: 'var(--color-danger, #b00020)',
+  };
+
+  // digits-only, mirrors the backend normalization.
+  function digits(v) {
+    return String(v == null ? '' : v).replace(/\D/g, '');
+  }
+
   // ===========================================================================
   // Clinicians directory (#clinicians)
   // ===========================================================================
@@ -178,6 +204,214 @@
       });
     }
 
+    // -------------------------------------------------------------------------
+    // Billing profile (per-clinician 837P billing identity) with NPPES verify.
+    // -------------------------------------------------------------------------
+    function openBillingProfile(user) {
+      Promise.all([
+        api.providers.billingProfile.get(user.id).catch(function () { return {}; }),
+        api.practice.get().catch(function () { return {}; }),
+      ]).then(function (res) {
+        renderBillingModal(user,
+          (res[0] && res[0].billing_profile) || {},
+          (res[1] && res[1].practice) || {});
+      }).catch(function (err) {
+        R.toast(R.scrubVendor(err.message || 'Could not load billing profile.'), 'error');
+      });
+    }
+
+    function renderBillingModal(user, profile, practice) {
+      var org = profile.organization || {};
+
+      function input(attrs) { return h('input', Object.assign({ class: 'field__control', type: 'text' }, attrs)); }
+      function field(labelText, control, hintText) {
+        return h('label', { class: 'field' }, [
+          h('span', { class: 'field__label' }, labelText),
+          control,
+          hintText ? h('p', {
+            style: 'margin:var(--space-1) 0 0;color:var(--color-text-muted);font-size:var(--font-size-2)',
+          }, hintText) : null,
+        ]);
+      }
+      function statusLine() {
+        return h('p', { style: 'margin:var(--space-1) 0 0;font-size:var(--font-size-2);min-height:1.2em' }, '');
+      }
+      function setStatus(el, msg, kind) {
+        el.textContent = msg || '';
+        el.style.color = STATUS_COLORS[kind] || STATUS_COLORS.muted;
+      }
+      function verifyBtn(onClick) {
+        return h('button', { class: 'btn btn--ghost btn--sm', type: 'button', onClick: onClick }, 'Verify with NPPES');
+      }
+
+      // Entity type
+      var entitySelect = h('select', { class: 'field__control' }, [
+        h('option', { value: 'person' }, 'Individual (Type-1 / person)'),
+        h('option', { value: 'non_person_entity' }, 'Organization (Type-2 / non-person entity)'),
+      ]);
+      entitySelect.value = profile.billing_entity_type || 'person';
+
+      // Individual (rendering / person billing) NPI + name
+      var npiInput = input({ value: profile.individual_npi || user.npi || '', placeholder: '10-digit NPI', inputmode: 'numeric' });
+      var npiStatus = statusLine();
+      var firstNameInput = input({ value: profile.legal_first_name || user.first_name || '' });
+      var lastNameInput = input({ value: profile.legal_last_name || user.last_name || '' });
+
+      // Person TIN
+      var tinTypeSelect = h('select', { class: 'field__control' }, [
+        h('option', { value: 'EIN' }, 'EIN'),
+        h('option', { value: 'SSN' }, 'SSN'),
+      ]);
+      tinTypeSelect.value = profile.billing_tin_type || 'EIN';
+      var tinPlaceholder = profile.billing_tin_masked
+        ? ('On file: ' + profile.billing_tin_masked + ' — leave blank to keep')
+        : 'Enter EIN or SSN (digits only)';
+      var tinInput = input({ placeholder: tinPlaceholder, inputmode: 'numeric', autocomplete: 'off' });
+
+      // Organization identity
+      var orgNpiInput = input({ value: org.org_npi || practice.npi || '', placeholder: "Organization's 10-digit Type-2 NPI", inputmode: 'numeric' });
+      var orgNpiStatus = statusLine();
+      var orgNameInput = input({ value: org.organization_name || practice.name || '' });
+      var orgEinPlaceholder = org.org_ein_masked
+        ? ('On file: ' + org.org_ein_masked + ' — leave blank to keep')
+        : 'Organization EIN (digits only)';
+      var orgEinInput = input({ placeholder: orgEinPlaceholder, inputmode: 'numeric', autocomplete: 'off' });
+
+      // Verify runner shared by both NPI inputs. `expected` is 'person' | 'organization'.
+      function runVerify(npiEl, statusEl, expected) {
+        var npi = digits(npiEl.value);
+        if (npi.length !== 10) { setStatus(statusEl, 'Enter a 10-digit NPI.', 'error'); return; }
+        setStatus(statusEl, 'Checking the NPPES registry…', 'muted');
+        api.providers.verifyNpi(npi).then(function (r) {
+          if (!r.found) { setStatus(statusEl, r.message || 'No NPPES record found.', 'error'); return; }
+          var nm = r.entityType === 'non_person_entity'
+            ? (r.name.organizationName || '')
+            : ((r.name.firstName || '') + ' ' + (r.name.lastName || '')).trim();
+          if (expected === 'person' && r.enumerationType === 'NPI-2') {
+            setStatus(statusEl, 'This NPI is registered to an organization (' + nm + '). Enter the individual’s Type-1 NPI.', 'error');
+            return;
+          }
+          if (expected === 'organization' && r.enumerationType === 'NPI-1') {
+            setStatus(statusEl, 'This NPI is registered to an individual (' + nm + '). Enter the organization’s Type-2 NPI.', 'error');
+            return;
+          }
+          var tax = r.primaryTaxonomy && r.primaryTaxonomy.desc ? ' · ' + r.primaryTaxonomy.desc : '';
+          setStatus(statusEl, '✓ ' + r.enumerationType + ': ' + nm + tax + (r.active ? '' : ' (inactive)'), 'success');
+          if (expected === 'person' && r.entityType === 'person') {
+            if (!firstNameInput.value && r.name.firstName) firstNameInput.value = r.name.firstName;
+            if (!lastNameInput.value && r.name.lastName) lastNameInput.value = r.name.lastName;
+          }
+        }).catch(function (err) {
+          if (err && err.status === 503) {
+            setStatus(statusEl, 'NPPES is temporarily unavailable — you can still save (marked unverified).', 'warn');
+          } else {
+            setStatus(statusEl, R.scrubVendor((err && err.message) || 'Verification failed.'), 'error');
+          }
+        });
+      }
+
+      // Person / organization field groups (toggled by entity type).
+      var personBox = h('div', { class: 'stack' }, [
+        field('Legal first name', firstNameInput),
+        field('Legal last name', lastNameInput),
+        field('Tax ID type', tinTypeSelect),
+        field('Billing TIN', tinInput,
+          'Format check only — this does not authoritatively match the TIN to the provider. Stored encrypted; shown masked.'),
+      ]);
+      var orgBox = h('div', { class: 'stack' }, [
+        field('Organization name', orgNameInput),
+        h('div', null, [
+          field("Organization NPI (Type-2)", orgNpiInput),
+          h('div', { style: 'display:flex;gap:var(--space-2);align-items:center;margin-top:var(--space-1)' }, [
+            verifyBtn(function () { runVerify(orgNpiInput, orgNpiStatus, 'organization'); }),
+          ]),
+          orgNpiStatus,
+        ]),
+        field('Organization EIN', orgEinInput,
+          'Format check only. Stored on the practice; shown masked.'),
+        h('p', {
+          style: 'margin:var(--space-2) 0 0;color:var(--color-text-muted);font-size:var(--font-size-2)',
+        }, 'Billing as an organization: the individual above is sent as the rendering provider on every claim.'),
+      ]);
+
+      function syncEntity() {
+        var org = entitySelect.value === 'non_person_entity';
+        personBox.hidden = org;
+        orgBox.hidden = !org;
+      }
+      entitySelect.addEventListener('change', syncEntity);
+      syncEntity();
+
+      var saveBtn = h('button', { class: 'btn btn--primary', type: 'button' }, 'Save billing profile');
+      var cancelBtn = h('button', { class: 'btn btn--ghost', type: 'button' }, 'Cancel');
+
+      var bodyNode = h('div', { class: 'stack' }, [
+        field('Bills as', entitySelect),
+        h('div', null, [
+          field('Provider NPI (Type-1)', npiInput),
+          h('div', { style: 'display:flex;gap:var(--space-2);align-items:center;margin-top:var(--space-1)' }, [
+            verifyBtn(function () { runVerify(npiInput, npiStatus, 'person'); }),
+          ]),
+          npiStatus,
+        ]),
+        personBox,
+        orgBox,
+      ]);
+
+      var modal = R.openModal({
+        title: 'Billing profile — ' + userName(user),
+        bodyNode: bodyNode,
+        footerNodes: [cancelBtn, saveBtn],
+        onClose: function () { modal.close(); },
+      });
+
+      cancelBtn.addEventListener('click', function () { modal.close(); });
+
+      function submit(payload, allowUnverified) {
+        if (allowUnverified) payload.allow_unverified = true;
+        saveBtn.disabled = true;
+        api.providers.billingProfile.save(user.id, payload).then(function () {
+          R.toast('Billing profile saved', 'success');
+          modal.close();
+          load();
+        }).catch(function (err) {
+          saveBtn.disabled = false;
+          var b = (err && err.body) || {};
+          var msg = R.scrubVendor(b.error || (err && err.message) || 'Could not save billing profile.');
+          if (b.allow_manual) {
+            R.confirmModal({
+              title: 'Save without NPPES verification?',
+              body: msg + ' Save anyway and follow up later? The record will be flagged unverified.',
+              confirmLabel: 'Save unverified',
+            }).then(function (ok) { if (ok) submit(payload, true); });
+            return;
+          }
+          R.toast(msg, 'error');
+        });
+      }
+
+      saveBtn.addEventListener('click', function () {
+        var entity = entitySelect.value;
+        var payload = {
+          billing_entity_type: entity,
+          individual_npi: digits(npiInput.value),
+          legal_first_name: (firstNameInput.value || '').trim(),
+          legal_last_name: (lastNameInput.value || '').trim(),
+        };
+        if (entity === 'person') {
+          payload.billing_tin_type = tinTypeSelect.value;
+          var t = digits(tinInput.value);
+          if (t) payload.billing_tin = t; // blank keeps the stored value
+        } else {
+          payload.org_npi = digits(orgNpiInput.value);
+          if ((orgNameInput.value || '').trim()) payload.organization_name = orgNameInput.value.trim();
+          var e = digits(orgEinInput.value);
+          if (e) payload.org_ein = e;
+        }
+        submit(payload, false);
+      });
+    }
+
     // Stable container for the invitations panel, so reloadInvitations() can
     // repaint just this section after a create / revoke.
     var invitationsBody = null;
@@ -255,14 +489,20 @@
             'No clinicians yet. Users are added during account setup or via invitation.'));
       } else {
         var rows = users.map(function (u) {
+          var actions = [];
+          if (canEditBilling(u)) {
+            actions.push(h('button', { class: 'btn btn--ghost btn--sm', type: 'button',
+              onClick: function () { openBillingProfile(u); } }, 'Billing'));
+          }
+          actions.push(h('button', { class: 'btn btn--ghost btn--sm', type: 'button',
+            onClick: function () { openEdit(u); } }, 'Edit'));
           return h('tr', null, [
             h('td', null, userName(u)),
             h('td', null, humanize(u.role)),
             h('td', null, titleNpi(u)),
             h('td', null, statusBadge(u)),
             h('td', { class: 'data-table__num' },
-              h('button', { class: 'btn btn--ghost btn--sm', type: 'button',
-                onClick: function () { openEdit(u); } }, 'Edit')),
+              h('div', { style: 'display:inline-flex;gap:var(--space-2)' }, actions)),
           ]);
         });
 
