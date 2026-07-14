@@ -498,6 +498,13 @@ textarea.field__control {
   border-left-color: var(--color-danger);
 }
 
+/* Something needs a manual follow-up, but the action itself succeeded — e.g. a claim
+   submitted cleanly while its platform fee failed to charge. Not danger: nothing is
+   broken or lost, and the copy must not read as "the submission failed". */
+.toast--warn {
+  border-left-color: var(--color-warning);
+}
+
 .toast.is-leaving {
   opacity: 0;
   transition: opacity var(--motion-base) var(--ease-standard);

@@ -141,10 +141,20 @@
     return host;
   }
 
-  function toast(message, kind) {
+  // toast(message, kind, durationMs)
+  //   kind: 'success' | 'error' | 'warn' | undefined (neutral)
+  //   durationMs: how long before it auto-dismisses (default 4s). Pass a longer dwell
+  //     for a message the user must not miss — a warning that something needs manual
+  //     follow-up is useless if it disappears before it is read.
+  var TOAST_DEFAULT_MS = 4000;
+
+  function toast(message, kind, durationMs) {
     var host = toastHost();
-    var cls = 'toast' + (kind === 'success' ? ' toast--success' : kind === 'error' ? ' toast--error' : '');
-    var el = h('div', { class: cls, role: 'status', 'aria-live': 'polite' }, message);
+    var modifier = kind === 'success' ? ' toast--success'
+      : kind === 'error' ? ' toast--error'
+      : kind === 'warn' ? ' toast--warn'
+      : '';
+    var el = h('div', { class: 'toast' + modifier, role: 'status', 'aria-live': 'polite' }, message);
     host.appendChild(el);
 
     var removed = false;
@@ -157,7 +167,7 @@
       }, 250);
     }
     el.addEventListener('click', remove);
-    window.setTimeout(remove, 4000);
+    window.setTimeout(remove, durationMs || TOAST_DEFAULT_MS);
   }
 
   // ---------------------------------------------------------------------------

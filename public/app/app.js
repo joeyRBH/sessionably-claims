@@ -200,6 +200,38 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Platform-fee failures
+  // ---------------------------------------------------------------------------
+  // The fee charge is fired after a claim is submitted and is deliberately not awaited,
+  // so a failure has no natural place in any view's promise chain — and an unbilled fee
+  // is silent revenue loss. api-client.js emits FEE_CHARGE_FAILED_EVENT on window; the
+  // shell owns the listener so the warning still lands if staff have navigated away from
+  // Claims by the time the request settles.
+  //
+  // Non-blocking by contract: the claim IS submitted. The copy has to say so, or staff
+  // will read the warning as a failed submission and send the claim twice.
+  function initFeeChargeWarnings(api) {
+    var eventName = (api && api.FEE_CHARGE_FAILED_EVENT) || 'reddably:fee-charge-failed';
+
+    window.addEventListener(eventName, function (e) {
+      var reason = (e && e.detail && e.detail.reason) || '';
+      var message = 'Claim submitted, but its platform fee did not charge. '
+        + 'The claim is filed — the fee needs to be charged manually.';
+
+      // R (views.js) loads after this file, but this handler only ever runs later.
+      if (window.R && window.R.toast) {
+        // scrubVendor: the reason can carry an upstream error string; never show a
+        // clearinghouse/processor vendor name to staff. 10s — a billing warning that
+        // vanishes in 4s is barely better than the console.warn it replaces.
+        var detail = window.R.scrubVendor ? window.R.scrubVendor(reason) : '';
+        window.R.toast(message + (detail ? ' (' + detail + ')' : ''), 'warn', 10000);
+      } else {
+        console.warn('[Reddably] ' + message + ' ' + reason);
+      }
+    });
+  }
+
+  // ---------------------------------------------------------------------------
   // Boot
   // ---------------------------------------------------------------------------
   function init() {
@@ -208,6 +240,7 @@
     initDrawer();
     initUserMenu(api);
     populateTopbar(api);
+    initFeeChargeWarnings(api);
   }
 
   if (document.readyState === 'loading') {

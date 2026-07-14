@@ -13,11 +13,11 @@
 
 const stripe = require('../backend/lib/stripe');
 const { callLambda } = require('../backend/lib/lambda_api');
-const { ALLOWED_ORIGINS } = require('../backend/lib/response');
+const { ALLOWED_ORIGINS, DEFAULT_ORIGIN } = require('../backend/lib/response');
 
 function applyCors(req, res) {
   const origin = req.headers.origin;
-  const allow = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[ALLOWED_ORIGINS.length - 1];
+  const allow = ALLOWED_ORIGINS.includes(origin) ? origin : DEFAULT_ORIGIN;
   res.setHeader('Access-Control-Allow-Origin', allow);
   res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');

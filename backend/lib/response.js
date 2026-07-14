@@ -2,7 +2,21 @@
 
 // HTTP response helper with CORS for API Gateway proxy integration.
 
-const ALLOWED_ORIGINS = ['https://app.claimsub.com', 'https://claimsub.com', 'https://app.reddably.com', 'https://reddably.com'];
+// The live app origin comes first: it is both the common case and the fallback that
+// resolveOrigin() echoes for an unrecognized Origin. The pre-rebrand hosts stay listed
+// so any still-deployed client keeps working.
+const ALLOWED_ORIGINS = [
+  'https://claims.sessionably.com',
+  'https://app.claimsub.com',
+  'https://claimsub.com',
+  'https://app.reddably.com',
+  'https://reddably.com',
+];
+
+// What to echo when the Origin is missing or not allowlisted. Named, not an index:
+// callers used to reach for ALLOWED_ORIGINS[0] here and ALLOWED_ORIGINS[length - 1]
+// in the Vercel adapters, so the two fallbacks silently disagreed.
+const DEFAULT_ORIGIN = 'https://claims.sessionably.com';
 
 // Echo the request Origin only if it's allowlisted; otherwise fall back to the
 // app origin. Never reflect an arbitrary origin.
@@ -12,7 +26,7 @@ function resolveOrigin(event) {
   if (origin && ALLOWED_ORIGINS.includes(origin)) {
     return origin;
   }
-  return ALLOWED_ORIGINS[0];
+  return DEFAULT_ORIGIN;
 }
 
 function corsHeaders(event) {
@@ -46,4 +60,4 @@ function preflight(event) {
   };
 }
 
-module.exports = { json, preflight, corsHeaders, ALLOWED_ORIGINS };
+module.exports = { json, preflight, corsHeaders, ALLOWED_ORIGINS, DEFAULT_ORIGIN };
