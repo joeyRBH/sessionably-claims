@@ -59,3 +59,8 @@ done
   to `claims` (837P CLM01) plus a partial unique index. Stedi rejects a >20-char control
   number (error 33), so the adapter no longer sends the 36-char UUID; a short per-claim
   number is minted, stored, and reused across resubmissions to match 277CA/835 responses.
+- `015_remove_ready_client_status.sql` — retires the unused `ready` client status;
+  `clients.status` is now exactly `active` | `awaiting_info` | `inactive` (`active` already
+  meant "ready for claim submission"). Moves any surviving `ready` row to `awaiting_info`
+  *before* recreating the CHECK, and never to `active` — nobody becomes billable via a
+  migration. Patient intake now sets the status itself (`backend/handlers/card_setup.js`).

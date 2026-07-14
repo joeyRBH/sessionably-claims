@@ -22,7 +22,9 @@ const { normalizeEmail, normalizePhone, parseBody } = require('../lib/util');
 const { audit, sanitizeFields } = require('../lib/audit');
 
 // Allowed client.status values — mirror the CHECK constraint in db/schema.sql.
-const ALLOWED_STATUSES = ['active', 'awaiting_info', 'ready', 'inactive'];
+// 'active' == ready for claim submission. Keep in sync with the CHECK in
+// db/schema.sql (§5 clients) and the dropdown in public/app/views/clients.js.
+const ALLOWED_STATUSES = ['active', 'awaiting_info', 'inactive'];
 
 // Allowed client.gender values — mirror the clients_gender_check CHECK in
 // db/schema.sql and the options in the client form (clients.js CLIENT_FIELDS).

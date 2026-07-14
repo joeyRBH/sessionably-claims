@@ -367,15 +367,14 @@
           <button id="dt-submit" class="btn" type="submit">
             <span id="dt-submit-label">Continue</span>
           </button>
-          <button id="dt-skip" class="btn-link" type="button">Skip for now</button>
         </form>
       </div>
 
       <!-- Insurance state (shown after the details step, before "all set"). -->
       <div id="state-insurance" hidden>
         <h1>Add your insurance</h1>
-        <p class="subhead">This helps your practice submit your out-of-network claims.
-          You can skip and add it later if you don't have it handy.</p>
+        <p class="subhead">Your practice needs this to submit your out-of-network
+          claims. Have your insurance card handy.</p>
 
         <form id="insurance-form" novalidate>
           <div class="field">
@@ -388,8 +387,15 @@
               <div id="ins-carrier-results" class="payer-picker__results"
                    role="listbox" hidden></div>
             </div>
-            <!-- Filled only when the patient picks a match; free-text leaves it blank. -->
+            <!-- Both filled ONLY when the patient picks a match from the list; typing
+                 in the field clears them. A save needs a pick (or the escape hatch).
+                 The visible input shows "Name (PAYERID)" to tell near-identical plans
+                 apart, so the clean payer name is kept here — that, not the display
+                 string, is what gets stored as carrier_name. -->
             <input id="ins-payer-id" type="hidden" value="">
+            <input id="ins-carrier-name" type="hidden" value="">
+            <p id="ins-carrier-help" class="field-help">Start typing, then choose your
+              insurance company from the list that appears.</p>
           </div>
 
           <div class="field">
@@ -437,19 +443,34 @@
             <button id="ins-dob-confirm-no" class="btn-link" type="button">Let me fix it</button>
           </div>
 
+          <!-- Escape hatch. Confirmed, never one-click: saves what the patient has
+               entered with NO insurance-company match, and flags them for follow-up.
+               Here so a patient whose insurer really isn't listed (or who hit a
+               search outage) doesn't abandon the form entirely — a phone call beats
+               getting nothing. It is a deliberate choice, not the default path. -->
+          <div id="ins-notfound-confirm" class="confirm-box" hidden>
+            <p class="confirm-box__text">We'll save what you've entered. Your practice
+              will call you to finish adding your insurance before they can send your
+              claims.</p>
+            <button id="ins-notfound-yes" class="btn" type="button">Save and have them call me</button>
+            <button id="ins-notfound-no" class="btn-link" type="button">Let me try the list again</button>
+          </div>
+
           <p id="ins-error" class="msg msg--error" role="alert" aria-live="polite" hidden></p>
 
           <button id="ins-submit" class="btn" type="submit">
             <span id="ins-submit-label">Save insurance</span>
           </button>
-          <button id="ins-skip" class="btn-link" type="button">Skip for now</button>
+          <button id="ins-notfound" class="btn-link" type="button">I can't find my insurance company</button>
         </form>
       </div>
 
-      <!-- Success state. -->
+      <!-- Success state. Copy is swapped when the patient used the escape hatch —
+           they are NOT "all set", and telling them so would guarantee they ignore
+           the practice's follow-up call. -->
       <div id="state-done" class="state-done" hidden>
-        <h2 class="state-done__title">You're all set ✓</h2>
-        <p>Your card has been saved securely. You can close this page.</p>
+        <h2 id="done-title" class="state-done__title">You're all set ✓</h2>
+        <p id="done-msg">Your information has been saved securely. You can close this page.</p>
       </div>
 
       <!-- Fatal state (bad/expired link). -->
@@ -462,7 +483,7 @@
   </main>
 
   <!-- All network calls go through window.ReddablyAPI (no direct fetch). -->
-  <script src="./js/api-client.js?v=20260714b"></script>
+  <script src="./js/api-client.js?v=20260714c"></script>
   <!-- Shared phone-number normalizer to E.164 (window.ReddablyPhone). -->
   <script src="./js/phone.js"></script>
   <script>
@@ -586,8 +607,10 @@
       }).catch(function () { /* keep generic wording */ });
 
       // --- Your-details step (shown after the card saves) -----------------------
-      // Collects date of birth + current address, persists them to the client,
-      // then advances to the insurance step. Skippable. Bound once at load.
+      // Collects date of birth + current address, persists them to the client, then
+      // advances to the insurance step. NOT skippable: a claim can't be built without
+      // these, and the old "Skip for now" jumped ahead WITHOUT saving, so a patient
+      // could reach Done having given us nothing. The only way forward is a save.
       (function setupDetailsStep() {
         function showDtError(message) {
           var el = $('dt-error');
@@ -597,8 +620,6 @@
         function clearDtError() { $('dt-error').hidden = true; }
 
         function finishDetails() { hide('state-details'); show('state-insurance'); }
-
-        $('dt-skip').addEventListener('click', function () { finishDetails(); });
 
         var saving = false;
         $('details-form').addEventListener('submit', function (e) {
@@ -629,8 +650,8 @@
             fields.phone = pr.value;
           }
 
-          // Nudge for the claim-critical fields, but never hard-block — the patient
-          // can Skip, and staff can fill gaps later in the client chart.
+          // Claim-critical fields — required. There is no skip here any more, so this
+          // is a real gate, not a nudge.
           if (!fields.date_of_birth) {
             showDtError('Please enter ' + intake.possessive() + ' date of birth'
               + (intake.onBehalf() ? ' — not your own.' : '.'));
@@ -665,13 +686,17 @@
         // --- Payer type-ahead (insurance company) -----------------------------
         // Debounced (300ms) search of the payer directory with a stale-request
         // guard. Picking a result fills the hidden payer_id and shows
-        // "Name (PAYERID)"; editing the input clears the stored id. Free-text
-        // always works — if nothing is picked, carrier_name submits as typed with
-        // no payer_id, and a search failure never blocks saving.
+        // "Name (PAYERID)"; editing the input clears the stored id.
+        //
+        // A PICK is now required to save: the payer id is what routes the claim, and
+        // free text yields none. When the search comes back empty — or fails — we say
+        // so and point at the escape hatch, rather than silently letting free text
+        // through as if it had worked.
         (function setupPayerPicker() {
           var input = $('ins-carrier');
           var results = $('ins-carrier-results');
           var payerIdField = $('ins-payer-id');
+          var payerNameField = $('ins-carrier-name');
           var seq = 0;            // id of the most recent request (stale-guard)
           var timer = null;
           var currentList = [];
@@ -706,6 +731,9 @@
           function choose(p) {
             if (!p) return;
             payerIdField.value = p.payer_id || '';
+            // Keep the clean name for saving; the input shows the disambiguating
+            // "Name (PAYERID)" form, which must never reach carrier_name.
+            payerNameField.value = p.name || '';
             input.value = p.name ? (p.name + ' (' + p.payer_id + ')') : (p.payer_id || '');
             closeResults();
           }
@@ -714,8 +742,8 @@
             activeIndex = -1;
             results.textContent = '';
             if (!currentList.length) {
-              // Quiet fallback — free-text still submits.
-              showStatus('No matches — you can still type your insurance company name');
+              showStatus('No matches. Try a shorter name — or, if it isn’t listed, use '
+                + '“I can’t find my insurance company” below.');
               return;
             }
             currentList.forEach(function (p, i) {
@@ -748,13 +776,17 @@
               renderResults((res && res.payers) || []);
             }).catch(function () {
               if (mySeq !== seq) return;   // stale error — ignore
-              // Search failure must never block saving; just hide the list.
-              closeResults();
+              // A pick is required to save, so a failed search can no longer fail
+              // quietly — that would strand the patient with a form they can't submit
+              // and no explanation. Say it, and point at the way out.
+              showStatus('We couldn’t load the list just now. Try again in a moment — or '
+                + 'use “I can’t find my insurance company” below.');
             });
           }
 
           input.addEventListener('input', function () {
-            payerIdField.value = '';       // editing invalidates any prior pick
+            payerIdField.value = '';       // editing invalidates any prior pick…
+            payerNameField.value = '';     // …including the name that came with it
             var q = input.value.trim();
             if (timer) { window.clearTimeout(timer); timer = null; }
             if (q.length < 2) { seq++; closeResults(); return; }  // too short: invalidate + hide
@@ -803,23 +835,35 @@
         relationship.addEventListener('change', syncHolderFields);
         syncHolderFields();
 
-        function finishInsurance() { hide('state-insurance'); show('state-done'); }
-
-        $('ins-skip').addEventListener('click', function () { finishInsurance(); });
+        // needsFollowUp = the patient took the escape hatch, so we saved without an
+        // insurance-company match. Don't tell them they're "all set" — they aren't,
+        // and the practice is about to call them.
+        function finishInsurance(needsFollowUp) {
+          if (needsFollowUp) {
+            $('done-title').textContent = 'Thanks — we’ve saved your information';
+            $('done-msg').textContent = 'Your practice will call you to finish adding your '
+              + 'insurance before they can send your claims. You can close this page.';
+          }
+          hide('state-insurance');
+          show('state-done');
+        }
 
         var saving = false;
         var pendingFields = null;
+        var pendingFollowUp = false;
 
-        function saveInsurance(fields) {
+        function saveInsurance(fields, needsFollowUp) {
           saving = true;
           $('ins-submit').disabled = true;
+          $('ins-notfound').disabled = true;
           $('ins-submit-label').textContent = 'Saving…';
           API.billing.saveInsurance(token, fields).then(function () {
-            finishInsurance();
+            finishInsurance(needsFollowUp);
           }).catch(function (err) {
             showInsError((err && err.message) || 'Could not save your insurance. Please try again.');
             saving = false;
             $('ins-submit').disabled = false;
+            $('ins-notfound').disabled = false;
             $('ins-submit-label').textContent = 'Save insurance';
           });
         }
@@ -841,7 +885,7 @@
         }
         $('ins-dob-confirm-yes').addEventListener('click', function () {
           hideDobConfirm();
-          if (pendingFields) saveInsurance(pendingFields);
+          if (pendingFields) saveInsurance(pendingFields, pendingFollowUp);
         });
         $('ins-dob-confirm-no').addEventListener('click', function () {
           hideDobConfirm();
@@ -849,36 +893,105 @@
           if (f) f.focus();
         });
 
+        // Hold the save behind the soft DOB confirm when the patient's and
+        // policyholder's DOBs collide; otherwise save straight away. Both the normal
+        // submit and the escape hatch come through here.
+        function submitOrConfirm(fields, needsFollowUp) {
+          pendingFields = fields;
+          pendingFollowUp = needsFollowUp === true;
+          if (needsDobConfirm()) { showDobConfirm(); return; }
+          saveInsurance(fields, pendingFollowUp);
+        }
+
+        // The fields shared by both paths. carrier_name is the CLEAN payer name when
+        // the patient picked one — never the "Name (PAYERID)" string shown in the
+        // input — and falls back to what they typed on the escape-hatch path.
+        function readInsuranceFields() {
+          var fields = {
+            carrier_name: $('ins-carrier-name').value.trim() || $('ins-carrier').value.trim(),
+            member_id: $('ins-member').value.trim(),
+            group_number: $('ins-group').value.trim(),
+            subscriber_relationship: relationship.value,
+          };
+          if (relationship.value !== 'self') {
+            fields.subscriber_name = $('ins-holder-name').value.trim();
+            fields.subscriber_dob = $('ins-holder-dob').value.trim();
+          }
+          return fields;
+        }
+
         $('insurance-form').addEventListener('submit', function (e) {
           e.preventDefault();
           if (saving) return;
           clearInsError();
           hideDobConfirm();
+          hideNotFoundConfirm();
 
-          var isSelf = relationship.value === 'self';
-          var fields = {
-            carrier_name: $('ins-carrier').value.trim(),
-            member_id: $('ins-member').value.trim(),
-            group_number: $('ins-group').value.trim(),
-            subscriber_relationship: relationship.value,
-          };
-          // Set only when the patient picked a directory match; free-text leaves
-          // it blank so carrier_name still saves on its own.
+          var fields = readInsuranceFields();
+          // Only set when the patient PICKED a match from the list. Typing in the
+          // carrier field clears it, so this is a real pick every time.
           var payerId = $('ins-payer-id').value.trim();
-          if (payerId) fields.payer_id = payerId;
-          if (!isSelf) {
-            fields.subscriber_name = $('ins-holder-name').value.trim();
-            fields.subscriber_dob = $('ins-holder-dob').value.trim();
+
+          if (!fields.carrier_name) {
+            showInsError('Please enter ' + intake.possessive() + ' insurance company.');
+            return;
+          }
+          if (!payerId) {
+            showInsError('Please choose ' + intake.possessive() + ' insurance company from '
+              + 'the list of matches. If it isn’t there, use “I can’t find my insurance '
+              + 'company” below.');
+            $('ins-carrier').focus();
+            return;
+          }
+          fields.payer_id = payerId;
+          if (!fields.member_id) {
+            showInsError('Please enter ' + intake.possessive() + ' member ID.');
+            return;
           }
 
-          if (!fields.carrier_name) { showInsError('Please enter ' + intake.possessive() + ' insurance company.'); return; }
-          if (!fields.member_id) { showInsError('Please enter ' + intake.possessive() + ' member ID.'); return; }
+          submitOrConfirm(fields, false);
+        });
 
-          // Passed validation. If the DOBs collide, surface the soft confirm and
-          // hold the save until the patient acknowledges; otherwise save now.
-          pendingFields = fields;
-          if (needsDobConfirm()) { showDobConfirm(); return; }
-          saveInsurance(fields);
+        // --- Escape hatch: "I can't find my insurance company" -----------------
+        // Saves what the patient has with NO payer match; the server stores a null
+        // payer_id and leaves the client awaiting follow-up, so they show up on the
+        // practice's list instead of looking done. Two steps on purpose — it must be
+        // a deliberate choice, never a stray tap on the way to finishing.
+        function hideNotFoundConfirm() { $('ins-notfound-confirm').hidden = true; }
+
+        $('ins-notfound').addEventListener('click', function () {
+          if (saving) return;
+          clearInsError();
+          hideDobConfirm();
+          $('ins-notfound-confirm').hidden = false;
+        });
+        $('ins-notfound-no').addEventListener('click', function () {
+          hideNotFoundConfirm();
+          $('ins-carrier').focus();
+        });
+        $('ins-notfound-yes').addEventListener('click', function () {
+          hideNotFoundConfirm();
+          if (saving) return;
+          clearInsError();
+
+          var fields = readInsuranceFields();
+          fields.payer_not_listed = true;  // the server's authority to save a null payer_id
+
+          // Still need something to follow up ON — the practice calls about the name
+          // and member id the patient typed, so those stay required.
+          if (!fields.carrier_name) {
+            showInsError('Please type ' + intake.possessive() + ' insurance company name, '
+              + 'even if it isn’t in the list.');
+            $('ins-carrier').focus();
+            return;
+          }
+          if (!fields.member_id) {
+            showInsError('Please enter ' + intake.possessive() + ' member ID.');
+            $('ins-member').focus();
+            return;
+          }
+
+          submitOrConfirm(fields, true);
         });
       })();
 
@@ -939,8 +1052,8 @@
               // 3) Persist the payment method against the client.
               var pmId = result.setupIntent && result.setupIntent.payment_method;
               API.billing.savePaymentMethod(token, pmId).then(function () {
-                // Card saved — move to the details step (which flows into insurance;
-                // both can be skipped).
+                // Card saved — move to the details step, which flows into insurance.
+                // Neither of those can be skipped: they are what a claim is built from.
                 hide('state-form');
                 show('state-details');
               }).catch(function (err) {

@@ -17,6 +17,12 @@
 // The token yields a client_id; every query is scoped to that client. This is a
 // patient (non-staff) flow, so there is no requireAuth / practice JWT here.
 // Never store a raw PAN/CVC (PCI); never log PHI.
+//
+// Intake also OWNS clients.status: finishing the flow with everything a claim needs
+// (demographics + carrier + member id + payer id) promotes the client
+// 'awaiting_info' → 'active'; anything missing leaves them 'awaiting_info' for staff
+// follow-up. See activateIfIntakeComplete — it is the only place this flow writes
+// status, and it only ever transitions FROM 'awaiting_info'.
 
 const db = require('../lib/db');
 const paymentToken = require('../lib/payment_token');
@@ -109,6 +115,86 @@ const MAX_FIELD_LEN = 200;
 function cleanField(v) {
   if (typeof v !== 'string') return '';
   return v.trim();
+}
+
+// --- intake completion → client status ---------------------------------------
+
+// Is this client claim-ready? True only when intake has produced everything an
+// 837P needs FROM THE PATIENT:
+//   * demographics — date of birth + a full address (details step), and
+//   * insurance — carrier, member id, and a real payer_id.
+// The payer_id is what routes the claim, and it only exists when the patient picked
+// a directory match; a free-typed carrier name can't be routed. A card on file is
+// deliberately NOT part of this — a practice can bill a client who never saved one.
+//
+// Read back from the DB rather than trusting the just-posted body: a patient who
+// re-opens the link and re-submits a single step is then judged on the row's actual
+// state, not on the one step in front of us.
+async function intakeCompleteness(clientId) {
+  const r = await db.query(
+    `select
+        (c.date_of_birth is not null
+          and nullif(btrim(c.address_line1), '') is not null
+          and nullif(btrim(c.city), '') is not null
+          and nullif(btrim(c.state), '') is not null
+          and nullif(btrim(c.postal_code), '') is not null)   as demographics_ok,
+        (i.id is not null
+          and nullif(btrim(i.carrier_name), '') is not null
+          and nullif(btrim(i.member_id), '') is not null
+          and nullif(btrim(i.payer_id), '') is not null)      as insurance_ok
+       from clients c
+       left join lateral (
+         select id, carrier_name, member_id, payer_id
+           from insurance_records
+          where client_id = c.id and is_primary = true and is_hidden = false
+          order by created_at asc
+          limit 1
+       ) i on true
+      where c.id = $1 and c.is_hidden = false`,
+    [clientId]
+  );
+  const row = r.rows[0];
+  if (!row) return { demographicsOk: false, insuranceOk: false };
+  return {
+    demographicsOk: row.demographics_ok === true,
+    insuranceOk: row.insurance_ok === true,
+  };
+}
+
+// Promote the client to 'active' once intake is complete. 'active' IS the
+// claim-ready status. Anything missing — including the "I can't find my insurance
+// company" escape hatch, which saves a null payer_id on purpose — leaves them on
+// 'awaiting_info', so they land on the practice's follow-up list instead of looking
+// done.
+//
+// GUARD: the only transition is awaiting_info → active, enforced in the WHERE clause.
+// A client the practice deliberately set to 'inactive' is never flipped back just
+// because the intake link got re-opened, and an already-'active' client is left alone.
+//
+// Audited via the shared helper — status is not PHI, so the field name and the
+// from/to values are safe to record. Best-effort: a failure here is logged and
+// swallowed, never failing the patient's save.
+async function activateIfIntakeComplete(event, client) {
+  try {
+    const { demographicsOk, insuranceOk } = await intakeCompleteness(client.id);
+    if (!demographicsOk || !insuranceOk) return;
+
+    const res = await db.query(
+      `update clients set status = 'active'
+        where id = $1 and is_hidden = false and status = 'awaiting_info'`,
+      [client.id]
+    );
+    if (res.rowCount === 0) return; // already active, or deliberately inactive
+
+    await audit(event, { actorType: 'patient_link', practiceId: client.practice_id }, {
+      action: 'client.status_change',
+      resourceType: 'client',
+      resourceId: client.id,
+      metadata: { fields_changed: ['status'], status_from: 'awaiting_info', status_to: 'active' },
+    });
+  } catch (err) {
+    console.warn('card_setup activateIfIntakeComplete failed:', err && err.message);
+  }
 }
 
 exports.handler = async (event) => {
@@ -267,25 +353,53 @@ exports.handler = async (event) => {
         { actorType: 'patient_link', practiceId: result.rows[0] ? result.rows[0].practice_id : null },
         { action: 'patient_link.save_details', resourceType: 'client', resourceId: clientId }
       );
+
+      // Demographics may be the last thing missing — a patient can re-open the link
+      // with insurance already on file — so re-evaluate readiness here too, not just
+      // at the end of the insurance step.
+      await activateIfIntakeComplete(event, {
+        id: clientId,
+        practice_id: result.rows[0] ? result.rows[0].practice_id : null,
+      });
+
       return json(200, { ok: true }, event);
     }
 
     if (path === 'save-insurance') {
-      // Patient-supplied OON insurance info. Required: carrier_name, member_id.
-      // Optional: group_number, subscriber_relationship, subscriber_name,
-      // subscriber_dob, payer_id. Trim everything; reject anything over 200 chars.
+      // Patient-supplied OON insurance info. Required: carrier_name, member_id, and
+      // payer_id — UNLESS payer_not_listed is set (see below). Optional:
+      // group_number, subscriber_relationship, subscriber_name, subscriber_dob.
+      // Trim everything; reject anything over 200 chars.
       const carrierName = cleanField(body.carrier_name);
       const memberId = cleanField(body.member_id);
       const groupNumber = cleanField(body.group_number);
       const subscriberRelationship = cleanField(body.subscriber_relationship);
       const subscriberName = cleanField(body.subscriber_name);
       const subscriberDob = cleanField(body.subscriber_dob);
-      // payer_id maps to insurance_records.payer_id varchar(50). Optional — a
-      // patient who free-types a carrier that isn't matched submits none.
+      // payer_id maps to insurance_records.payer_id varchar(50). It exists only when
+      // the patient PICKED a payer-directory match — free text never yields one.
       const payerId = cleanField(body.payer_id);
+
+      // Escape hatch: the patient explicitly said they can't find their insurance
+      // company in the directory. Saves whatever they have with a null payer_id and
+      // leaves the client on 'awaiting_info' for staff follow-up. Deliberately an
+      // explicit boolean flag, so it can only ever be a chosen path — never the
+      // silent default that an absent payer_id used to be.
+      const payerNotListed = body.payer_not_listed === true;
 
       if (!carrierName) return json(400, { error: 'Insurance company is required.' }, event);
       if (!memberId) return json(400, { error: 'Member ID is required.' }, event);
+
+      // The claim can't be routed without a payer id, so a picked match is required.
+      // Enforced HERE and not only in the page: client-side gating is a prompt, not a
+      // gate — this route is reachable with nothing but the signed link token.
+      if (!payerId && !payerNotListed) {
+        return json(
+          400,
+          { error: 'Please choose the insurance company from the list of matches.' },
+          event
+        );
+      }
 
       for (const v of [carrierName, memberId, groupNumber, subscriberRelationship, subscriberName, subscriberDob]) {
         if (v.length > MAX_FIELD_LEN) return json(400, { error: 'One of the fields is too long.' }, event);
@@ -297,6 +411,12 @@ exports.handler = async (event) => {
       if (subscriberDob && !/^\d{4}-\d{2}-\d{2}$/.test(subscriberDob)) {
         return json(400, { error: 'Date of birth must be YYYY-MM-DD.' }, event);
       }
+
+      // Authoritative either way — the id the patient picked, or an explicit null when
+      // they used the escape hatch. Deliberately NOT coalesced onto the existing value:
+      // an id left over from an earlier pick would no longer match the carrier name
+      // being saved now, and a stale payer id routes the claim to the wrong payer.
+      const payerIdOrNull = payerNotListed ? null : payerId;
 
       const client = await loadClient(clientId);
       if (!client) return json(404, { error: 'Not found' }, event);
@@ -321,16 +441,16 @@ exports.handler = async (event) => {
               subscriber_relationship = coalesce(nullif($4, ''), subscriber_relationship),
               subscriber_name         = coalesce(nullif($5, ''), subscriber_name),
               subscriber_dob          = coalesce(nullif($6, '')::date, subscriber_dob),
-              payer_id                = coalesce(nullif($7, ''), payer_id)
+              payer_id                = $7
             where id = $8`,
-          [carrierName, memberId, groupNumber, subscriberRelationship, subscriberName, subscriberDob, payerId, existing.rows[0].id]
+          [carrierName, memberId, groupNumber, subscriberRelationship, subscriberName, subscriberDob, payerIdOrNull, existing.rows[0].id]
         );
       } else {
         await db.query(
           `insert into insurance_records
              (practice_id, client_id, carrier_name, member_id, group_number,
               subscriber_relationship, subscriber_name, subscriber_dob, payer_id, is_primary)
-           values ($1, $2, $3, $4, nullif($5, ''), nullif($6, ''), nullif($7, ''), nullif($8, '')::date, nullif($9, ''), true)`,
+           values ($1, $2, $3, $4, nullif($5, ''), nullif($6, ''), nullif($7, ''), nullif($8, '')::date, $9, true)`,
           [
             client.practice_id,
             clientId,
@@ -340,14 +460,14 @@ exports.handler = async (event) => {
             subscriberRelationship,
             subscriberName,
             subscriberDob,
-            payerId,
+            payerIdOrNull,
           ]
         );
       }
 
-      // Insurance is the final intake step: card + demographics + insurance are
-      // now on file. Notify the practice admin. Non-blocking — a send failure
-      // (SES not verified yet, etc.) never fails the patient's request.
+      // Insurance is the final intake step: demographics + insurance are now on file.
+      // Notify the practice admin. Non-blocking — a send failure (SES not verified
+      // yet, etc.) never fails the patient's request.
       await notifyIntakeComplete(client);
 
       await audit(event, { actorType: 'patient_link', practiceId: client.practice_id }, {
@@ -355,6 +475,10 @@ exports.handler = async (event) => {
         resourceType: 'client',
         resourceId: client.id,
       });
+
+      // Final step: promote to 'active' if nothing a claim needs is missing. A patient
+      // who took the escape hatch has no payer_id, so they stay 'awaiting_info'.
+      await activateIfIntakeComplete(event, client);
 
       return json(200, { ok: true }, event);
     }

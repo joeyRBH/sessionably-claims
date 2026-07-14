@@ -256,7 +256,7 @@ create table if not exists clients (
   country              text not null default 'US',
   diagnosis_codes      text[],                                -- default ICD-10 dx (dotless, billable) auto-applied to new sessions
   status               text not null default 'awaiting_info'
-                         check (status in ('active', 'awaiting_info', 'ready', 'inactive')),
+                         check (status in ('active', 'awaiting_info', 'inactive')),  -- 'active' == ready for claim submission
   is_hidden            boolean not null default false,
   created_at           timestamptz not null default now(),
   updated_at           timestamptz not null default now()
@@ -313,6 +313,42 @@ alter table clients add column if not exists payment_link_sent_at timestamptz;
 -- Stored dotless (F3290), billable-specificity only. See
 -- db/migrations/008_add_diagnosis_codes_to_clients.sql.
 alter table clients add column if not exists diagnosis_codes text[];
+
+-- Migration (idempotent): retire the unused 'ready' client status. The allowed
+-- set is now exactly active / awaiting_info / inactive, where 'active' already
+-- means "ready for claim submission" — 'ready' was a synonym nothing ever set.
+-- The patient intake flow now promotes a client to 'active' on its own once the
+-- demographics + insurance a claim needs are on file (backend/handlers/card_setup.js).
+--
+-- Order matters: any surviving row must be moved OFF 'ready' BEFORE the CHECK is
+-- recreated, or the ALTER ... ADD CONSTRAINT fails validating those rows. They go
+-- to 'awaiting_info', not 'active' — conservatively, since 'active' is what makes a
+-- client billable and no one should become billable as a side effect of a migration.
+-- Staff can promote them by hand from the client chart.
+-- See db/migrations/015_remove_ready_client_status.sql.
+update clients set status = 'awaiting_info' where status = 'ready';
+do $$
+begin
+  -- Drop the old constraint only when it is actually the stale one (its definition
+  -- still admits 'ready'), so a re-run against an already-migrated database is a
+  -- no-op rather than a needless drop/recreate.
+  if exists (
+    select 1 from pg_constraint
+     where conrelid = 'clients'::regclass
+       and conname = 'clients_status_check'
+       and pg_get_constraintdef(oid) like '%ready%'
+  ) then
+    alter table clients drop constraint clients_status_check;
+  end if;
+  if not exists (
+    select 1 from pg_constraint
+     where conrelid = 'clients'::regclass
+       and conname = 'clients_status_check'
+  ) then
+    alter table clients add constraint clients_status_check
+      check (status in ('active', 'awaiting_info', 'inactive'));
+  end if;
+end $$;
 
 -- =============================================================================
 -- 6. insurance_records — OON benefit data per client (PHI).
