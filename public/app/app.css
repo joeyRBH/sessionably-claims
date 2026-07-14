@@ -201,10 +201,6 @@ body {
   z-index: var(--zone-3);
 }
 
-.user-menu__dropdown[hidden] {
-  display: none;
-}
-
 .user-menu__item {
   display: flex;
   align-items: center;
@@ -345,10 +341,6 @@ body {
   background: var(--color-backdrop);
   opacity: 0;
   transition: opacity var(--motion-base) var(--ease-standard);
-}
-
-.drawer-backdrop[hidden] {
-  display: none;
 }
 
 /* -----------------------------------------------------------------------------

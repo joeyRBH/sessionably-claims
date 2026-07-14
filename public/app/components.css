@@ -7,6 +7,18 @@
  * Calm and clinical: oxblood appears only on primary actions and active state.
  * ========================================================================== */
 
+/* ================================= Base =================================== */
+/* The UA stylesheet's `[hidden] { display: none }` is trivially overridden by
+ * ANY author rule that sets `display` — so `el.hidden = true` silently does
+ * nothing on a `.stack`, `.field`, or any other flex/grid primitive below.
+ * This rule makes the hidden attribute authoritative app-wide; `!important` is
+ * load-bearing here, since it has to outrank layout rules (including ones
+ * inside media queries) that legitimately set `display` on the same element.
+ * Keep this the only `!important` in the stylesheet. */
+[hidden] {
+  display: none !important;
+}
+
 /* =============================== Buttons ================================== */
 .btn {
   font: var(--font-weight-medium) var(--font-size-3)/1 var(--font-body);
@@ -250,10 +262,6 @@ textarea.field__control {
   border: var(--border-width-1) solid var(--color-border);
   border-radius: var(--radius-2);
   box-shadow: var(--shadow-2);
-}
-
-.payer-picker__results[hidden] {
-  display: none;
 }
 
 .payer-picker__status {

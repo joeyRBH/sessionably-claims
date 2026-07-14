@@ -334,10 +334,22 @@
         }, 'Billing as an organization: the individual above is sent as the rendering provider on every claim.'),
       ]);
 
+      // Both boxes are `.stack` (display:flex). The [hidden] base rule in
+      // components.css now makes the attribute authoritative, but set display
+      // inline as well: exactly one group must be in the DOM's box tree at any
+      // time, and the server ignores the group that doesn't match the selected
+      // entity type — a stale visible field the user "cleared" would otherwise
+      // look like a save that silently did nothing.
+      function setGroupVisible(box, visible) {
+        box.hidden = !visible;
+        box.style.display = visible ? '' : 'none';
+      }
       function syncEntity() {
-        var org = entitySelect.value === 'non_person_entity';
-        personBox.hidden = org;
-        orgBox.hidden = !org;
+        // `isOrg`, not `org`: the enclosing scope's `org` is the practice's
+        // organization profile, read by the field initializers above.
+        var isOrg = entitySelect.value === 'non_person_entity';
+        setGroupVisible(personBox, !isOrg);
+        setGroupVisible(orgBox, isOrg);
       }
       entitySelect.addEventListener('change', syncEntity);
       syncEntity();
