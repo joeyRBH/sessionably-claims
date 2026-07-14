@@ -872,7 +872,7 @@
     info_requested: 'warning', appealed: 'warning',
     awaiting_payment: 'warning', awaiting_info: 'warning',
     // success
-    paid: 'success', active: 'success', ready: 'success',
+    paid: 'success', active: 'success',
     // danger
     denied: 'danger', inactive: 'danger',
   };

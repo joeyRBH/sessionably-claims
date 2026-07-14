@@ -51,8 +51,10 @@
     { name: 'postal_code',    label: 'Zip code',       type: 'text', required: true },
     { name: 'diagnosis_codes', label: 'Default diagnosis code(s)', type: 'diagnosis',
       placeholder: 'Search code or condition (e.g. F411 or anxiety)…' },
+    // 'active' == ready for claim submission. Keep in sync with the CHECK in
+    // db/schema.sql (§5 clients) and ALLOWED_STATUSES in backend/handlers/clients.js.
     { name: 'status',         label: 'Status',         type: 'select',
-      options: ['awaiting_info', 'ready', 'active', 'inactive'] },
+      options: ['awaiting_info', 'active', 'inactive'] },
   ];
 
   // The "New client" form omits date of birth, pronouns, and the full address —
