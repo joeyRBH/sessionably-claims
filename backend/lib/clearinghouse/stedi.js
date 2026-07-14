@@ -191,6 +191,83 @@ function patientControlNumber(claim) {
   return boundControlNumber(claim && claim.id).slice(0, 17) || 'CLAIM';
 }
 
+// Resolve the 837P billing- and rendering-provider loops from the rendering
+// clinician's stored billing profile. No hardcoded entity type — the profile
+// decides, which is what makes submitting an individual (Type-1) NPI as an
+// organizational billing provider structurally impossible:
+//
+//   person             → billing provider = the individual (legal name + NPI +
+//                        billing TIN); NO rendering provider.
+//   non_person_entity  → billing provider = the practice organization
+//                        (name + NPI + EIN); rendering provider = the individual.
+//   (no profile yet)   → legacy fallback: organizational billing from the
+//                        practice (billing NPI = practice.npi || clinician.npi),
+//                        so pre-billing-profile providers keep working unchanged.
+//
+// Pure. Returns { billing, rendering|null, billingNpi }.
+function buildProviderLoops(ctx) {
+  const clinician = (ctx && ctx.clinician) || {};
+  const practice = (ctx && ctx.practice) || {};
+  const profile = (ctx && ctx.billingProfile) || null;
+  const address = {
+    address1: practice.address_line1 || undefined,
+    address2: practice.address_line2 || undefined,
+    city: practice.city || undefined,
+    state: practice.state || undefined,
+    postalCode: practice.postal_code || undefined,
+  };
+
+  if (profile && profile.billing_entity_type === 'person') {
+    const npi = profile.individual_npi || clinician.npi || null;
+    const billing = {
+      providerType: 'BillingProvider',
+      npi: npi || undefined,
+      firstName: profile.legal_first_name || clinician.first_name || undefined,
+      lastName: profile.legal_last_name || clinician.last_name || undefined,
+      address,
+    };
+    // Person tax id: EIN → employerId, SSN → ssn (mutually exclusive), digits
+    // only. NOTE: confirm the person-provider tax-id field names against a Stedi
+    // test account before going live (see the file-header disclaimer). ctx carries
+    // billing_tin already decrypted by buildClaimContext.
+    const tinDigits = profile.billing_tin ? digitsOnly(profile.billing_tin) : null;
+    if (tinDigits) {
+      if (profile.billing_tin_type === 'SSN') billing.ssn = tinDigits;
+      else billing.employerId = tinDigits;
+    }
+    return { billing, rendering: null, billingNpi: npi };
+  }
+
+  if (profile && profile.billing_entity_type === 'non_person_entity') {
+    const orgNpi = practice.npi || null;
+    const billing = {
+      providerType: 'BillingProvider',
+      npi: orgNpi || undefined,
+      employerId: practice.tax_id || undefined,
+      organizationName: practice.name || undefined,
+      address,
+    };
+    const rendering = {
+      providerType: 'RenderingProvider',
+      npi: profile.individual_npi || clinician.npi || undefined,
+      firstName: profile.legal_first_name || clinician.first_name || undefined,
+      lastName: profile.legal_last_name || clinician.last_name || undefined,
+    };
+    return { billing, rendering, billingNpi: orgNpi };
+  }
+
+  // Legacy fallback: no billing profile stored yet for this clinician.
+  const billingNpi = practice.npi || clinician.npi || null;
+  const billing = {
+    providerType: 'BillingProvider',
+    npi: billingNpi || undefined,
+    employerId: practice.tax_id || undefined,
+    organizationName: practice.name || undefined,
+    address,
+  };
+  return { billing, rendering: null, billingNpi };
+}
+
 // Build the 837P submission request body from the claim context. Pure (no network)
 // so it can be unit-tested; submitClaim() POSTs whatever this returns.
 function buildSubmissionBody(ctx) {
@@ -206,7 +283,7 @@ function buildSubmissionBody(ctx) {
     throw new Error('Stedi submit requires insurance.payer_id (tradingPartnerServiceId).');
   }
 
-  const billingNpi = practice.npi || clinician.npi || null;
+  const { billing, rendering, billingNpi } = buildProviderLoops(ctx);
 
   const claimInformation = {
     claimFilingCode: 'CI',           // commercial / OON default
@@ -332,22 +409,16 @@ function buildSubmissionBody(ctx) {
       // (which Stedi rejects with 400 "Receiver: missing field organizationName").
       organizationName: insurance.carrier_name || tradingPartnerServiceId,
     },
-    billing: {
-      providerType: 'BillingProvider',
-      npi: billingNpi || undefined,
-      employerId: practice.tax_id || undefined,   // was taxId — Stedi field is employerId
-      organizationName: practice.name || undefined,
-      address: {
-        address1: practice.address_line1 || undefined,
-        address2: practice.address_line2 || undefined,
-        city: practice.city || undefined,
-        state: practice.state || undefined,
-        postalCode: practice.postal_code || undefined,
-      },
-    },
+    // Billing provider loop — sourced from the clinician's billing profile
+    // (person vs organization), NOT a hardcoded entity type. See buildProviderLoops.
+    billing,
     subscriber,
     claimInformation,
   };
+
+  // Rendering provider loop — present only when billing as an organization
+  // (non_person_entity), naming the individual who performed the service.
+  if (rendering) body.rendering = rendering;
 
   // Only present in dependent mode; omitted entirely otherwise so the
   // non-dependent body stays byte-identical to the original.
@@ -469,13 +540,25 @@ function buildStatusBody(ctx) {
     throw new Error('Stedi status check requires tradingPartnerServiceId (payer id used at submission).');
   }
 
-  const billingNpi = payload.billing_npi || practice.npi || clinician.npi || null;
+  // The 276 must name the same billing provider the 837 filed. Source it from
+  // the billing profile (person vs organization); prefer the billing npi
+  // persisted at submit time (clearinghouse_payload) so a later profile edit
+  // can't change what we query on.
+  const loops = buildProviderLoops(ctx);
+  const billingNpi = payload.billing_npi || loops.billingNpi || null;
   if (!billingNpi) {
     throw new Error('Stedi status check requires the billing provider npi.');
   }
-  const organizationName = practice.name || null;
-  if (!organizationName) {
-    throw new Error('Stedi status check requires the billing provider organizationName (practice name).');
+  const statusProvider = { providerType: 'BillingProvider', npi: billingNpi };
+  if (loops.billing.organizationName) {
+    statusProvider.organizationName = loops.billing.organizationName;
+  } else {
+    // Person billing provider: the 276 wants the individual's name.
+    if (loops.billing.firstName) statusProvider.firstName = loops.billing.firstName;
+    if (loops.billing.lastName) statusProvider.lastName = loops.billing.lastName;
+    if (!statusProvider.firstName && !statusProvider.lastName) {
+      throw new Error('Stedi status check requires the billing provider name.');
+    }
   }
 
   // Payers may store a service date that differs by a day or two from ours, so we
@@ -543,13 +626,7 @@ function buildStatusBody(ctx) {
   const body = {
     tradingPartnerServiceId,
     encounter,
-    providers: [
-      {
-        providerType: 'BillingProvider',
-        organizationName,
-        npi: billingNpi,
-      },
-    ],
+    providers: [statusProvider],
     subscriber,
   };
 
@@ -984,6 +1061,7 @@ module.exports = {
   // Exposed for unit testing (pure, no network).
   buildSubmissionBody,
   buildStatusBody,
+  buildProviderLoops,
   parseSubmissionRejection,
   patientControlNumber,
   boundControlNumber,

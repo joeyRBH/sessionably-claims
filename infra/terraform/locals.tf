@@ -144,6 +144,18 @@ locals {
         { method = "GET", path = "payers/search" },
       ]
     }
+    providers = {
+      handler = "handlers/providers.handler"
+      # Provider billing identity: NPPES NPI verification (public registry data,
+      # no PHI) + the per-clinician billing profile the 837P builder reads. The
+      # billing profile carries a sensitive TIN (app-layer encrypted); routes are
+      # practice-scoped and role-gated in the handler.
+      routes = [
+        { method = "POST", path = "providers/verify-npi" },
+        { method = "GET", path = "providers/{userId}/billing-profile" },
+        { method = "PUT", path = "providers/{userId}/billing-profile" },
+      ]
+    }
     payer_enrollments = {
       handler = "handlers/payer_enrollments.handler"
       # Per-practice ERA (electronic remittance) enrollments. List refreshes stale

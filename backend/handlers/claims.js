@@ -26,6 +26,7 @@ const { json, preflight } = require('../lib/response');
 const { parseBody } = require('../lib/util');
 const { audit, sanitizeFields } = require('../lib/audit');
 const { getClearinghouse } = require('../lib/clearinghouse');
+const fieldCrypto = require('../lib/crypto');
 const {
   primaryInsuranceForClient,
   logClaimEvent: logEvent,
@@ -412,22 +413,42 @@ function evaluateSubmissionWarnings(ctx, asOf) {
 
 // Assemble the normalized context an adapter needs (no DB access in adapters).
 async function buildClaimContext(practiceId, claim) {
-  const [sessionRes, clientRes, clinicianRes, practiceRes] = await Promise.all([
+  const [sessionRes, clientRes, clinicianRes, practiceRes, profileRes] = await Promise.all([
     db.query(`select * from sessions where id = $1 and practice_id = $2 limit 1`, [claim.session_id, practiceId]),
     db.query(`select * from clients where id = $1 and practice_id = $2 limit 1`, [claim.client_id, practiceId]),
     db.query(`select * from users where id = $1 and practice_id = $2 limit 1`, [claim.clinician_id, practiceId]),
     db.query(`select * from practices where id = $1 limit 1`, [practiceId]),
+    db.query(
+      `select * from provider_billing_profiles where practice_id = $1 and provider_user_id = $2 limit 1`,
+      [practiceId, claim.clinician_id]
+    ),
   ]);
   let insurance = null;
   if (claim.insurance_record_id) {
     insurance = await loadInsuranceRecord(practiceId, claim.insurance_record_id);
   }
+
+  // The rendering clinician's billing profile decides how the 837P billing- and
+  // rendering-provider loops are built (person vs organization). Decrypt the
+  // person billing TIN here so the adapter stays a pure, DB-/key-free function of
+  // ctx (it reads billingProfile.billing_tin as plaintext digits). A decrypt
+  // failure leaves billing_tin undefined; the adapter falls back accordingly.
+  let billingProfile = profileRes.rows[0] || null;
+  if (billingProfile && billingProfile.billing_tin_ciphertext) {
+    try {
+      billingProfile = { ...billingProfile, billing_tin: fieldCrypto.decrypt(billingProfile.billing_tin_ciphertext) };
+    } catch (_) {
+      billingProfile = { ...billingProfile, billing_tin: null };
+    }
+  }
+
   return {
     claim,
     session: sessionRes.rows[0] || null,
     client: clientRes.rows[0] || null,
     clinician: clinicianRes.rows[0] || null,
     practice: practiceRes.rows[0] || null,
+    billingProfile,
     insurance,
     payer_id: null, // not modeled yet; the Claim.MD adapter flags this
   };

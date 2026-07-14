@@ -19,8 +19,8 @@ const path = require('path');
 
 const HANDLERS_DIR = path.join(__dirname, '..', 'handlers');
 
-// Identifiers that would signal a raw PHI value being logged.
-const FORBIDDEN = /\b(first_name|last_name|date_of_birth|member_id|dob|diagnosis)\b/;
+// Identifiers that would signal a raw PHI / sensitive value being logged.
+const FORBIDDEN = /\b(first_name|last_name|date_of_birth|member_id|dob|diagnosis|tax_id|tin|ein|ssn)\b/;
 
 // Return the substring from the open paren after `audit` to its matching close.
 function extractCallArgs(src, openParenIdx) {

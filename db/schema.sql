@@ -81,6 +81,9 @@ create table if not exists practices (
   notification_email   text,                                  -- optional override recipient for admin notifications (else the practice_admin's email)
   phone                text,                                  -- practice contact phone (ERA enrollment provider/primary contact)
   stedi_provider_id    text,                                  -- clearinghouse enrollment "provider" handle (one per practice TIN); minted lazily on first ERA enrollment
+  npi_verified         boolean not null default false,        -- practice's OWN (organizational, Type-2) NPI verified against NPPES
+  npi_verified_at      timestamptz,
+  npi_enumeration_type text check (npi_enumeration_type in ('NPI-1', 'NPI-2')),  -- NPPES enumeration type of practices.npi (should be NPI-2 to bill as an org)
   is_active            boolean not null default true,
   created_at           timestamptz not null default now(),
   updated_at           timestamptz not null default now()
@@ -142,6 +145,23 @@ alter table practices add column if not exists notification_email text;
 -- See db/migrations/013_add_payer_enrollments.sql.
 alter table practices add column if not exists phone text;
 alter table practices add column if not exists stedi_provider_id text;
+
+-- Migration (idempotent): practice organizational-NPI (Type-2) verification
+-- result. Lets a practice billing as an organization confirm its own NPI is
+-- really NPI-2 (a Type-1 individual NPI billed as an organization is what got
+-- claims rejected with 277CA A3/26/1P "entity not found — provider"). Declared
+-- above for fresh databases; these keep a pre-existing database in sync. See
+-- db/migrations/014_add_provider_billing_profiles.sql.
+alter table practices add column if not exists npi_verified boolean not null default false;
+alter table practices add column if not exists npi_verified_at timestamptz;
+alter table practices add column if not exists npi_enumeration_type text;
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'practices_npi_enum_type_check') then
+    alter table practices add constraint practices_npi_enum_type_check
+      check (npi_enumeration_type is null or npi_enumeration_type in ('NPI-1', 'NPI-2'));
+  end if;
+end $$;
 
 -- =============================================================================
 -- 3. practice_subscriptions — a practice's current plan.
@@ -682,6 +702,60 @@ create index if not exists idx_payer_enrollments_status on payer_enrollments (st
 drop trigger if exists trg_payer_enrollments_updated_at on payer_enrollments;
 create trigger trg_payer_enrollments_updated_at
   before update on payer_enrollments
+  for each row execute function set_updated_at();
+
+-- =============================================================================
+-- 17. provider_billing_profiles — per-clinician billing identity for the 837P.
+-- =============================================================================
+-- One row per (practice_id, provider_user_id). Records whether the provider
+-- bills as an INDIVIDUAL (Type-1 / person) or under the practice ORGANIZATION
+-- (Type-2 / non-person entity), plus the NPPES verification snapshot for their
+-- individual (Type-1) NPI. This is the source of truth the 837P builder reads to
+-- construct the billing- and rendering-provider loops — no hardcoded entity type.
+--
+--   * person             → billing provider = this individual (legal name +
+--                          individual_npi + billing TIN); NO rendering provider.
+--   * non_person_entity  → billing provider = the practice organization
+--                          (practices.name / practices.npi / practices.tax_id);
+--                          rendering provider = this individual (individual_npi +
+--                          legal name). rendering_provider_required = true.
+--
+-- The individual billing TIN (EIN or SSN) is app-layer AES-256-GCM ciphertext
+-- (billing_tin_ciphertext) with a display-only masked last-4 (billing_tin_last4);
+-- the raw value is never stored or returned. The organization EIN is NOT copied
+-- here — it stays on practices.tax_id. No PHI in any column NAME.
+create table if not exists provider_billing_profiles (
+  id                          uuid primary key default gen_random_uuid(),
+  practice_id                 uuid not null references practices (id) on delete restrict,
+  provider_user_id            uuid not null references users (id) on delete restrict,
+  billing_entity_type         text not null check (billing_entity_type in ('person', 'non_person_entity')),
+  individual_npi              text,                            -- Type-1 (NPI-1): billing+rendering (person) or rendering (org)
+  legal_first_name            text,
+  legal_last_name             text,
+  billing_tin_ciphertext      text,                            -- AES-256-GCM ciphertext of the person billing TIN (EIN/SSN); never the raw value
+  billing_tin_last4           text,                            -- display-only masked last-4
+  billing_tin_type            text check (billing_tin_type in ('EIN', 'SSN')),
+  npi_verified                boolean not null default false,  -- individual_npi verified against NPPES
+  npi_verified_at             timestamptz,
+  npi_enumeration_type        text check (npi_enumeration_type in ('NPI-1', 'NPI-2')),
+  sole_proprietor             boolean,
+  primary_taxonomy_code       text,
+  primary_taxonomy_desc       text,
+  primary_taxonomy_license    text,
+  primary_taxonomy_state      text,
+  rendering_provider_required boolean not null default false,  -- true when billing as an organization
+  created_at                  timestamptz not null default now(),
+  updated_at                  timestamptz not null default now(),
+  unique (practice_id, provider_user_id)
+);
+comment on table provider_billing_profiles is 'Per-clinician billing identity (person vs organization) the 837P builder reads to construct the billing/rendering provider loops. Individual billing TIN is app-layer encrypted; no PHI in column names.';
+
+create index if not exists idx_provider_billing_profiles_practice_id on provider_billing_profiles (practice_id);
+create index if not exists idx_provider_billing_profiles_user_id on provider_billing_profiles (provider_user_id);
+
+drop trigger if exists trg_provider_billing_profiles_updated_at on provider_billing_profiles;
+create trigger trg_provider_billing_profiles_updated_at
+  before update on provider_billing_profiles
   for each row execute function set_updated_at();
 
 -- =============================================================================
