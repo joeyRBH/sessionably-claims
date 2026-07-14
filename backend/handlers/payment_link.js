@@ -20,8 +20,10 @@ const { normalizePhone } = require('../lib/util');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-// card-setup.html is served by the Vercel project at reddably.com/card-setup (it
-// 404s on app.reddably.com), so default to reddably.com — matching the adapter.
+// The patient lands here from an SMS, so this must be the origin that actually serves
+// card-setup.html AND the /api functions it calls — the Vercel project at
+// claims.sessionably.com/card-setup. Same origin for both, which is what lets the page
+// reach /setup-intent and /save-payment-method without a cross-origin request.
 const APP_BASE_URL = (process.env.APP_BASE_URL || 'https://claims.sessionably.com').replace(/\/+$/, '');
 
 function httpMethod(event) {

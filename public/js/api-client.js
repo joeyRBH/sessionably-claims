@@ -27,21 +27,40 @@
 
   // Base URL for the patient-billing endpoints, which run as Vercel functions
   // (Stripe/Twilio need outbound internet the VPC Lambda API lacks), NOT on the
-  // Lambda API at API_BASE. Overridable via window.REDDABLY_VERCEL_BASE / a
-  // <meta name="reddably-vercel-base"> tag; defaults to the canonical app domain.
+  // Lambda API at API_BASE.
+  //
+  // These functions ship in the same Vercel project that serves this page, so the
+  // app's own origin is always the correct base: the calls stay same-origin (no CORS
+  // preflight to get wrong), and a preview deployment or a local server hits its OWN
+  // functions instead of billing through production. A hardcoded host cannot satisfy
+  // both, and getting it wrong is silent — a cross-origin POST that never arrives
+  // still looks like a fired request from the calling code.
+  //
+  // Overridable via window.REDDABLY_VERCEL_BASE or <meta name="reddably-vercel-base">
+  // for the one case the origin can't cover: the app being served from somewhere that
+  // does not host /api. The final fallback is for non-browser/file:// contexts, where
+  // location.origin is absent or the string "null".
   function resolveVercelBase() {
     if (window.REDDABLY_VERCEL_BASE) return window.REDDABLY_VERCEL_BASE;
     try {
       var meta = window.document.querySelector('meta[name="reddably-vercel-base"]');
       if (meta && meta.content) return meta.content;
+      var origin = window.location && window.location.origin;
+      if (origin && origin !== 'null') return origin;
     } catch (e) {
-      /* document unavailable — fall through to default */
+      /* document/location unavailable — fall through to default */
     }
-    return 'https://reddably.com';
+    return 'https://claims.sessionably.com';
   }
 
   var VERCEL_BASE = resolveVercelBase();
   var TOKEN_KEY = 'reddably_access_token';
+
+  // Dispatched on window when a platform-fee charge does not complete. The claim is
+  // already submitted and stays submitted; this only tells the shell to warn staff that
+  // the fee needs a manual follow-up. detail: { claim_id, reason } — ids and error
+  // strings only, never PHI.
+  var FEE_CHARGE_FAILED_EVENT = 'reddably:fee-charge-failed';
 
   // --- token storage ---------------------------------------------------------
 
@@ -245,9 +264,34 @@
 
   // Best-effort: after a claim is submitted, trigger the platform-fee charge on the
   // Vercel function (which has the Stripe egress the Lambda lacks). Fire-and-forget —
-  // the claim is already submitted, so any failure is logged to the console and never
-  // surfaced to the user. Forwards the staff session JWT so the function can verify it.
+  // the claim is already submitted and STAYS submitted, so a fee failure must never
+  // block, reverse, or fail the submission. Forwards the staff session JWT so the
+  // function can verify it.
+  //
+  // Best-effort is not the same as silent: a failure emits FEE_CHARGE_FAILED_EVENT so
+  // the shell can warn staff that this claim's fee needs a manual follow-up. Revenue
+  // that quietly does not bill is the worst possible failure mode here.
+  //
+  // Reading the outcome takes care, because the function answers 200 in three different
+  // situations:
+  //   { ok:true,  charged:true  }  — charged. Quiet.
+  //   { ok:true,  charged:false }  — nothing to charge (fee waived, practice-paid, no
+  //                                  card on file). Legitimate; quiet.
+  //   { ok:false, charged:false }  — the charge itself failed, e.g. an off-session card
+  //                                  decline. res.ok is TRUE here, so the body — not the
+  //                                  HTTP status — is what decides.
   function chargeClaimFee(id) {
+    function failed(reason) {
+      console.warn('Platform fee charge did not complete for claim ' + id + ': ' + reason);
+      try {
+        window.dispatchEvent(new window.CustomEvent(FEE_CHARGE_FAILED_EVENT, {
+          detail: { claim_id: id, reason: reason },
+        }));
+      } catch (e) {
+        /* CustomEvent unavailable — the console warning above is the only trace */
+      }
+    }
+
     try {
       var token = getToken();
       if (!token) return;
@@ -256,11 +300,20 @@
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
         body: '{}',
       }).then(function (res) {
-        if (!res || !res.ok) {
-          console.warn('Platform fee charge did not complete (status ' + (res && res.status) + ').');
-        }
+        return res.json().catch(function () {
+          return {};
+        }).then(function (data) {
+          if (!res.ok) {
+            failed((data && data.error) || ('HTTP ' + res.status));
+            return;
+          }
+          if (data && data.ok === false) {
+            failed(data.fee_charge_error || 'charge failed');
+          }
+        });
       }).catch(function (e) {
-        console.warn('Platform fee charge request failed:', e && e.message);
+        // Transport-level: DNS, CORS, offline — the request never reached the function.
+        failed((e && e.message) || 'network error');
       });
     } catch (e) {
       /* never throw from a best-effort fee charge */
@@ -391,6 +444,7 @@
     // config
     API_BASE: API_BASE,
     VERCEL_BASE: VERCEL_BASE,
+    FEE_CHARGE_FAILED_EVENT: FEE_CHARGE_FAILED_EVENT,
     // token helpers
     getToken: getToken,
     setToken: setToken,
