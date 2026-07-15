@@ -30,6 +30,7 @@ const fieldCrypto = require('../lib/crypto');
 const {
   primaryInsuranceForClient,
   logClaimEvent: logEvent,
+  logClaimAcknowledgment: logAck,
   insertDraftClaim,
   ensurePatientControlNumber,
 } = require('../lib/claims');
@@ -778,6 +779,16 @@ async function submitClaim(practiceId, userId, id, body, event, authCtx) {
       note: 'Submitted electronically.',
       payload: result.raw,
     });
+    // Persist the submission acknowledgment (277CA) verbatim — passive dataset,
+    // stored, never acted on. No-op when the adapter returned no raw payload.
+    await logAck(client, {
+      practiceId,
+      claimId: row.id,
+      source: adapter.name,
+      kind: 'submission',
+      controlNumber: result.control_number,
+      payload: result.raw,
+    });
     return row;
   });
 
@@ -885,6 +896,16 @@ async function refreshClaim(practiceId, userId, id, event, authCtx) {
         payload: status.raw,
       });
     }
+    // Persist every claim-status (276/277) payload we receive verbatim, whether or
+    // not it changed our status — this is the passive dataset, stored not acted on.
+    await logAck(client, {
+      practiceId,
+      claimId: row.id,
+      source: adapter.name,
+      kind: 'status',
+      controlNumber: claim.control_number,
+      payload: status.raw,
+    });
     return row;
   });
 

@@ -102,6 +102,16 @@ function createPaymentIntent(params) {
   return stripeRequest('POST', '/payment_intents', params);
 }
 
+// Refund a charge (full or partial). `params` follows Stripe's /refunds shape:
+// either { charge } or { payment_intent } identifies what to refund, `amount`
+// (in cents) is optional — omit for a full refund — and `metadata` / `reason`
+// are optional. Used by the fee-refund flow to return the 5% platform fee on a
+// denied claim; the caller passes Stripe's own idempotency via a distinct
+// charge, and our DB side guarantees exactly-once (see refund_requests handler).
+function createRefund(params) {
+  return stripeRequest('POST', '/refunds', params);
+}
+
 // Create a Checkout Session. `params` follows Stripe's shape; nested arrays are
 // expressed as index-keyed objects (e.g. line_items: { 0: {...} }) so the shared
 // encodeForm produces line_items[0][price_data][...] without needing array support.
@@ -118,5 +128,6 @@ module.exports = {
   retrievePaymentMethod,
   setDefaultPaymentMethod,
   createPaymentIntent,
+  createRefund,
   createCheckoutSession,
 };
