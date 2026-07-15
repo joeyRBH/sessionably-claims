@@ -560,6 +560,86 @@ create trigger trg_transactions_updated_at
   for each row execute function set_updated_at();
 
 -- =============================================================================
+-- 10a. claim_acknowledgments — verbatim 277CA / claim-status payloads per claim.
+-- =============================================================================
+-- Every acknowledgment we receive from the clearinghouse for a claim, stored
+-- WHOLE and UNTOUCHED: the synchronous submission response (277CA — the payer's
+-- front-door accept/reject) and any later real-time claim-status (276/277)
+-- response from a staff refresh. This is a passive dataset only — we STORE it,
+-- we do NOT act on it (v1 does no automated denial detection; the patient tells
+-- us the outcome). It exists so a later version can learn to recognize denials
+-- from real payloads. Append-only: no updated_at, no application UPDATE/DELETE
+-- path; cascades with its claim like claim_events. The payload can carry PHI
+-- (names, member ids), so it lives behind the same RDS at-rest encryption as
+-- claims.clearinghouse_payload and is NEVER logged.
+create table if not exists claim_acknowledgments (
+  id             uuid primary key default gen_random_uuid(),
+  practice_id    uuid not null references practices (id) on delete restrict,
+  claim_id       uuid not null references claims (id) on delete cascade,
+  source         text,                                      -- clearinghouse adapter name (e.g. 'stedi'); white-labeled before any display
+  kind           text not null default 'submission'
+                   check (kind in ('submission', 'status')),
+  control_number text,                                      -- echoed control number for matching, when present
+  payload        jsonb not null,                            -- the acknowledgment VERBATIM — store, don't act
+  received_at    timestamptz not null default now(),
+  created_at     timestamptz not null default now()
+);
+comment on table claim_acknowledgments is 'Verbatim clearinghouse acknowledgments (277CA / 276-277 status) per claim. Append-only passive dataset — stored, never acted on in v1.';
+
+create index if not exists idx_claim_acknowledgments_practice_id on claim_acknowledgments (practice_id);
+create index if not exists idx_claim_acknowledgments_claim_id on claim_acknowledgments (claim_id);
+create index if not exists idx_claim_acknowledgments_kind on claim_acknowledgments (kind);
+
+-- =============================================================================
+-- 10b. refund_requests — patient-initiated "my claim was denied" refund of the fee.
+-- =============================================================================
+-- SC's guarantee: a successful reimbursement, or the patient's fee back. A claim
+-- that is PAID or applied to the DEDUCTIBLE is a SUCCESS (no refund); only a
+-- DENIAL refunds the 5% platform fee. In v1 there is no patient surface: the
+-- patient reports the outcome (via their clinician), and a practice admin records
+-- it here and decides. `outcome_label` captures the reported EOB outcome for all
+-- three cases (it is the labeled dataset for later automation), while `status`
+-- tracks the admin's disposition of the request. Approving a request issues a
+-- Stripe refund of the platform fee only (see backend/handlers/refund_requests.js);
+-- decisions are additionally recorded in the append-only audit_log. At most one
+-- OPEN request may exist per claim (the partial unique index below).
+create table if not exists refund_requests (
+  id               uuid primary key default gen_random_uuid(),
+  practice_id      uuid not null references practices (id) on delete restrict,
+  claim_id         uuid not null references claims (id) on delete restrict,
+  client_id        uuid not null references clients (id) on delete restrict,  -- the patient
+  outcome_label    text not null check (outcome_label in ('paid', 'deductible', 'denied')),
+  status           text not null default 'open'
+                     check (status in ('open', 'approved', 'denied')),
+  patient_note     text,                                    -- optional note captured with the request
+  decision_reason  text,                                    -- admin's reason on approve/deny (kept out of audit_log — may name the patient)
+  decided_by       uuid references users (id) on delete restrict,
+  decided_at       timestamptz,
+  stripe_refund_id text,                                    -- set once, on approval; the Stripe refund of the fee
+  created_at       timestamptz not null default now(),
+  updated_at       timestamptz not null default now()
+);
+comment on table refund_requests is 'Patient-initiated refund of the 5% platform fee on a denied claim. Admin-adjudicated; only outcome_label=denied is refundable. One open request per claim.';
+
+create index if not exists idx_refund_requests_practice_id on refund_requests (practice_id);
+create index if not exists idx_refund_requests_claim_id on refund_requests (claim_id);
+create index if not exists idx_refund_requests_client_id on refund_requests (client_id);
+create index if not exists idx_refund_requests_status on refund_requests (status);
+
+-- Enforce "one open request per claim" at the database level: a second open
+-- request for the same claim is rejected regardless of app-level checks or races.
+-- Terminal (approved/denied) rows are exempt, so a claim can be re-requested only
+-- after the prior request is resolved.
+create unique index if not exists idx_refund_requests_one_open_per_claim
+  on refund_requests (claim_id)
+  where status = 'open';
+
+drop trigger if exists trg_refund_requests_updated_at on refund_requests;
+create trigger trg_refund_requests_updated_at
+  before update on refund_requests
+  for each row execute function set_updated_at();
+
+-- =============================================================================
 -- 11. documents — practice policy + questionnaire templates.
 -- =============================================================================
 create table if not exists documents (
@@ -811,7 +891,7 @@ create table if not exists audit_log (
   actor_user_id  uuid references users (id) on delete restrict,      -- nullable: patient-link / system actors have no user
   actor_type     text not null check (actor_type in ('user', 'patient_link', 'system')),
   action         text not null,                                      -- dot notation, e.g. 'client.view', 'claim.submit'
-  resource_type  text,                                               -- 'client' | 'insurance_record' | 'session' | 'claim' | 'vob' | 'user' | 'practice' | 'invitation' | 'auth' | 'payer_enrollment'
+  resource_type  text,                                               -- 'client' | 'insurance_record' | 'session' | 'claim' | 'vob' | 'user' | 'practice' | 'invitation' | 'auth' | 'payer_enrollment' | 'refund_request'
   resource_id    uuid,
   ip_address     text,                                               -- API GW requestContext.http.sourceIp
   user_agent     text,

@@ -25,7 +25,7 @@
   // Resource types the API accepts as a filter (mirrors backend/handlers/audit.js).
   var RESOURCE_TYPES = [
     'client', 'insurance_record', 'session', 'claim', 'vob',
-    'user', 'practice', 'invitation', 'auth',
+    'user', 'practice', 'invitation', 'auth', 'refund_request',
   ];
 
   function isAdmin() {

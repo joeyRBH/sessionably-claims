@@ -74,6 +74,28 @@ async function sessionHasActiveClaim(q, practiceId, sessionId) {
   return res.rowCount > 0;
 }
 
+// Persist a clearinghouse acknowledgment VERBATIM, linked to its claim. This is
+// the 277CA (submission accept/reject) or a later 276/277 status payload. It is a
+// passive dataset — stored, never acted on in v1. No-op when there is no payload
+// to store (nothing was received). `q` is a pg client (inside a transaction) or db.
+// The payload can carry PHI, so callers must never log it.
+async function logClaimAcknowledgment(q, a) {
+  if (a == null || a.payload == null) return;
+  await q.query(
+    `insert into claim_acknowledgments
+       (practice_id, claim_id, source, kind, control_number, payload)
+     values ($1, $2, $3, $4, $5, $6)`,
+    [
+      a.practiceId,
+      a.claimId,
+      a.source || null,
+      a.kind || 'submission',
+      a.controlNumber || null,
+      JSON.stringify(a.payload),
+    ]
+  );
+}
+
 // Insert a claim_events row. `q` is a pg client (inside a transaction) or db.
 async function logClaimEvent(q, e) {
   await q.query(
@@ -132,5 +154,6 @@ module.exports = {
   primaryInsuranceForClient,
   sessionHasActiveClaim,
   logClaimEvent,
+  logClaimAcknowledgment,
   insertDraftClaim,
 };

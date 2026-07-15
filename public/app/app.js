@@ -194,6 +194,10 @@
       // and the mutation endpoint 403s non-admins — this is UX, not the boundary).
       var enrollNav = document.getElementById('nav-enrollments-item');
       if (enrollNav && role === 'practice_admin') enrollNav.hidden = false;
+      // Refund requests are practice_admin-only too (the view guards again, and the
+      // endpoint 403s non-admins — UX, not the boundary).
+      var refundsNav = document.getElementById('nav-refunds-item');
+      if (refundsNav && role === 'practice_admin') refundsNav.hidden = false;
     }).catch(function () {
       /* leave the existing placeholders in place on failure */
     });

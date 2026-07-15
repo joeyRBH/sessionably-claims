@@ -80,6 +80,21 @@ locals {
         { method = "GET", path = "claims/{id}/events" },
       ]
     }
+    refund_requests = {
+      handler = "handlers/refund_requests.handler"
+      # Patient-initiated fee-refund flow (admin only; the handler 403s non-admins).
+      # A PAID/DEDUCTIBLE claim is a success — only a DENIAL refunds the 5% fee. The
+      # approve/context + approve/record pair is driven by the Vercel adapter
+      # (api/refund-requests/[id]/approve.js), which owns the Stripe egress the VPC lacks.
+      routes = [
+        { method = "POST", path = "refund-requests" },
+        { method = "GET", path = "refund-requests" },
+        { method = "GET", path = "refund-requests/{id}" },
+        { method = "POST", path = "refund-requests/{id}/deny" },
+        { method = "POST", path = "refund-requests/{id}/approve/context" },
+        { method = "POST", path = "refund-requests/{id}/approve/record" },
+      ]
+    }
     users = {
       handler = "handlers/users.handler"
       routes = [

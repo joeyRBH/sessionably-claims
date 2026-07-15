@@ -31,7 +31,7 @@ const ISO_INSTANT_RE = /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?(
 
 const RESOURCE_TYPES = [
   'client', 'insurance_record', 'session', 'claim', 'vob',
-  'user', 'practice', 'invitation', 'auth', 'payer_enrollment',
+  'user', 'practice', 'invitation', 'auth', 'payer_enrollment', 'refund_request',
 ];
 
 const DEFAULT_LIMIT = 50;

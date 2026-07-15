@@ -440,6 +440,25 @@
     list: function (filters) { return request('GET', '/audit-log' + buildQuery(filters)); },
   };
 
+  // Patient-initiated fee refunds (admin-only; the server enforces the role).
+  //   list(filters)          -> { refund_requests: [...] }   filters: { status }
+  //   get(id)                -> { refund_request: {...} }
+  //   create({ claim_id, outcome_label, patient_note }) -> { refund_request: {...} }
+  //   deny(id, reason)       -> { refund_request: {...} }    (no money moves)
+  //   approve(id, reason)    -> { ok, refunded, recorded, refund_request }
+  // Only outcome_label 'denied' is refundable; approve() issues the Stripe refund of
+  // the 5% fee. approve() runs through the Vercel function (Stripe egress), like the
+  // fee charge — every other method hits the Lambda API. Only ids/enums in the path.
+  var refunds = {
+    list: function (filters) { return request('GET', '/refund-requests' + buildQuery(filters)); },
+    get: function (id) { return request('GET', '/refund-requests/' + id); },
+    create: function (payload) { return request('POST', '/refund-requests', payload); },
+    deny: function (id, reason) { return request('POST', '/refund-requests/' + id + '/deny', { reason: reason }); },
+    approve: function (id, reason) {
+      return request('POST', '/api/refund-requests/' + id + '/approve', { reason: reason }, VERCEL_BASE);
+    },
+  };
+
   window.ReddablyAPI = {
     // config
     API_BASE: API_BASE,
@@ -475,5 +494,6 @@
     providers: providers,
     reports: reports,
     auditLog: auditLog,
+    refunds: refunds,
   };
 })(window);
