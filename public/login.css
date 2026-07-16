@@ -103,6 +103,13 @@ body {
   gap: var(--space-4);
 }
 
+/* The `display: flex` above outranks the UA stylesheet's `[hidden]` rule, so
+ * `form.hidden = true` (invite.html, when the invite token is missing) would
+ * otherwise leave the form visible and submittable. */
+.login-form[hidden] {
+  display: none;
+}
+
 .field {
   display: flex;
   flex-direction: column;
