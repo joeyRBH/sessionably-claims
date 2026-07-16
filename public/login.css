@@ -27,7 +27,7 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* Shared focus style — visible, token-based, oxblood ring. */
+/* Shared focus style — visible, token-based focus ring. */
 :focus-visible {
   outline: var(--focus-ring-width) solid var(--color-focus-ring);
   outline-offset: var(--focus-ring-offset);

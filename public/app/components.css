@@ -4,7 +4,8 @@
  * Reusable building blocks the views (clients / sessions / claims) consume.
  * Loaded AFTER app.css. Light mode only. Every color, size, radius, shadow,
  * font and motion value resolves from a tokens.css variable — NO raw hex/px.
- * Calm and clinical: oxblood appears only on primary actions and active state.
+ * Calm and clinical: stone-led surfaces; sage is an earned accent, appearing
+ * only where it draws deliberate attention.
  * ========================================================================== */
 
 /* ================================= Base =================================== */
@@ -224,11 +225,11 @@ textarea.field__control {
 
 .field__error {
   font-size: var(--font-size-2);
-  color: var(--color-danger);
+  color: var(--color-text-muted);
 }
 
 .field--invalid .field__control {
-  border-color: var(--color-danger);
+  border-color: var(--ink-400);
 }
 
 .field-row {
