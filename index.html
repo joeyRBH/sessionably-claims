@@ -6,7 +6,7 @@
   <title>Sessionably Claims — Insurance reimbursements, handled</title>
   <meta name="description" content="Sessionably Claims handles out-of-network insurance reimbursements for behavioral-health practices—from solo clinicians to multi-location groups." />
 
-  <link rel="icon" href='data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 70"%3E%3Ccircle cx="32" cy="35" r="22" fill="none" stroke="%237E3340" stroke-width="6"/%3E%3Ccircle cx="68" cy="35" r="22" fill="none" stroke="%23B08534" stroke-width="6"/%3E%3C/svg%3E'>
+  <link rel="icon" href='data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 70"%3E%3Ccircle cx="32" cy="35" r="22" fill="none" stroke="%23486141" stroke-width="6"/%3E%3Ccircle cx="68" cy="35" r="22" fill="none" stroke="%238E6244" stroke-width="6"/%3E%3C/svg%3E'>
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -14,35 +14,40 @@
 
   <style>
     :root {
-      --paper-base: #FAF7F3;
+      --paper-base: #FBFAF7;
       --paper-raised: #FFFFFF;
-      --paper-sunken: #F2ECE4;
+      --paper-sunken: #F4F2EC;
 
-      --primary: #7E3340;
-      --primary-hover: #652A35;
-      --primary-soft: #EFE0E2;
-      --primary-wash: #F8EFF0;
+      /* Primary action — dark stone. */
+      --primary: #1F1E1A;
+      --primary-hover: #34322A;
+      --primary-soft: #E8E4DB;
+      --primary-wash: #F4F2EC;
 
-      --brass: #B08534;
-      --brass-text: #8A6826;
-      --brass-tint: #F0E6D2;
+      /* Earned accent — resolved/successful claim state only. */
+      --sage: #486141;
 
-      --ink: #1A1718;
-      --ink-secondary: #3C3537;
-      --ink-muted: #6E6568;
-      --ink-subtle: #8F868A;
+      /* Editorial warmth — family-brand moments and the second ring. */
+      --clay: #8E6244;
 
-      --border: #E7DFD5;
-      --border-strong: #D9CEC0;
+      /* Neutral track fills for in-flight and pending amounts. */
+      --track-mid: #B5AC97;
+      --track-low: #D6D0C2;
 
-      --green: #3F7A52;
+      --ink: #1F1E1A;
+      --ink-secondary: #4C4839;
+      --ink-muted: #6C6657;
+      --ink-subtle: #8C8472;
+
+      --border: #E8E4DB;
+      --border-strong: #D6D0C2;
 
       --serif: "Source Serif Pro", Georgia, serif;
       --sans: "Inter", system-ui, sans-serif;
 
-      --shadow-1: 0 1px 2px rgba(26,23,24,.06);
-      --shadow-2: 0 2px 8px rgba(26,23,24,.08);
-      --shadow-3: 0 12px 32px rgba(26,23,24,.12);
+      --shadow-1: 0 1px 2px rgba(31,30,26,.06);
+      --shadow-2: 0 2px 8px rgba(31,30,26,.08);
+      --shadow-3: 0 12px 32px rgba(31,30,26,.12);
 
       --ease: cubic-bezier(0.2,0,0.2,1);
     }
@@ -58,8 +63,8 @@
     body {
       margin: 0;
       background:
-        radial-gradient(circle at 75% 20%, rgba(126,51,64,.08), transparent 34%),
-        radial-gradient(circle at 95% 45%, rgba(176,133,52,.08), transparent 28%),
+        radial-gradient(circle at 75% 20%, rgba(72,97,65,.06), transparent 34%),
+        radial-gradient(circle at 95% 45%, rgba(142,98,68,.06), transparent 28%),
         var(--paper-base);
       color: var(--ink);
       font-family: var(--sans);
@@ -184,22 +189,25 @@
     }
 
     .button-primary {
-      background: linear-gradient(135deg, var(--primary), var(--primary-hover));
+      background: var(--primary);
       color: #FFFFFF;
       box-shadow: var(--shadow-2);
     }
 
     .button-primary:hover {
+      background: var(--primary-hover);
       box-shadow: var(--shadow-3);
     }
 
     .button-ghost {
-      color: var(--brass-text);
+      color: var(--ink-secondary);
       background: transparent;
+      border-color: var(--border-strong);
     }
 
     .button-ghost:hover {
-      color: var(--primary);
+      color: var(--ink);
+      border-color: var(--ink-subtle);
     }
 
     main {
@@ -231,7 +239,7 @@
     }
 
     h1 em {
-      color: var(--primary);
+      color: var(--clay);
       font-style: italic;
       font-weight: 600;
     }
@@ -320,7 +328,7 @@
     }
 
     .sidebar {
-      background: rgba(242,236,228,.58);
+      background: rgba(244,242,236,.58);
       border-right: 1px solid var(--border);
       padding: 18px;
     }
@@ -468,7 +476,7 @@
       height: 128px;
       margin: 4px auto 16px;
       border-radius: 50%;
-      background: conic-gradient(var(--primary) 0 44%, var(--brass) 44% 64%, #DED7CF 64% 100%);
+      background: conic-gradient(var(--sage) 0 44%, var(--track-mid) 44% 64%, var(--track-low) 64% 100%);
       position: relative;
     }
 
@@ -498,15 +506,15 @@
       height: 9px;
       border-radius: 50%;
       display: inline-block;
-      background: var(--primary);
+      background: var(--sage);
     }
 
     .legend span:nth-child(2) i {
-      background: var(--brass);
+      background: var(--track-mid);
     }
 
     .legend span:nth-child(3) i {
-      background: #DED7CF;
+      background: var(--track-low);
     }
 
     .feature-strip {
@@ -537,10 +545,10 @@
       width: 56px;
       height: 56px;
       border-radius: 999px;
-      background: rgba(126,51,64,.08);
+      background: var(--primary-soft);
       display: grid;
       place-items: center;
-      color: var(--primary);
+      color: var(--ink-secondary);
     }
 
     .strip-icon svg {
@@ -579,7 +587,7 @@
     .definition strong {
       font-family: var(--serif);
       font-size: 28px;
-      color: var(--primary);
+      color: var(--clay);
       font-weight: 500;
     }
 
@@ -603,7 +611,7 @@
     }
 
     .family-copy strong {
-      color: var(--primary);
+      color: var(--clay);
     }
 
     footer {
@@ -770,8 +778,8 @@
       <a class="brand" href="/" aria-label="Sessionably Claims home">
         <span class="logo-box" aria-hidden="true">
           <svg viewBox="0 0 100 70" xmlns="http://www.w3.org/2000/svg">
-            <circle cx="32" cy="35" r="24" fill="none" stroke="#7E3340" stroke-width="6"/>
-            <circle cx="68" cy="35" r="24" fill="none" stroke="#B08534" stroke-width="6"/>
+            <circle cx="32" cy="35" r="24" fill="none" stroke="#486141" stroke-width="6"/>
+            <circle cx="68" cy="35" r="24" fill="none" stroke="#8E6244" stroke-width="6"/>
           </svg>
         </span>
         <span class="wordmark">Sessionably Claims</span>
@@ -837,8 +845,8 @@
 
       <div class="visual" aria-label="Sessionably Claims product preview">
         <svg class="ring-bg" viewBox="0 0 520 520" fill="none" aria-hidden="true">
-          <circle cx="210" cy="210" r="155" stroke="#7E3340" stroke-width="24"/>
-          <circle cx="330" cy="300" r="155" stroke="#B08534" stroke-width="24"/>
+          <circle cx="210" cy="210" r="155" stroke="#486141" stroke-width="24"/>
+          <circle cx="330" cy="300" r="155" stroke="#8E6244" stroke-width="24"/>
         </svg>
 
         <div class="mockup">
@@ -846,8 +854,8 @@
             <aside class="sidebar">
               <div class="mini-brand">
                 <svg viewBox="0 0 100 70" aria-hidden="true">
-                  <circle cx="32" cy="35" r="24" fill="none" stroke="#7E3340" stroke-width="7"/>
-                  <circle cx="68" cy="35" r="24" fill="none" stroke="#B08534" stroke-width="7"/>
+                  <circle cx="32" cy="35" r="24" fill="none" stroke="#486141" stroke-width="7"/>
+                  <circle cx="68" cy="35" r="24" fill="none" stroke="#8E6244" stroke-width="7"/>
                 </svg>
                 Sessionably Claims
               </div>
