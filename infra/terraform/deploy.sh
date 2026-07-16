@@ -66,6 +66,9 @@ STEDI_VAL=$(fetch_optional "/STEDI_API_KEY")
 WEBHOOK_VAL=$(fetch_optional "/STRIPE_VOB_WEBHOOK_SECRET")
 [ -n "$WEBHOOK_VAL" ] && echo ">> STRIPE_VOB_WEBHOOK_SECRET present in SSM; will hydrate" || echo ">> STRIPE_VOB_WEBHOOK_SECRET not set in SSM; skipping (vob_billing webhook will reject until set)"
 
+FIELD_KEY_VAL=$(fetch_optional "/FIELD_ENCRYPTION_KEY")
+[ -n "$FIELD_KEY_VAL" ] && echo ">> FIELD_ENCRYPTION_KEY present in SSM; will hydrate" || echo ">> FIELD_ENCRYPTION_KEY not set in SSM; skipping (billing-profile TIN saves will fail until set)"
+
 # CLEARINGHOUSE selects the claims adapter (backend/lib/clearinghouse/index.js);
 # absent → the code defaults to the 'mock' adapter, so prod must carry the real
 # value. It is a plain (non-secret) config param set out-of-band in SSM under the
@@ -87,22 +90,25 @@ for FN in $FUNCS; do
   CUR_STEDI=$(printf '%s' "$CUR" | jq -r '.STEDI_API_KEY // ""')
   CUR_WEBHOOK=$(printf '%s' "$CUR" | jq -r '.STRIPE_VOB_WEBHOOK_SECRET // ""')
   CUR_CLEARINGHOUSE=$(printf '%s' "$CUR" | jq -r '.CLEARINGHOUSE // ""')
+  CUR_FIELD_KEY=$(printf '%s' "$CUR" | jq -r '.FIELD_ENCRYPTION_KEY // ""')
   if [ "$CUR_DB" = "$DB_VAL" ] && [ "$CUR_JWT" = "$JWT_VAL" ] \
      && { [ -z "$STEDI_VAL" ] || [ "$CUR_STEDI" = "$STEDI_VAL" ]; } \
      && { [ -z "$WEBHOOK_VAL" ] || [ "$CUR_WEBHOOK" = "$WEBHOOK_VAL" ]; } \
-     && { [ -z "$CLEARINGHOUSE_VAL" ] || [ "$CUR_CLEARINGHOUSE" = "$CLEARINGHOUSE_VAL" ]; }; then
+     && { [ -z "$CLEARINGHOUSE_VAL" ] || [ "$CUR_CLEARINGHOUSE" = "$CLEARINGHOUSE_VAL" ]; } \
+     && { [ -z "$FIELD_KEY_VAL" ] || [ "$CUR_FIELD_KEY" = "$FIELD_KEY_VAL" ]; }; then
     echo ">> $FN already hydrated, skipping"
     continue
   fi
   echo ">> hydrating $FN"
-  # Merge db/jwt (required) plus stedi + stripe webhook + clearinghouse only when we
-  # have real values.
+  # Merge db/jwt (required) plus stedi + stripe webhook + clearinghouse + field
+  # encryption key only when we have real values.
   ENVJSON=$(printf '%s' "$CUR" | jq \
-    --arg db "$DB_VAL" --arg jwt "$JWT_VAL" --arg stedi "$STEDI_VAL" --arg webhook "$WEBHOOK_VAL" --arg clearinghouse "$CLEARINGHOUSE_VAL" '
+    --arg db "$DB_VAL" --arg jwt "$JWT_VAL" --arg stedi "$STEDI_VAL" --arg webhook "$WEBHOOK_VAL" --arg clearinghouse "$CLEARINGHOUSE_VAL" --arg fieldkey "$FIELD_KEY_VAL" '
       (. + {DATABASE_URL:$db, JWT_SECRET:$jwt})
       | (if $stedi != "" then . + {STEDI_API_KEY:$stedi} else . end)
       | (if $webhook != "" then . + {STRIPE_VOB_WEBHOOK_SECRET:$webhook} else . end)
       | (if $clearinghouse != "" then . + {CLEARINGHOUSE:$clearinghouse} else . end)
+      | (if $fieldkey != "" then . + {FIELD_ENCRYPTION_KEY:$fieldkey} else . end)
       | {Variables: .}')
   TMP=$(mktemp)
   printf '%s' "$ENVJSON" > "$TMP"
