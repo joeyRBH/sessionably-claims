@@ -350,28 +350,58 @@ textarea.field__control {
   border: var(--border-width-1) solid transparent;
 }
 
+/* Claim-state treatment lives HERE and only here — badges carry state meaning;
+ * rows, amounts and nav never do. Three treatments, mapped onto the tone
+ * buckets in views.js (BADGE_TONES). Statuses are not restyled individually:
+ * the tone is all the CSS can see, so a tone's treatment must be correct for
+ * EVERY status routed into it.
+ *
+ *   neutral tone → draft, scheduled, void, no_claim, completed
+ *   info    tone → submitted, processing, claim_submitted, claim_ready
+ *   warning tone → info_requested, appealed, awaiting_payment, awaiting_info
+ *   success tone → paid, active
+ *   danger  tone → denied, inactive
+ */
+
+/* Neutral workflow — nothing has resolved yet, so nothing is earned. */
 .badge--neutral {
   background: var(--color-surface-sunken);
-  color: var(--color-text-strong);
+  color: var(--color-text-muted);
   border-color: var(--color-border);
 }
+
+/* In-flight work. Stone, not sage: this bucket carries `processing` and
+ * `claim_ready` alongside `submitted`, and only `submitted` has earned an
+ * accent. Sage here would paint queued work as resolved — the wrong error to
+ * make. `submitted` therefore goes without its accent until the tone map can
+ * separate it (a JS change, out of scope for this PR). */
 .badge--info {
   background: var(--color-surface-sunken);
-  color: var(--color-info);
-  border-color: var(--color-info);
+  color: var(--color-text-muted);
+  border-color: var(--color-border);
 }
+
+/* Needs-review / awaiting: still neutral workflow. Was sage, which spent the
+ * earned accent on claims that are merely waiting. */
 .badge--warning {
-  background: var(--color-accent-tint);
-  color: var(--color-accent-strong);
-  border-color: var(--color-accent);
-}
-.badge--success {
   background: var(--color-surface-sunken);
-  color: var(--color-success);
-  border-color: var(--color-success);
+  color: var(--color-text-muted);
+  border-color: var(--color-border);
 }
+
+/* Earned: the claim actually resolved in the practice's favour. The only badge
+ * that gets sage. Tint/border have no semantic token — the token layer is PR-1
+ * scope, so they are literal here. */
+.badge--success {
+  background: #F1F4EF;
+  color: var(--color-accent-strong);
+  border-color: #C2D1B9;
+}
+
+/* Consequential interruption — a denial or a dead coverage record. Someone has
+ * to act. Quiet fill, urgent edge and text. */
 .badge--danger {
-  background: var(--color-primary-wash);
+  background: var(--color-bg);
   color: var(--color-danger);
   border-color: var(--color-danger);
 }
