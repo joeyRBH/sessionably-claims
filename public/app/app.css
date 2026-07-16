@@ -27,7 +27,7 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* Shared focus style — visible, token-based, oxblood ring. */
+/* Shared focus style — visible, token-based focus ring. */
 :where(a, button) {
   color: inherit;
 }
@@ -275,7 +275,7 @@ body {
   color: var(--nav-link-active-text);
 }
 
-/* Oxblood active indicator on the inner edge of the rail. */
+/* Ink active indicator on the inner edge of the rail. */
 .nav-link.is-active::before {
   content: "";
   position: absolute;
