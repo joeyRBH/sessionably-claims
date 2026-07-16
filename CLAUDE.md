@@ -15,7 +15,7 @@ providers.
   never call `fetch()` directly.
 - Use design tokens, never raw hex. Reference the semantic CSS variables from
   `public/app-foundation/styles/tokens.css`.
-- Light mode only. A single "Ink & Oxblood" identity. No dark mode, no theme toggle.
+- Light mode only. A single stone-led "Stone & Sage" identity. No dark mode, no theme toggle.
 - Auth token stored in `localStorage` under `reddably_access_token`.
 
 ## Stack
@@ -29,18 +29,88 @@ providers.
   the practice (configurable, with per-clinician override).
 - Domains: `reddably.com` (marketing), `app.reddably.com`, `api.claimsub.com`.
 
-## Design system (F0 — "Ink & Oxblood")
+## Design system (F0 — "Stone & Sage")
 
-- Primary oxblood `#7E3340` (hover `#652A35`); accent brass `#B08534`; ink `#1A1718`;
-  warm paper background `#FAF7F3`.
+Stone-led. **Color is not decoration** — every hue earns its place, and most of the app is
+stone. Calm and clinical: no urgency theater, no dopamine UI.
+
+### What each color is for
+
+- **Stone carries structure.** Page and app backgrounds, sidebar/rail, topbar, cards,
+  borders, dividers, tables, and neutral hover/selected states.
+- **Stone/ink carries default action.** Primary and generic actions — Save, Continue, Add
+  Claim, New Claim, Upload, Create, Submit Claim — use `--color-primary` (hover
+  `--color-primary-hover`). Never sage.
+- **Active navigation is stone/ink.** Never sage.
+- **Sage is earned** by meaningful successful/resolved state (paid, accepted, active
+  coverage). It is not the default primary-action color and never marks in-flight work.
+- **Clay is reserved** for restrained human-scale warmth and family-brand expression. It is
+  not a status color and carries no claim-state meaning.
+- **Urgent `#A14842`** (`--color-danger`) is reserved for consequential interruption or
+  failure: rejected/denied claim, failed payment, destructive actions.
+- Neutral workflow states (draft, pending, processing, queued, needs-review) stay stone.
+- Monetary values stay ink-led. Never sage.
+- Ordinary field validation stays neutral: `.field__error` → `--color-text-muted`;
+  `.field--invalid .field__control` → `--ink-400`.
+
+The former deep-red primary and metallic accent are **retired** and are no longer SC brand
+colors. Do not reintroduce them.
+
+### Palette — canonical Sessionably values
+
+`public/app-foundation/styles/tokens.css` is authoritative. Values flagged below have **no
+token yet** — they are part of the brand ramp but have no variable to reference, so do not
+reach for them until one is added (the golden rule stands: tokens, never raw hex).
+
+- **Stone** — `#FBFAF7 #F4F2EC #E8E4DB #D6D0C2 #B5AC97 #8C8472 #6C6657 #4C4839 #34322A
+  #1F1E1A`. Fully token-backed: `--paper-base`, `--paper-sunken`, `--line-200`, `--ink-300`,
+  `--ink-400`, `--ink-500`, `--color-text-subtle`, `--ink-700`, `--color-primary-hover`,
+  `--ink-900`.
+- **Sage** — `#F1F4EF #DDE6D7 #C2D1B9 #9FB494 #7A9670 #5C7B55 #486141 #384B33`. Partially
+  token-backed: `--color-accent-tint` `#DDE6D7`, `--color-focus-ring` `#5C7B55`,
+  `--color-accent` `#486141`, `--color-accent-strong` `#384B33`. `#F1F4EF` and `#C2D1B9`
+  exist only as the claim-state badge literals in `public/app/components.css`; `#9FB494` and
+  `#7A9670` are currently unused.
+- **Clay** — `#FAF1EA #F1DECF #E3C2A8 #CFA17F #B27F5A #8E6244 #6E4B34`. No tokens; not yet
+  used anywhere in the app.
+- **Urgent** — `#A14842` (`--color-danger`).
+
+### Claim state
+
+State meaning lives on **badges only** — never whole rows, monetary amounts, or navigation.
+
+| Treatment | Background | Border | Text |
+| --- | --- | --- | --- |
+| Neutral | `#F4F2EC` | `#E8E4DB` | `#4C4839` |
+| Successful | `#F1F4EF` | `#C2D1B9` | `#384B33` |
+| Urgent | `#FBFAF7` | `#A14842` | `#A14842` |
+
+Statuses do not have their own selectors: they route through tone buckets in
+`public/app/views.js` (`BADGE_TONES`), and CSS only ever sees the tone. A tone's treatment
+must therefore be correct for **every** status routed into it.
+
+**`submitted` currently remains stone**, even though a submitted claim is a successful state
+that would otherwise earn sage. It shares the `info` tone bucket with `processing` and
+`claim_ready`, which must stay stone; CSS cannot tell them apart, so sage there would paint
+queued work as resolved. Separating it means changing the tone map — a JS change,
+deliberately not taken in PR-1 or PR-2.
+
+### Type and token families
+
 - Body font: Inter. Display/headings: Source Serif Pro. Mono: JetBrains Mono.
-- Calm and clinical — no urgency theater, no dopamine UI. Oxblood appears only where it
-  earns attention (primary actions, active nav).
 - Avoid blue/teal-primary + orange-accent — it reads as a healthcare-IT incumbent
   ("Availity-coded") and undermines the distinct identity.
 - Token families: spacing `--space-1..11` (4px base), radius `--radius-1..pill`, shadow
   `--shadow-0..3`, motion `--motion-fast..ambient`, zones `--zone-0..3`, shell
   `--rail-width` / `--topbar-height` / `--content-max`.
+
+### Migration status
+
+PR-1 (token layer) and PR-2 (authenticated app surfaces) are merged. The public marketing
+and auth surfaces — `index.html`, `login.html`, `signup.html`, `invite.html`,
+`card-setup.html`, `public/login.css` — are **not yet migrated**; that is PR-3, and they
+still carry retired literals. The two-ring logo consequently differs between the app shell
+(ink + sage) and the public pages. That inconsistency is temporary and resolves in PR-3.
 
 ## Repo layout
 
