@@ -30,6 +30,7 @@ locals {
     DB_MASTER_PASSWORD        = "RDS master password (canonical home; read into TF_VAR at db-apply time)."
     STEDI_API_KEY             = "Stedi Healthcare API key the VOB (eligibility) + claims handlers read as STEDI_API_KEY."
     STRIPE_VOB_WEBHOOK_SECRET = "Stripe webhook signing secret the vob_billing Lambda verifies (whsec_...). Same value as the Vercel env."
+    FIELD_ENCRYPTION_KEY      = "App-layer field-encryption key (billing-profile TIN) the providers + claims handlers read as FIELD_ENCRYPTION_KEY. 32-byte base64/hex value (openssl rand -base64 32)."
   }
 }
 
