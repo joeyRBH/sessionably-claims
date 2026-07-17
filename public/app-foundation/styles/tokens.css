@@ -34,6 +34,16 @@
   --line-200: #E8E4DB;      /* default border */
   --line-300: #D6D0C2;      /* stronger border */
 
+  /* Clay (warm terracotta) — the third family alongside stone + sage. Used
+     sparingly as an onboarding/eyebrow accent; sage stays the primary accent. */
+  --clay-100: #FAF1EA;
+  --clay-200: #F1DECF;
+  --clay-300: #E3C2A8;
+  --clay-400: #CFA17F;
+  --clay-500: #B27F5A;
+  --clay-600: #8E6244;      /* eyebrow / small-caps accent */
+  --clay-700: #6E4B34;
+
   /* Alpha primitives (for overlay; warm-tinted) */
   --alpha-ink-45:     rgba(26, 23, 24, 0.45);
   --alpha-ink-08:     rgba(26, 23, 24, 0.08);
@@ -140,6 +150,9 @@
   --color-accent:        #486141;
   --color-accent-strong: #384B33;
   --color-accent-tint:   #DDE6D7;
+
+  /* clay accent (terracotta) — reserved for onboarding eyebrows / small labels */
+  --color-accent-clay:   #8E6244;
 
   /* lines / borders */
   --color-border:        #E8E4DB;

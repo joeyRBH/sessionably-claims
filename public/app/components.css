@@ -492,6 +492,364 @@ textarea.field__control {
   }
 }
 
+/* ======================= Quick Start tutorial ========================== */
+/* Clinician onboarding walkthrough (see tutorial module in views.js). It
+   REUSES the shared openModal() a11y shell — focus restore, Escape + backdrop
+   dismissal — and mounts its whole UI as one self-contained subtree inside
+   .modal__body. The default header/footer are unused, so they collapse. Colors
+   come only from the global token layer (keeps the legacy-color check clean);
+   the handful of bespoke sizes/paddings that fall outside the app's type +
+   space scales are centralized as component-local custom properties on
+   .tutorial rather than scattered as raw literals. To revert the feature,
+   delete this block, the tutorial module + its exports, and the three call
+   sites (app.js auto-open, app.js menu wiring, app.html menu item). */
+
+/* Reuse the modal shell but widen the panel and let the walkthrough own the
+   body. Doubled-class selectors (0-2-0) so these win over the base + the
+   mobile modal rules regardless of source order. */
+.modal__panel.modal__panel--tutorial {
+  width: min(880px, 100%);
+  max-width: min(880px, 100%);
+}
+.modal__panel--tutorial > .modal__header,
+.modal__panel--tutorial > .modal__footer {
+  display: none;
+}
+.modal__panel--tutorial > .modal__body {
+  padding: 0;
+}
+.modal__backdrop--tutorial {
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
+}
+
+.tutorial {
+  /* component-local scale — prototype metrics outside the global token scales */
+  --tut-eyebrow-size: 10px;
+  --tut-label-size: 9px;
+  --tut-counter-size: 11px;
+  --tut-meta-size: 12px;
+  --tut-display-size: 39px;
+  --tut-badge-size: 42px;
+  --tut-avatar-size: 40px;
+  --tut-track: 1.4px;   /* eyebrow tracking */
+  --tut-track-label: 1.5px;
+
+  font-family: var(--font-body);
+  color: var(--color-text);
+}
+
+/* ---- header: brand line + counter + close, then the progress bar ---- */
+.tutorial__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-6) var(--space-7) 0;
+}
+.tutorial__brand {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: var(--tut-counter-size);
+  font-weight: var(--font-weight-bold);
+  letter-spacing: var(--tut-track-label);
+  text-transform: uppercase;
+  color: var(--color-accent);
+}
+.tutorial__headmeta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+.tutorial__counter {
+  font-size: var(--tut-counter-size);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text-subtle);
+  white-space: nowrap;
+}
+.tutorial__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--space-7);
+  height: var(--space-7);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-2);
+  background: transparent;
+  color: var(--color-text-subtle);
+  font-size: var(--font-size-5);
+  line-height: 1;
+  cursor: pointer;
+}
+.tutorial__close:hover {
+  background: var(--color-surface-sunken);
+  color: var(--color-text);
+}
+.tutorial__close:focus-visible {
+  outline: var(--focus-ring-width) solid var(--color-focus-ring);
+  outline-offset: var(--focus-ring-offset);
+}
+
+.tutorial__progress {
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-4) var(--space-7) 0;
+}
+.tutorial__progress span {
+  flex: 1 1 0;
+  height: 3px;
+  border-radius: var(--radius-1);
+  background: var(--color-border);
+}
+.tutorial__progress span.is-filled {
+  background: var(--color-accent);
+}
+
+/* ---- two-column body: copy (left) + demo rail (right) ---- */
+.tutorial__grid {
+  display: grid;
+  grid-template-columns: 1.27fr 1fr;   /* prototype 493 / 387 */
+  align-items: stretch;
+}
+.tutorial__copy {
+  padding: var(--space-7) var(--space-8) var(--space-7) var(--space-7);
+}
+.tutorial__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--tut-badge-size);
+  height: var(--tut-badge-size);
+  border: var(--border-width-1) solid var(--color-border-strong);
+  border-radius: var(--radius-pill);
+  font-family: var(--font-display);
+  font-size: var(--font-size-3);
+  color: var(--color-accent);
+}
+.tutorial__eyebrow {
+  margin: var(--space-6) 0 var(--space-3);
+  font-size: var(--tut-eyebrow-size);
+  font-weight: var(--font-weight-bold);
+  letter-spacing: var(--tut-track);
+  text-transform: uppercase;
+  color: var(--color-accent-clay);
+}
+.tutorial__title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--tut-display-size);
+  font-weight: var(--font-weight-regular);
+  line-height: var(--leading-tight);
+  color: var(--color-text);
+}
+.tutorial__lede {
+  margin: var(--space-4) 0 0;
+  font-size: var(--font-size-4);
+  line-height: var(--leading-base);
+  color: var(--color-text-muted);
+}
+.tutorial__callout {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin-top: var(--space-6);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-3);
+  background: var(--color-surface-sunken);
+  font-size: var(--font-size-4);
+  line-height: var(--leading-snug);
+  color: var(--color-text-muted);
+}
+.tutorial__callout svg {
+  flex: 0 0 auto;
+  width: var(--font-size-4);
+  height: var(--font-size-4);
+  margin-top: 2px;
+  color: var(--color-accent);
+}
+
+.tutorial__demo {
+  padding: var(--space-8) var(--space-7);
+  background: var(--color-surface-sunken);
+  border-left: var(--border-width-1) solid var(--color-border);
+}
+.tutorial__demo-label {
+  margin: 0 0 var(--space-4);
+  font-size: var(--tut-label-size);
+  font-weight: var(--font-weight-bold);
+  letter-spacing: var(--tut-track);
+  text-transform: uppercase;
+  color: var(--color-text-subtle);
+}
+
+/* demo mini-cards (illustrative only — no live controls) */
+.tutorial__mini {
+  padding: var(--space-4);
+  border: var(--border-width-1) solid var(--color-border);
+  border-radius: var(--radius-4);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-2);
+}
+.tutorial__mini + .tutorial__mini {
+  margin-top: var(--space-3);
+}
+.tutorial__mini-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.tutorial__avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: var(--tut-avatar-size);
+  height: var(--tut-avatar-size);
+  border-radius: var(--radius-pill);
+  background: var(--color-accent-tint);
+  color: var(--color-accent);
+  font-size: var(--tut-meta-size);
+  font-weight: var(--font-weight-bold);
+}
+.tutorial__name {
+  font-size: var(--tut-meta-size);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text);
+}
+.tutorial__meta {
+  font-size: var(--tut-meta-size);
+  color: var(--color-text-subtle);
+}
+.tutorial__mini-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+.tutorial__link {
+  font-size: var(--tut-eyebrow-size);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-accent);
+}
+.tutorial__demo-label--accent {
+  color: var(--color-accent);
+}
+.tutorial__bubble {
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-3);
+  background: var(--color-surface-sunken);
+  font-size: var(--font-size-3);
+  line-height: var(--leading-snug);
+  color: var(--color-text-muted);
+}
+.tutorial__check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: var(--space-5);
+  height: var(--space-5);
+  border-radius: var(--radius-pill);
+  background: var(--color-accent-tint);
+  color: var(--color-accent);
+}
+.tutorial__check svg {
+  width: var(--space-3);
+  height: var(--space-3);
+}
+.tutorial__amount {
+  margin: 0 0 var(--space-4);
+  font-family: var(--font-display);
+  font-size: var(--font-size-6);
+  font-weight: var(--font-weight-regular);
+  color: var(--color-text);
+}
+.tutorial__fakebtn {
+  display: block;
+  width: 100%;
+  padding: var(--space-3);
+  border-radius: var(--radius-2);
+  background: var(--color-primary);
+  color: var(--color-text-inverse);
+  font-size: var(--font-size-1);
+  font-weight: var(--font-weight-bold);
+  text-align: center;
+}
+
+/* ---- footer: skip (left) · back + primary (right) ---- */
+.tutorial__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-5) var(--space-7);
+  border-top: var(--border-width-1) solid var(--color-border);
+}
+.tutorial__foot-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.tutorial__skip {
+  padding: var(--space-2) 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-subtle);
+  font-size: var(--font-size-3);
+  cursor: pointer;
+}
+.tutorial__skip:hover {
+  color: var(--color-text);
+  text-decoration: underline;
+}
+.tutorial__skip:focus-visible {
+  outline: var(--focus-ring-width) solid var(--color-focus-ring);
+  outline-offset: var(--focus-ring-offset);
+}
+
+@media (max-width: 760px) {
+  .tutorial__grid {
+    grid-template-columns: 1fr;
+  }
+  .tutorial__demo {
+    border-left: 0;
+    border-top: var(--border-width-1) solid var(--color-border);
+  }
+  .tutorial__copy {
+    padding: var(--space-6) var(--space-6) var(--space-5);
+  }
+  .tutorial__head,
+  .tutorial__progress {
+    padding-left: var(--space-6);
+    padding-right: var(--space-6);
+  }
+  .tutorial__demo {
+    padding: var(--space-6);
+  }
+  .tutorial__foot {
+    padding: var(--space-4) var(--space-6);
+  }
+}
+
+/* Keep the tutorial a centered card on small screens: the base modal rules
+   turn .modal__panel edge-to-edge full-screen at <=900px, which is wrong for
+   this walkthrough. Doubled-class so it overrides that later @media block. */
+@media (max-width: 900px) {
+  .modal__backdrop.modal__backdrop--tutorial {
+    padding: var(--space-3);
+    align-items: center;
+  }
+  .modal__panel.modal__panel--tutorial {
+    width: 100%;
+    max-width: 100%;
+    min-height: 0;
+    max-height: calc(100dvh - var(--space-6));
+    border-radius: var(--radius-4);
+  }
+}
+
 /* =============================== Toast ================================== */
 .toast-host {
   position: fixed;

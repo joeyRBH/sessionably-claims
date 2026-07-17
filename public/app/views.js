@@ -961,6 +961,236 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Quick Start tutorial — clinician onboarding walkthrough
+  // ---------------------------------------------------------------------------
+  // Reuses openModal() for the a11y shell (focus restore, Escape + backdrop
+  // dismissal) and mounts the whole walkthrough as one subtree in the modal
+  // body. First-run auto-open is gated on a localStorage flag: the app has no
+  // server-side per-user UI-preference store, so we follow the existing
+  // reddably_* localStorage convention (same store as the auth token) rather
+  // than inventing backend onboarding state. The reopen control ("View
+  // tutorial" in the user menu) calls openTutorial() directly, ignoring the flag.
+  var TUTORIAL_SEEN_KEY = 'reddably_tutorial_seen';
+
+  function tutorialSeen() {
+    try { return window.localStorage.getItem(TUTORIAL_SEEN_KEY) === '1'; }
+    catch (e) { return false; }
+  }
+  function markTutorialSeen() {
+    try { window.localStorage.setItem(TUTORIAL_SEEN_KEY, '1'); }
+    catch (e) { /* storage disabled (private mode) — walkthrough just re-shows */ }
+  }
+
+  // Inline check glyph (injected as SVG markup so it renders in the SVG
+  // namespace; h() builds HTML elements, which would not render a raw <svg>).
+  var CHECK_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"'
+    + ' fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"'
+    + ' stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg>';
+
+  function tutCheck() { return h('span', { class: 'tutorial__check', html: CHECK_SVG }); }
+
+  // Each demo card is illustrative only — no live controls (fake buttons/links
+  // are non-interactive spans so they stay out of the focus order).
+  var TUTORIAL_STEPS = [
+    {
+      badge: '01',
+      eyebrow: 'Start with the essentials',
+      title: 'Find your client’s contact details',
+      body: 'Open the client’s chart and confirm their name and mobile number. '
+        + 'That’s all you need to invite them.',
+      callout: 'You stay focused on care—not paperwork.',
+      demo: function () {
+        return h('div', { class: 'tutorial__mini' }, [
+          h('div', { class: 'tutorial__mini-row' }, [
+            h('span', { class: 'tutorial__avatar' }, 'AM'),
+            h('div', {}, [
+              h('div', { class: 'tutorial__name' }, 'Alex Morgan'),
+              h('div', { class: 'tutorial__meta' }, 'Client · (303) 555-0147'),
+            ]),
+          ]),
+          h('div', { class: 'tutorial__mini-foot' }, [
+            h('span', { class: 'tutorial__link' }, 'View chart'),
+          ]),
+        ]);
+      },
+    },
+    {
+      badge: '02',
+      eyebrow: 'Send a secure invitation',
+      title: 'Text one simple link',
+      body: 'Send your client a secure link to add their insurance information and a '
+        + 'payment method for claim submissions.',
+      callout: 'Clients enter their own details, reducing back-and-forth and transcription errors.',
+      demo: function () {
+        return h('div', { class: 'tutorial__mini' }, [
+          h('div', { class: 'tutorial__bubble' },
+            'Hi Alex—use this secure link to add your insurance information for claims reimbursement.'),
+          h('div', { class: 'tutorial__mini-foot' }, [
+            h('span', { class: 'tutorial__meta' }, 'claims.sessionably.com/invite'),
+            h('span', { class: 'tutorial__meta' }, 'Delivered'),
+          ]),
+        ]);
+      },
+    },
+    {
+      badge: '03',
+      eyebrow: 'We’ll keep watch',
+      title: 'Know when they’re ready',
+      body: 'Sessionably Claims notifies you as soon as your client completes their '
+        + 'information. No chasing forms or checking inboxes.',
+      callout: 'You’ll know exactly when you can move forward.',
+      demo: function () {
+        return h('div', { class: 'tutorial__mini' }, [
+          h('div', { class: 'tutorial__mini-row' }, [
+            tutCheck(),
+            h('div', {}, [
+              h('div', { class: 'tutorial__name' }, 'Client information complete'),
+              h('div', { class: 'tutorial__meta' }, 'Alex added insurance and payment details.'),
+            ]),
+          ]),
+          h('div', { class: 'tutorial__mini-foot' }, [
+            h('span', { class: 'tutorial__meta' }, 'Now'),
+          ]),
+        ]);
+      },
+    },
+    {
+      badge: '04',
+      eyebrow: 'Keep the record current',
+      title: 'Add sessions to their chart',
+      body: 'Record completed sessions as you go. Sessionably Claims keeps the '
+        + 'reimbursement workflow organized around the client.',
+      callout: 'A few seconds now saves administrative time later.',
+      demo: function () {
+        function sessionRow(date) {
+          return h('div', { class: 'tutorial__mini' }, [
+            h('div', { class: 'tutorial__mini-row', style: 'justify-content:space-between' }, [
+              h('div', { class: 'tutorial__mini-row' }, [
+                tutCheck(),
+                h('span', { class: 'tutorial__name' }, date + ' · 53 min'),
+              ]),
+              h('span', { class: 'tutorial__meta' }, 'Ready'),
+            ]),
+          ]);
+        }
+        return h('div', {}, [sessionRow('Jul 8'), sessionRow('Jul 15')]);
+      },
+    },
+    {
+      badge: '05',
+      eyebrow: 'Turn care into reimbursement',
+      title: 'Submit claims with confidence',
+      body: 'Review the prepared claim, submit it, and track its progress—all '
+        + 'without rebuilding the same information each time.',
+      callout: 'Faster claims can mean faster reimbursement and less financial strain for clients.',
+      demo: function () {
+        return h('div', { class: 'tutorial__mini' }, [
+          h('p', { class: 'tutorial__demo-label tutorial__demo-label--accent' }, 'Ready to submit'),
+          h('div', { class: 'tutorial__amount' }, '2 sessions · $350.00'),
+          h('span', { class: 'tutorial__fakebtn' }, 'Submit claims'),
+        ]);
+      },
+    },
+  ];
+
+  // openTutorial() -> { close }. Builds the walkthrough once and re-renders the
+  // per-step regions on Back/Next. The final step's primary action closes the
+  // walkthrough and routes to Clients (the natural next task).
+  function openTutorial() {
+    var index = 0;
+    var HEADING_ID = 'tutorial-heading';
+
+    var badgeEl = h('span', { class: 'tutorial__badge' });
+    var eyebrowEl = h('p', { class: 'tutorial__eyebrow' });
+    var titleEl = h('h2', { class: 'tutorial__title', id: HEADING_ID });
+    var ledeEl = h('p', { class: 'tutorial__lede' });
+    var calloutTextEl = h('span');
+    var calloutEl = h('div', { class: 'tutorial__callout' }, [
+      h('span', { class: 'tutorial__callout-check', html: CHECK_SVG }),
+      calloutTextEl,
+    ]);
+    var demoBodyEl = h('div');
+    var copyCol = h('div', { class: 'tutorial__copy' }, [badgeEl, eyebrowEl, titleEl, ledeEl, calloutEl]);
+    var demoCol = h('div', { class: 'tutorial__demo' }, [
+      h('p', { class: 'tutorial__demo-label' }, 'How it works'),
+      demoBodyEl,
+    ]);
+    var grid = h('div', { class: 'tutorial__grid' }, [copyCol, demoCol]);
+
+    var counterEl = h('span', { class: 'tutorial__counter' });
+    var closeBtn = h('button',
+      { class: 'tutorial__close', type: 'button', 'aria-label': 'Close tutorial' }, '×');
+    var headEl = h('div', { class: 'tutorial__head' }, [
+      h('p', { class: 'tutorial__brand' }, 'Sessionably Claims · Quick Start'),
+      h('div', { class: 'tutorial__headmeta' }, [counterEl, closeBtn]),
+    ]);
+
+    var progressEl = h('div', { class: 'tutorial__progress' });
+    var segs = TUTORIAL_STEPS.map(function () {
+      var s = h('span'); progressEl.appendChild(s); return s;
+    });
+
+    var backBtn = h('button', { class: 'btn btn--ghost', type: 'button' }, 'Back');
+    var nextBtn = h('button', { class: 'btn btn--primary', type: 'button' });
+    var skipBtn = h('button', { class: 'tutorial__skip', type: 'button' }, 'Skip for now');
+    var footEl = h('div', { class: 'tutorial__foot' }, [
+      skipBtn,
+      h('div', { class: 'tutorial__foot-actions' }, [backBtn, nextBtn]),
+    ]);
+
+    var root = h('div', { class: 'tutorial' }, [headEl, progressEl, grid, footEl]);
+
+    function render() {
+      var step = TUTORIAL_STEPS[index];
+      var last = index === TUTORIAL_STEPS.length - 1;
+      badgeEl.textContent = step.badge;
+      eyebrowEl.textContent = step.eyebrow;
+      titleEl.textContent = step.title;
+      ledeEl.textContent = step.body;
+      calloutTextEl.textContent = step.callout;
+      counterEl.textContent = (index + 1) + ' of ' + TUTORIAL_STEPS.length;
+      segs.forEach(function (seg, i) { seg.classList.toggle('is-filled', i <= index); });
+      while (demoBodyEl.firstChild) demoBodyEl.removeChild(demoBodyEl.firstChild);
+      demoBodyEl.appendChild(step.demo());
+      backBtn.style.visibility = index === 0 ? 'hidden' : 'visible';
+      nextBtn.textContent = last ? 'Add your first client →' : 'Next →';
+    }
+
+    render();
+
+    var modal = openModal({ bodyNode: root, onClose: function () { finish(); } });
+    modal.panel.classList.add('modal__panel--tutorial');
+    if (modal.panel.parentNode) modal.panel.parentNode.classList.add('modal__backdrop--tutorial');
+    modal.panel.setAttribute('aria-labelledby', HEADING_ID);
+
+    var finished = false;
+    function finish() {
+      if (finished) return;
+      finished = true;
+      markTutorialSeen();
+      modal.close();
+    }
+
+    closeBtn.addEventListener('click', finish);
+    skipBtn.addEventListener('click', finish);
+    backBtn.addEventListener('click', function () { if (index > 0) { index--; render(); } });
+    nextBtn.addEventListener('click', function () {
+      if (index < TUTORIAL_STEPS.length - 1) { index++; render(); return; }
+      finish();
+      window.location.hash = '#clients';
+    });
+
+    return modal;
+  }
+
+  // Auto-open on first run for a clinician who has not dismissed it. Called from
+  // the shell once /me resolves (app.js). Never blocks; safe to call repeatedly.
+  function maybeAutoOpenTutorial() {
+    if (tutorialSeen()) return;
+    openTutorial();
+  }
+
+  // ---------------------------------------------------------------------------
   // Public surface
   // ---------------------------------------------------------------------------
   window.Reddably = {
@@ -979,6 +1209,9 @@
     openModal: openModal,
     confirmModal: confirmModal,
     formModal: formModal,
+    // onboarding walkthrough
+    openTutorial: openTutorial,
+    maybeAutoOpenTutorial: maybeAutoOpenTutorial,
     createPayerPicker: createPayerPicker,
     createDiagnosisPicker: createDiagnosisPicker,
     // formatting
