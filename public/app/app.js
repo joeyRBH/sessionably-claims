@@ -152,6 +152,16 @@
         window.location.assign(LOGIN_URL);
       });
     }
+
+    // "View tutorial" reopens the Quick Start walkthrough on demand (ignores the
+    // first-run "seen" flag). Lives in the account menu — the app's help surface.
+    var tutorialBtn = document.getElementById('view-tutorial-btn');
+    if (tutorialBtn) {
+      tutorialBtn.addEventListener('click', function () {
+        setExpanded(false);
+        if (window.Reddably && window.Reddably.openTutorial) window.Reddably.openTutorial();
+      });
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -198,6 +208,13 @@
       // endpoint 403s non-admins — UX, not the boundary).
       var refundsNav = document.getElementById('nav-refunds-item');
       if (refundsNav && role === 'practice_admin') refundsNav.hidden = false;
+
+      // First-run onboarding: open the Quick Start walkthrough once identity is
+      // known. views.js owns the localStorage "seen" gate and the modal itself,
+      // so this is a no-op after the clinician has dismissed it. Non-blocking.
+      if (window.Reddably && window.Reddably.maybeAutoOpenTutorial) {
+        window.Reddably.maybeAutoOpenTutorial();
+      }
     }).catch(function () {
       /* leave the existing placeholders in place on failure */
     });
