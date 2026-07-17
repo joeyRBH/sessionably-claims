@@ -865,14 +865,16 @@
     // neutral
     draft: 'neutral', scheduled: 'neutral', void: 'neutral',
     no_claim: 'neutral', completed: 'neutral',
-    // info
-    submitted: 'info', processing: 'info',
-    claim_submitted: 'info', claim_ready: 'info',
+    // info — in-flight only: the payer/clearinghouse has not committed yet.
+    processing: 'info', claim_ready: 'info',
     // warning
     info_requested: 'warning', appealed: 'warning',
     awaiting_payment: 'warning', awaiting_info: 'warning',
     // success
     paid: 'success', active: 'success',
+    // Externally committed: the claim left the practice and the clearinghouse
+    // took it. Distinct from `processing`/`claim_ready`, which are still ours.
+    submitted: 'success', claim_submitted: 'success',
     // danger
     denied: 'danger', inactive: 'danger',
   };
