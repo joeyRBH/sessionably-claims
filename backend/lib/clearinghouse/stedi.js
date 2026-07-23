@@ -165,6 +165,41 @@ function relationshipToSubscriberCode(rel) {
   }
 }
 
+// Claim-level diagnosis cardinality. Stedi's 837P schema takes 1-12 entries in
+// healthCareCodeInformation: the first is the principal (ABK), the rest are
+// secondary (ABF).
+const MAX_CLAIM_DIAGNOSES = 12;
+
+// Service-line diagnosis-pointer cardinality — deliberately NOT the same number.
+// A professional service line points at diagnoses through SV107, a composite with
+// four sub-elements, so a line carries at most 4 pointers no matter how many
+// diagnoses the claim declares. Stedi's schema says the same: one pointer for the
+// primary diagnosis, then up to three more.
+const MAX_LINE_DIAGNOSIS_POINTERS = 4;
+
+// Normalize stored ICD-10 codes for the wire: uppercase, strip everything but
+// A-Z/0-9 (so 'f32.9' and 'F32 9' both land on 'F329'), drop blanks, and
+// de-duplicate while preserving the clinician's stored order. Same rule as
+// normalize() in public/app/diagnosis-codes.js, restated here rather than
+// imported because the Lambda bundle ships backend/ only.
+function normalizeDiagnosisCodes(codes) {
+  const out = [];
+  const seen = new Set();
+  for (const raw of Array.isArray(codes) ? codes : []) {
+    const code = String(raw == null ? '' : raw).toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (!code || seen.has(code)) continue;
+    seen.add(code);
+    out.push(code);
+  }
+  return out;
+}
+
+// Trim a stored text field to a non-empty string, else ''. Used for the optional
+// fields that must be ABSENT (not '' / null) from the built body when unset.
+function cleanStr(v) {
+  return v == null ? '' : String(v).trim();
+}
+
 // Parse a finite number out of an adjudication field, else null.
 function num(v) {
   if (v == null || v === '') return null;
@@ -285,24 +320,41 @@ function buildSubmissionBody(ctx) {
 
   const { billing, rendering, billingNpi } = buildProviderLoops(ctx);
 
+  // Diagnoses (Box 21). Normalize what the session stored, then enforce the
+  // CLAIM-level limit. Over the limit we refuse to build rather than quietly
+  // truncating: silently dropping a diagnosis means the clinician never learns it
+  // failed to reach the payer. The service line has its own, smaller limit below.
+  const diagnoses = normalizeDiagnosisCodes(session.diagnosis_codes);
+  if (diagnoses.length > MAX_CLAIM_DIAGNOSES) {
+    throw new Error(
+      `Claim carries ${diagnoses.length} diagnoses but the 837P allows at most ` +
+      `${MAX_CLAIM_DIAGNOSES}. Reduce the diagnosis list on the session before submitting.`
+    );
+  }
+
   const claimInformation = {
     claimFilingCode: 'CI',           // commercial / OON default
     claimFrequencyCode: '1',         // original claim
-    placeOfServiceCode: '11',        // office (default; can be overridden per session)
+    // Place of service (Box 24B/32) — the session decides. 11 = office,
+    // 10 = telehealth in the patient's home, 02 = telehealth elsewhere.
+    // Falls back to office when the session carries nothing.
+    placeOfServiceCode: cleanStr(session.place_of_service) || '11',
     claimChargeAmount: claim.billed_amount != null ? String(claim.billed_amount) : undefined,
     patientControlNumber: patientControlNumber(claim), // <=20 chars; echoed in 277CA / 835 ERA for reconciliation
     benefitsAssignmentCertificationIndicator: 'N',
     releaseInformationCode: 'Y',
     signatureIndicator: 'Y',         // provider signature on file
     planParticipationCode: 'C',      // not assigned — OON: payer reimburses the client directly
-    // Diagnosis code — required by Stedi. Use the ICD-10 code from the session if present,
-    // otherwise fall back to a placeholder so the adapter doesn't hard-fail on missing data.
-    healthCareCodeInformation: [
-      {
-        diagnosisTypeCode: 'ABK', // principal diagnosis
-        diagnosisCode: session.diagnosis_codes?.[0] || 'F329', // F329 = unspecified depressive episode
-      },
-    ],
+    // Diagnoses — required by Stedi. The first stored code is the principal (ABK),
+    // every later one is secondary (ABF). When the session has no usable code at
+    // all, fall back to a placeholder so the adapter doesn't hard-fail on missing
+    // data (F329 = unspecified depressive episode).
+    healthCareCodeInformation: diagnoses.length
+      ? diagnoses.map((code, i) => ({
+        diagnosisTypeCode: i === 0 ? 'ABK' : 'ABF',
+        diagnosisCode: code,
+      }))
+      : [{ diagnosisTypeCode: 'ABK', diagnosisCode: 'F329' }],
   };
 
   // Only attach a service line when we have a CPT code; otherwise omit serviceLines.
@@ -310,6 +362,11 @@ function buildSubmissionBody(ctx) {
   // so there is no >20-char value to bound. If one is ever added, route it through
   // boundControlNumber() so it stays within the 20-char limit like the CLM01 above.
   if (session.cpt_code) {
+    const pointerCount = Math.min(
+      Math.max(diagnoses.length, 1),
+      MAX_LINE_DIAGNOSIS_POINTERS
+    );
+    const lineDiagnosisPointers = Array.from({ length: pointerCount }, (_, i) => String(i + 1));
     claimInformation.serviceLines = [
       {
         serviceDate: ymd(session.session_date) || undefined,
@@ -319,8 +376,12 @@ function buildSubmissionBody(ctx) {
           lineItemChargeAmount: claim.billed_amount != null ? String(claim.billed_amount) : undefined,
           measurementUnit: 'UN',     // units of service
           serviceUnitCount: '1',     // one unit per claim line (standard for OON psychotherapy CPT codes)
-          // Point this service line at the principal diagnosis declared above (index 1).
-          compositeDiagnosisCodePointers: { diagnosisCodePointers: ['1'] },
+          // Point this line at the first N diagnoses declared above, in stored
+          // order, 1-indexed. N is capped by the LINE limit (4), which is smaller
+          // than the claim limit (12) — emitting one pointer per claim diagnosis
+          // would overflow SV107. With no stored diagnoses this is ['1'], the
+          // placeholder principal.
+          compositeDiagnosisCodePointers: { diagnosisCodePointers: lineDiagnosisPointers },
         },
       },
     ];
@@ -391,6 +452,14 @@ function buildSubmissionBody(ctx) {
       },
     };
   }
+
+  // Group number (Box 11 / SBR03) — the employer/plan group id, on the PRIMARY
+  // subscriber loop in both shapes above. Deliberately NOT on
+  // otherSubscriberInformation: that loop describes the OTHER payer in a
+  // coordination-of-benefits claim, which is a different thing. Omitted entirely
+  // when the insurance record carries no group number.
+  const groupNumber = cleanStr(insurance.group_number);
+  if (groupNumber) subscriber.groupNumber = groupNumber;
 
   const body = {
     tradingPartnerServiceId,
