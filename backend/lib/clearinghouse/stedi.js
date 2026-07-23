@@ -165,6 +165,54 @@ function relationshipToSubscriberCode(rel) {
   }
 }
 
+// -----------------------------------------------------------------------------
+// usageIndicator (837P ISA15) — 'P' production, 'T' test. Top-level on the
+// professional-claims request body, per Stedi's test-claims workflow docs.
+//
+// This field is SAFETY-CRITICAL and asymmetric in both directions:
+//   * a 'T' that escapes to production means the payer never adjudicates the
+//     claim — the practice is silently never reimbursed, with no rejection to
+//     alert anyone.
+//   * a 'P' sent during testing means synthetic patient data is filed as a real
+//     claim against a real payer.
+//
+// So the default is 'P' and it is ALWAYS set explicitly — Stedi's docs do not
+// state what an omitted usageIndicator defaults to, and this is not a field to
+// leave to an implicit default. 'T' is only ever produced through the two
+// operator-controlled paths below; nothing a practice user can set reaches it.
+// -----------------------------------------------------------------------------
+const USAGE_PRODUCTION = 'P';
+const USAGE_TEST = 'T';
+
+function envFlag(name) {
+  return String(process.env[name] == null ? '' : process.env[name]).trim().toLowerCase() === 'true';
+}
+
+// STEDI_FORCE_TEST_SUBMISSIONS marks a NON-PRODUCTION deployment (staging, a
+// developer's machine). When set, every claim that environment files goes out as
+// 'T' regardless of what the request asked for — staging structurally cannot emit
+// a production claim.
+//
+// STEDI_ALLOW_TEST_SUBMISSIONS is the narrower gate that lets a single request
+// opt into 'T' (ctx.testSubmission, set only by the admin-guarded branch of the
+// submit handler). It is deliberately a separate variable and deliberately absent
+// from the production Lambda config: without it, a forged or mistaken
+// testSubmission flag still yields 'P'. Both gates must agree.
+function resolveUsageIndicator(ctx) {
+  if (envFlag('STEDI_FORCE_TEST_SUBMISSIONS')) return USAGE_TEST;
+  const requested = !!(ctx && ctx.testSubmission === true);
+  if (requested && envFlag('STEDI_ALLOW_TEST_SUBMISSIONS')) return USAGE_TEST;
+  return USAGE_PRODUCTION;
+}
+
+// Whether this deployment permits a per-request test submission at all. The
+// submit handler asks BEFORE submitting so a test request the environment
+// forbids is refused outright rather than silently filed as a production claim.
+// Adapters that can't file a test claim (mock, claim_md) simply don't export it.
+function testSubmissionsAllowed() {
+  return envFlag('STEDI_ALLOW_TEST_SUBMISSIONS') || envFlag('STEDI_FORCE_TEST_SUBMISSIONS');
+}
+
 // Claim-level diagnosis cardinality. Stedi's 837P schema takes 1-12 entries in
 // healthCareCodeInformation: the first is the principal (ABK), the rest are
 // secondary (ABF).
@@ -463,6 +511,9 @@ function buildSubmissionBody(ctx) {
 
   const body = {
     tradingPartnerServiceId,
+    // Test vs production. Always explicit — never left to Stedi's default. See
+    // resolveUsageIndicator: 'P' unless an operator-controlled gate says otherwise.
+    usageIndicator: resolveUsageIndicator(ctx),
     submitter: {
       organizationName: practice.name || undefined,
       contactInformation: {
@@ -1134,4 +1185,6 @@ module.exports = {
   parseSubmissionRejection,
   patientControlNumber,
   boundControlNumber,
+  resolveUsageIndicator,
+  testSubmissionsAllowed,
 };

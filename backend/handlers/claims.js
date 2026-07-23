@@ -738,6 +738,37 @@ async function submitClaim(practiceId, userId, id, body, event, authCtx) {
 
   const adapter = getClearinghouse();
 
+  // Test-mode submission (837P usageIndicator 'T'): Stedi processes the claim and
+  // returns a 277CA but never forwards it to the payer. Reaching it takes TWO
+  // independent gates, because both mistakes are expensive — a stray 'T' in
+  // production is a claim that is never reimbursed and never rejected, and a
+  // missing 'T' during testing files synthetic patient data as a real claim:
+  //
+  //   1. the deployment must opt in (STEDI_ALLOW_TEST_SUBMISSIONS — operator-set
+  //      Lambda config, absent in production), and
+  //   2. a practice admin must ask for it explicitly on this request.
+  //
+  // The env gate is the real guard; the role check just keeps a clinician from
+  // flipping it. Nothing here is inferred — a request that asks for a test
+  // submission the environment forbids is REFUSED, never quietly downgraded to a
+  // production claim.
+  if (body && body.test_submission === true) {
+    if (authCtx && authCtx.role !== 'practice_admin') {
+      return json(403, { error: 'Only a practice admin can send a test submission.' }, event);
+    }
+    if (typeof adapter.testSubmissionsAllowed !== 'function' || !adapter.testSubmissionsAllowed()) {
+      return json(403, {
+        error: 'Test submissions are not enabled in this environment.',
+      }, event);
+    }
+    ctx.testSubmission = true;
+    await audit(event, authCtx, {
+      action: 'claim.submit_test_mode',
+      resourceType: 'claim',
+      resourceId: id,
+    });
+  }
+
   let result;
   try {
     result = await adapter.submitClaim(ctx);
@@ -1071,7 +1102,9 @@ exports.handler = async (event) => {
       return json(401, { error: 'Unauthorized' }, event);
     }
     const userId = auth.user.sub;
-    const authCtx = { userId, practiceId };
+    // `role` rides along for the submit endpoint's test-submission guard; audit()
+    // reads named fields off authCtx, so the extra key is inert everywhere else.
+    const authCtx = { userId, practiceId, role: auth.user.role || null };
     const id = pathId(event);
     const action = subAction(event);
     const body = method === 'POST' || method === 'PATCH' ? parseBody(event) : null;

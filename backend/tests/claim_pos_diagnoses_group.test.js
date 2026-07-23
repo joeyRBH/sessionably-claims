@@ -61,6 +61,9 @@ assert.strictEqual(
   JSON.stringify(build({})),
   JSON.stringify({
     tradingPartnerServiceId: '60054',
+    // Added by feat/claim-usage-indicator: always present, 'P' unless an
+    // operator-set env gate opts this deployment/request into test mode.
+    usageIndicator: 'P',
     submitter: {
       organizationName: 'Test Practice',
       contactInformation: { name: 'Test Practice', email: 'billing@reddably.com' },
