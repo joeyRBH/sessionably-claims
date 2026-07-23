@@ -71,16 +71,43 @@
     return CREATE_ONLY_OMITTED.indexOf(f.name) === -1;
   });
 
+  // A patient is a dependent (not the policyholder) when the stored relationship
+  // is present and something other than 'self'. The 837P builder puts such a
+  // patient in the dependent loop (2000C) and the policyholder in the subscriber
+  // loop (2000B); these helpers surface that distinction in the UI.
+  function isDependentRel(rel) {
+    if (rel == null) return false;
+    var r = String(rel).trim().toLowerCase();
+    return r !== '' && r !== 'self';
+  }
+
+  function relationshipLabel(rel) {
+    switch (String(rel || '').trim().toLowerCase()) {
+      case 'child':  return 'child / dependent';
+      case 'spouse': return 'spouse';
+      case 'other':  return 'other';
+      case 'self':   return 'self';
+      default:       return rel;
+    }
+  }
+
   var INSURANCE_FIELDS = [
     { name: 'payer_id',                label: 'Payer ID',               type: 'payer',
       payerNameField: 'carrier_name',
       placeholder: 'Search payer name or enter a Payer ID…' },
     { name: 'member_id',               label: 'Member ID',              type: 'text' },
     { name: 'group_number',            label: 'Group number',           type: 'text' },
-    { name: 'subscriber_relationship', label: 'Subscriber relationship', type: 'select',
-      options: ['self', 'spouse', 'child', 'other'] },
-    { name: 'subscriber_name',         label: 'Subscriber name',        type: 'text' },
-    { name: 'subscriber_dob',          label: 'Subscriber DOB',         type: 'date' },
+    { name: 'subscriber_relationship', label: "Patient's relationship to policyholder", type: 'select',
+      options: [
+        { value: 'self',   label: 'Patient is the policyholder' },
+        { value: 'child',  label: 'Patient is a child / dependent' },
+        { value: 'spouse', label: 'Patient is the spouse' },
+        { value: 'other',  label: 'Other' },
+      ] },
+    { name: 'subscriber_name',         label: 'Policyholder name',        type: 'text',
+      showIf: function (v) { return isDependentRel(v.subscriber_relationship); } },
+    { name: 'subscriber_dob',          label: 'Policyholder date of birth', type: 'date',
+      showIf: function (v) { return isDependentRel(v.subscriber_relationship); } },
     { name: 'oon_deductible_total',    label: 'OON deductible total',   type: 'number' },
     { name: 'oon_deductible_met',      label: 'OON deductible met',     type: 'number' },
     { name: 'oon_reimbursement_rate',  label: 'OON reimbursement rate (%)', type: 'number' },
@@ -407,11 +434,19 @@
 
       var insuranceRows;
       if (insurance && insurance.length) {
-        insuranceRows = insurance.map(function (r) {
+        insuranceRows = [];
+        insurance.forEach(function (r) {
           var bits = [r.payer_id ? 'Payer ' + r.payer_id : 'Insurance'];
           if (r.member_id) bits.push('Member ' + r.member_id);
           if (r.oon_reimbursement_rate != null) bits.push(r.oon_reimbursement_rate + '% OON');
-          return row(r.is_primary ? 'Primary' : 'Secondary', bits.join('  ·  '));
+          insuranceRows.push(row(r.is_primary ? 'Primary' : 'Secondary', bits.join('  ·  ')));
+          if (isDependentRel(r.subscriber_relationship)) {
+            var holder = [r.subscriber_name || '—'];
+            if (r.subscriber_dob) holder.push('· DOB ' + R.fmtDate(r.subscriber_dob));
+            insuranceRows.push(row(
+              'Policyholder (patient is ' + relationshipLabel(r.subscriber_relationship) + ')',
+              holder.join(' ')));
+          }
         });
       } else {
         insuranceRows = [row('Insurance', 'None on file')];
@@ -514,11 +549,25 @@
       if (client.phone) meta.push(client.phone);
       if (client.date_of_birth) meta.push('DOB ' + R.fmtDate(client.date_of_birth));
 
+      // Primary insurance = the record flagged is_primary, else the first on file.
+      var records = insurance || [];
+      var primary = null;
+      for (var i = 0; i < records.length; i++) {
+        if (records[i].is_primary) { primary = records[i]; break; }
+      }
+      if (!primary && records.length) primary = records[0];
+      var dependentPrimary = primary && isDependentRel(primary.subscriber_relationship);
+      if (dependentPrimary) {
+        meta.push('Policyholder: ' + (primary.subscriber_name || '—')
+          + ' (patient is ' + relationshipLabel(primary.subscriber_relationship) + ')');
+      }
+
       return h('div', { class: 'card' }, [
         h('div', { class: 'card__header' }, [
           h('div', { style: 'display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap' }, [
             h('h1', { class: 'page-header__title' }, clientName(client)),
             R.statusBadge(client.status),
+            dependentPrimary ? h('span', { class: 'badge badge--neutral' }, 'Dependent') : null,
           ]),
           h('div', { class: 'page-header__actions' }, [
             h('button', { class: 'btn btn--ghost', type: 'button',
@@ -871,6 +920,23 @@
         return h('tr', null, h('td', { colspan: '5', style: 'padding-top:0' }, panel));
       }
 
+      // Sub-row that spells out the policyholder when the patient is a dependent
+      // on someone else's plan — the claim is billed under this subscriber, and
+      // the patient rides along in the 837P dependent loop. Null when self.
+      function policyholderRow(record) {
+        if (!isDependentRel(record.subscriber_relationship)) return null;
+        var parts = ['Billed under policyholder: ' + (record.subscriber_name || '—')];
+        parts.push('Patient is ' + relationshipLabel(record.subscriber_relationship)
+          + ' of the policyholder');
+        if (record.subscriber_dob) parts.push('DOB ' + R.fmtDate(record.subscriber_dob));
+        var box = h('div', {
+          style: 'padding:var(--space-3);border-radius:var(--radius-2);'
+            + 'background:var(--color-surface-sunken);'
+            + 'color:var(--color-text-muted);font-size:var(--font-size-2)',
+        }, parts.join('  ·  '));
+        return h('tr', null, h('td', { colspan: '5', style: 'padding-top:0' }, box));
+      }
+
       // Status badge shared by the live modal and the persistent summary card.
       // A payer rejection (AAA error) is not the same as inactive coverage: the
       // payer refused the request, so the status is unknown, not "Inactive".
@@ -1029,6 +1095,8 @@
               : '—'),
             insuranceRowActions(r),
           ]));
+          var holder = policyholderRow(r);
+          if (holder) rows.push(holder);
           var summary = vobSummaryRow(r);
           if (summary) rows.push(summary);
           var disc = discrepancyRow(r);

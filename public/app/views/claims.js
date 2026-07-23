@@ -47,6 +47,25 @@
     return c.preferred_name || ((c.first_name || '') + ' ' + (c.last_name || '')).trim();
   }
 
+  // The patient is a dependent (not the policyholder) when the stored insurance
+  // relationship is present and not 'self'. In that case the 837P bills under the
+  // policyholder (subscriber loop 2000B) with the patient in the dependent loop.
+  function isDependentRel(rel) {
+    if (rel == null) return false;
+    var r = String(rel).trim().toLowerCase();
+    return r !== '' && r !== 'self';
+  }
+
+  function relationshipLabel(rel) {
+    switch (String(rel || '').trim().toLowerCase()) {
+      case 'child':  return 'child / dependent';
+      case 'spouse': return 'spouse';
+      case 'other':  return 'other';
+      case 'self':   return 'self';
+      default:       return rel;
+    }
+  }
+
   function claimLabel(claim) {
     return claim.claim_number || claim.control_number ||
       ('#' + String(claim.id).slice(0, 8));
@@ -96,14 +115,15 @@
           submitLabel: 'Next',
         }).then(function (step1) {
           if (!step1) return;
-          chooseSession(step1.client_id);
+          var chosen = clients.filter(function (c) { return c.id === step1.client_id; })[0];
+          chooseSession(step1.client_id, chosen ? clientName(chosen) : '');
         });
       }).catch(function (err) {
         R.toast(err.message, 'error');
       });
     }
 
-    function chooseSession(clientId) {
+    function chooseSession(clientId, patientName) {
       api.sessions.list({ client_id: clientId }).then(function (res) {
         var sessions = (res && res.sessions) || [];
         if (!sessions.length) {
@@ -119,7 +139,9 @@
         });
 
         R.formModal({
-          title: 'New claim — choose session',
+          title: patientName
+            ? 'New claim for ' + patientName + ' — choose session'
+            : 'New claim — choose session',
           fields: [
             { name: 'session_id', label: 'Session', type: 'select',
               required: true, options: sessionOptions },
@@ -606,7 +628,7 @@
       }, name);
 
       var items = [
-        detailItem('Name', nameLink),
+        detailItem('Patient', nameLink),
         detailItem('Date of birth', p.date_of_birth ? R.fmtDate(p.date_of_birth) : '—'),
         detailItem('Gender', p.gender ? humanize(p.gender) : '—'),
       ];
@@ -619,6 +641,31 @@
         style: 'display:grid;grid-template-columns:repeat(auto-fit,minmax(9rem,1fr));' +
           'gap:var(--space-4)',
       }, items);
+
+      // When the patient is a dependent, the claim bills under someone else (the
+      // policyholder / subscriber). Call that out distinctly so staff read the
+      // patient and the subscriber as two different people.
+      var policyholder = (ins && isDependentRel(ins.subscriber_relationship))
+        ? h('div', {
+            style: 'padding:var(--space-4);border-radius:var(--radius-2);' +
+              'background:var(--color-surface-sunken);' +
+              'display:flex;flex-direction:column;gap:var(--space-2)',
+          }, [
+            h('span', {
+              style: 'font-size:var(--font-size-2);text-transform:uppercase;' +
+                'letter-spacing:0.04em;color:var(--color-text-muted)',
+            }, 'Billed under policyholder (subscriber)'),
+            h('div', {
+              style: 'display:grid;grid-template-columns:repeat(auto-fit,minmax(9rem,1fr));' +
+                'gap:var(--space-4)',
+            }, [
+              detailItem('Policyholder', ins.subscriber_name || '—'),
+              detailItem('Patient is', relationshipLabel(ins.subscriber_relationship)),
+              detailItem('Policyholder DOB',
+                ins.subscriber_dob ? R.fmtDate(ins.subscriber_dob) : '—'),
+            ]),
+          ])
+        : null;
 
       // DOB is required to submit (the 837 subscriber loop needs it), so call out
       // its absence with a blocking warning that points to the fix.
@@ -642,6 +689,7 @@
         ]),
         h('div', { style: 'display:flex;flex-direction:column;gap:var(--space-4)' }, [
           grid,
+          policyholder,
           warning,
         ]),
       ]);
