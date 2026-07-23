@@ -54,6 +54,9 @@ const fullRow = Object.assign({}, baseClaimRow, {
   ins_member_id: 'M-123',
   ins_carrier_name: 'Aetna',
   ins_payer_id: '60054',
+  ins_subscriber_relationship: 'child',
+  ins_subscriber_name: 'Jamie Gard',
+  ins_subscriber_dob: '1985-03-10',
 });
 
 const full = shapeClaimDetail(fullRow);
@@ -86,6 +89,9 @@ assert.deepStrictEqual(full.insurance, {
   member_id: 'M-123',
   carrier_name: 'Aetna',
   payer_id: '60054',
+  subscriber_relationship: 'child',
+  subscriber_name: 'Jamie Gard',
+  subscriber_dob: '1985-03-10',
 }, 'insurance block populated when insurance_record_id is set');
 
 // --- 2. Row with no client demographics → patient keys all null ---------------

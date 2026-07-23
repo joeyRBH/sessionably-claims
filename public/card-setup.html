@@ -413,13 +413,14 @@
           </div>
 
           <div class="field">
-            <label for="ins-relationship">Who is the policyholder?</label>
+            <label id="ins-relationship-label" for="ins-relationship">Who is the main policyholder on this insurance plan?</label>
             <select id="ins-relationship" class="input">
-              <option value="self">Myself</option>
-              <option value="spouse">Spouse</option>
-              <option value="child">Parent</option>
-              <option value="other">Other</option>
+              <option value="self">The patient is the policyholder</option>
+              <option value="child">The patient's parent or guardian</option>
+              <option value="spouse">The patient's spouse</option>
+              <option value="other">Someone else</option>
             </select>
+            <p id="ins-relationship-help" class="field-help">This tells the practice whose insurance the claim is billed under. Choose "parent or guardian" if the plan belongs to the patient's parent.</p>
           </div>
 
           <!-- Shown only when the policyholder is not the patient. -->
@@ -586,6 +587,19 @@
         if (dobLabel) dobLabel.textContent = capitalize(intake.possessive()) + ' date of birth';
         var midLabel = $('ins-member-label');
         if (midLabel) midLabel.textContent = capitalize(intake.possessive()) + ' member ID';
+        var relSel = $('ins-relationship');
+        if (relSel && relSel.options.length >= 4) {
+          if (intake.onBehalf()) {
+            relSel.options[0].textContent = capitalize(intake.subject()) + ' is the policyholder';
+            relSel.options[1].textContent = capitalize(intake.possessive()) + ' parent or guardian';
+            relSel.options[2].textContent = capitalize(intake.possessive()) + ' spouse';
+          } else {
+            relSel.options[0].textContent = 'I’m the policyholder';
+            relSel.options[1].textContent = 'My parent or guardian';
+            relSel.options[2].textContent = 'My spouse';
+          }
+          relSel.options[3].textContent = 'Someone else';
+        }
         syncMemberHolderHint();
       }
 

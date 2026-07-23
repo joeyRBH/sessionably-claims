@@ -180,6 +180,9 @@ function shapeClaimDetail(r) {
         member_id: r.ins_member_id || null,
         carrier_name: r.ins_carrier_name || null,
         payer_id: r.ins_payer_id || null,
+        subscriber_relationship: r.ins_subscriber_relationship || null,
+        subscriber_name: r.ins_subscriber_name || null,
+        subscriber_dob: r.ins_subscriber_dob || null,
       }
     : null;
   return base;
@@ -255,7 +258,10 @@ async function loadClaimDetail(practiceId, id) {
             cl.postal_code    as client_postal_code,
             ir.member_id      as ins_member_id,
             ir.carrier_name   as ins_carrier_name,
-            ir.payer_id       as ins_payer_id
+            ir.payer_id       as ins_payer_id,
+            ir.subscriber_relationship as ins_subscriber_relationship,
+            ir.subscriber_name         as ins_subscriber_name,
+            ir.subscriber_dob          as ins_subscriber_dob
        from claims c
        join clients cl on cl.id = c.client_id
        left join insurance_records ir on ir.id = c.insurance_record_id
