@@ -43,7 +43,7 @@
       --sage: #486141;
 
       /* Stone action surfaces, kept for the product mockup's neutral
-         workflow chrome (active nav, deadline pills) so the preview keeps
+         workflow chrome (active nav, readiness pills) so the preview keeps
          matching the real app, which uses stone/ink there. */
       --stone-soft: #E8E4DB;
       --stone-wash: #F4F2EC;
@@ -473,6 +473,8 @@
       margin-bottom: 16px;
     }
 
+    /* Rows of the mockup's "Draft Claims" panel. The class name predates the
+       panel's content; kept as-is to avoid churning selectors in a copy change. */
     .deadline {
       display: grid;
       grid-template-columns: 1fr auto;
@@ -896,7 +898,7 @@
               <circle cx="12" cy="7" r="3" stroke="currentColor" stroke-width="1.8"/>
               <path d="M5 21a7 7 0 0 1 14 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
             </svg>
-            <span>Our staff handles everything</span>
+            <span>Review and submit in one place</span>
           </div>
         </div>
 
@@ -927,11 +929,11 @@
 
               <div class="side-item active">⌂ Dashboard</div>
               <div class="side-item">▣ Claims</div>
-              <div class="side-item">◷ Deadlines</div>
-              <div class="side-item">◇ Reimbursements</div>
-              <div class="side-item">♙ Patients</div>
+              <div class="side-item">♙ Clients</div>
+              <div class="side-item">◷ Calendar</div>
+              <div class="side-item">◇ Clinicians</div>
               <div class="side-item">▥ Reports</div>
-              <div class="side-item">◎ Activity</div>
+              <div class="side-item">◎ Audit log</div>
             </aside>
 
             <section class="content">
@@ -960,18 +962,18 @@
 
               <div class="panels">
                 <div class="panel">
-                  <h3>Upcoming Deadlines</h3>
+                  <h3>Draft Claims</h3>
                   <div class="deadline">
-                    <div><strong>Aetna</strong><small>Document upload</small></div>
-                    <span class="tag">5 days</span>
+                    <div><strong>Aetna</strong><small>3 sessions</small></div>
+                    <span class="tag">Ready to review</span>
                   </div>
                   <div class="deadline">
-                    <div><strong>BCBS of Illinois</strong><small>Appeal window</small></div>
-                    <span class="tag">11 days</span>
+                    <div><strong>BCBS IL</strong><small>Member ID</small></div>
+                    <span class="tag">Review warning</span>
                   </div>
                   <div class="deadline">
-                    <div><strong>Cigna</strong><small>Claim filing</small></div>
-                    <span class="tag">17 days</span>
+                    <div><strong>Cigna</strong><small>1 session</small></div>
+                    <span class="tag">Ready to review</span>
                   </div>
                 </div>
 
@@ -1002,20 +1004,21 @@
           </div>
           <div>
             <h3>Submit with confidence</h3>
-            <p>We submit accurate claims the first time to maximize reimbursement clarity.</p>
+            <p>Every draft claim is checked against payer requirements before it goes out.</p>
           </div>
         </article>
 
         <article class="strip-item">
           <div class="strip-icon">
             <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <rect x="4" y="5" width="16" height="15" rx="2" stroke="currentColor" stroke-width="1.7"/>
-              <path d="M8 3v4M16 3v4M4 10h16" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+              <rect x="4" y="4" width="16" height="16" rx="2" stroke="currentColor" stroke-width="1.7"/>
+              <path d="M8 9.5l2 2 4-4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M8 16h8" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
             </svg>
           </div>
           <div>
-            <h3>Never miss a deadline</h3>
-            <p>We track payer timelines and manage follow-ups so nothing falls through.</p>
+            <h3>See what&rsquo;s ready</h3>
+            <p>Draft claims carry a readiness check that names what is still missing.</p>
           </div>
         </article>
 
@@ -1041,8 +1044,8 @@
             </svg>
           </div>
           <div>
-            <h3>No lift for clinicians</h3>
-            <p>Our team handles the work so clinicians stay focused on patient care.</p>
+            <h3>Less claim administration</h3>
+            <p>Keep session details, claim review, and submission together.</p>
           </div>
         </article>
       </div>
