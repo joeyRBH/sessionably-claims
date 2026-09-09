@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Sessionably Claims — Insurance reimbursements, handled</title>
-  <meta name="description" content="Sessionably Claims handles out-of-network insurance reimbursements for behavioral-health practices—from solo clinicians to multi-location groups." />
+  <title>Reddably — Insurance reimbursements, handled</title>
+  <meta name="description" content="Reddably handles out-of-network insurance reimbursements for behavioral-health practices—from solo clinicians to multi-location groups." />
 
   <link rel="icon" href='data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 70"%3E%3Ccircle cx="32" cy="35" r="22" fill="none" stroke="%23486141" stroke-width="6"/%3E%3Ccircle cx="68" cy="35" r="22" fill="none" stroke="%238E6244" stroke-width="6"/%3E%3C/svg%3E'>
 
@@ -18,17 +18,35 @@
       --paper-raised: #FFFFFF;
       --paper-sunken: #F4F2EC;
 
-      /* Primary action — dark stone. */
-      --primary: #1F1E1A;
-      --primary-hover: #34322A;
-      --primary-soft: #E8E4DB;
-      --primary-wash: #F4F2EC;
+      /* -----------------------------------------------------------------
+         Shared family palette. Reddably and Sessionably draw from the SAME
+         approved values (sessionably.com resolves to exactly these hexes);
+         only the emphasis differs. Sessionably leads with the green ramp
+         and supports with the warm one — Reddably inverts that balance.
+         No new hue is introduced here.
 
-      /* Earned accent — resolved/successful claim state only. */
+         There is no brand value named "tangerine" or "evergreen" in this
+         repo's tokens or on the live Sessionably page. The two approved
+         chromatic families are clay (warm terracotta, --clay-* in
+         public/app-foundation/styles/tokens.css) and sage (green). Clay is
+         the warm lead below; sage is the supporting green.
+         ----------------------------------------------------------------- */
+
+      /* Warm ramp (clay / terracotta) — Reddably's lead. Carries brand
+         emphasis and calls to action. Never marks claim state. */
+      --primary: #8E6244;
+      --primary-hover: #6E4B34;
+      --primary-wash: #FAF1EA;
+
+      /* Green ramp (sage) — supporting. Still the only colour that marks a
+         resolved / received amount. */
       --sage: #486141;
 
-      /* Editorial warmth — family-brand moments and the second ring. */
-      --clay: #8E6244;
+      /* Stone action surfaces, kept for the product mockup's neutral
+         workflow chrome (active nav, deadline pills) so the preview keeps
+         matching the real app, which uses stone/ink there. */
+      --stone-soft: #E8E4DB;
+      --stone-wash: #F4F2EC;
 
       /* Neutral track fills for in-flight and pending amounts. */
       --track-mid: #B5AC97;
@@ -77,6 +95,19 @@
     a {
       color: inherit;
       text-decoration: none;
+    }
+
+    /* Explicit keyboard focus ring, mirroring the family pattern already used on
+       the auth surfaces (2px solid at 2px offset — see public/login.css and
+       --focus-ring-width / --focus-ring-offset in tokens.css). Pinned to ink
+       rather than left to the UA default: the lead CTA is now a mid-tone clay
+       fill, and ink clears 3:1 against every surface on this page (15.98:1 on
+       the page ground, 16.68:1 on white, 3.16:1 on the clay fill itself).
+       Invisible until a keyboard focus. */
+    :focus-visible {
+      outline: 2px solid var(--ink);
+      outline-offset: 2px;
+      border-radius: 4px;
     }
 
     .container {
@@ -239,7 +270,7 @@
     }
 
     h1 em {
-      color: var(--clay);
+      color: var(--primary);
       font-style: italic;
       font-weight: 600;
     }
@@ -361,8 +392,8 @@
     }
 
     .side-item.active {
-      background: var(--primary-soft);
-      color: var(--primary);
+      background: var(--stone-soft);
+      color: var(--ink);
       font-weight: 700;
     }
 
@@ -462,8 +493,8 @@
     }
 
     .tag {
-      color: var(--primary);
-      background: var(--primary-wash);
+      color: var(--ink);
+      background: var(--stone-wash);
       border-radius: 999px;
       padding: 3px 8px;
       font-size: 11px;
@@ -545,10 +576,10 @@
       width: 56px;
       height: 56px;
       border-radius: 999px;
-      background: var(--primary-soft);
+      background: var(--primary-wash);
       display: grid;
       place-items: center;
-      color: var(--ink-secondary);
+      color: var(--primary-hover);
     }
 
     .strip-icon svg {
@@ -587,7 +618,7 @@
     .definition strong {
       font-family: var(--serif);
       font-size: 28px;
-      color: var(--clay);
+      color: var(--primary);
       font-weight: 500;
     }
 
@@ -611,7 +642,7 @@
     }
 
     .family-copy strong {
-      color: var(--clay);
+      color: var(--primary);
     }
 
     footer {
@@ -626,6 +657,35 @@
       justify-content: space-between;
       gap: 24px;
       align-items: center;
+    }
+
+    .footer-brand {
+      display: grid;
+      gap: 4px;
+      min-width: 0;
+    }
+
+    .footer-wordmark {
+      font-family: var(--serif);
+      font-size: 24px;
+      font-weight: 600;
+      letter-spacing: -0.045em;
+      line-height: 1.1;
+      color: var(--ink);
+    }
+
+    /* Quiet endorsement, directly beneath the wordmark: it states the
+       relationship without competing with the name above it or the CTA. */
+    .footer-endorsement {
+      font-size: 12px;
+      letter-spacing: .04em;
+      color: var(--ink-muted);
+      line-height: 1.3;
+    }
+
+    .footer-legal {
+      margin-top: 6px;
+      color: var(--ink-muted);
     }
 
     .footer-links {
@@ -768,6 +828,10 @@
         flex-direction: column;
         align-items: flex-start;
       }
+
+      .footer-wordmark {
+        font-size: 21px;
+      }
     }
   </style>
 </head>
@@ -775,20 +839,21 @@
 <body>
   <header>
     <div class="container nav">
-      <a class="brand" href="/" aria-label="Sessionably Claims home">
+      <a class="brand" href="/" aria-label="Reddably home">
         <span class="logo-box" aria-hidden="true">
           <svg viewBox="0 0 100 70" xmlns="http://www.w3.org/2000/svg">
             <circle cx="32" cy="35" r="24" fill="none" stroke="#486141" stroke-width="6"/>
             <circle cx="68" cy="35" r="24" fill="none" stroke="#8E6244" stroke-width="6"/>
           </svg>
         </span>
-        <span class="wordmark">Sessionably Claims</span>
+        <span class="wordmark">Reddably</span>
       </a>
 
       <nav class="nav-links" aria-label="Primary navigation">
         <a href="#product">Product</a>
         <a href="#how">How It Works</a>
         <a href="#pricing">Pricing</a>
+        <a href="#about">About</a>
         <a href="#resources">Resources</a>
       </nav>
 
@@ -805,7 +870,7 @@
         <h1>Insurance reimbursements, <em>handled</em>—so you can focus on your patients.</h1>
 
         <p class="hero-copy">
-          Sessionably Claims handles out-of-network insurance reimbursements for behavioral-health practices—from solo clinicians to multi-location groups.
+          Reddably handles out-of-network insurance reimbursements for behavioral-health practices—from solo clinicians to multi-location groups.
         </p>
 
         <div class="proof-row">
@@ -843,7 +908,7 @@
         <div class="micro-note">No setup fees. No monthly fees. Ever.</div>
       </div>
 
-      <div class="visual" aria-label="Sessionably Claims product preview">
+      <div class="visual" aria-label="Reddably product preview">
         <svg class="ring-bg" viewBox="0 0 520 520" fill="none" aria-hidden="true">
           <circle cx="210" cy="210" r="155" stroke="#486141" stroke-width="24"/>
           <circle cx="330" cy="300" r="155" stroke="#8E6244" stroke-width="24"/>
@@ -857,7 +922,7 @@
                   <circle cx="32" cy="35" r="24" fill="none" stroke="#486141" stroke-width="7"/>
                   <circle cx="68" cy="35" r="24" fill="none" stroke="#8E6244" stroke-width="7"/>
                 </svg>
-                Sessionably Claims
+                Reddably
               </div>
 
               <div class="side-item active">⌂ Dashboard</div>
@@ -983,14 +1048,33 @@
       </div>
     </section>
 
+    <section class="etymology-band" id="about">
+      <div class="container etymology-grid">
+        <div class="definition">
+          <strong>Reddably</strong>
+          <span>[ red·da·bly ]</span>
+          <p>from the Latin reddere, &ldquo;to give back / to repay.&rdquo;</p>
+        </div>
+
+        <div class="family-copy">
+          Reddably is a sibling product to <strong>Sessionably</strong>.
+          Two independent products, built to serve behavioral-health practices—each useful on its own, designed to work well together.
+        </div>
+      </div>
+    </section>
   </main>
 
   <footer id="resources">
     <div class="container footer-inner">
-      <div>© 2026 Sessionably Claims. Built for behavioral-health reimbursement workflows.</div>
+      <div class="footer-brand">
+        <span class="footer-wordmark">Reddably</span>
+        <span class="footer-endorsement">A Sessionably brand</span>
+        <span class="footer-legal">© 2026 Reddably. Built for behavioral-health reimbursement workflows.</span>
+      </div>
       <div class="footer-links">
         <a href="#product">Product</a>
         <a href="#how">How It Works</a>
+        <a href="#about">About</a>
       </div>
     </div>
   </footer>

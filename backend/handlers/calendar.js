@@ -194,10 +194,10 @@ function renderCalendar(sessions) {
   const head = [
     'BEGIN:VCALENDAR',
     'VERSION:2.0',
-    `PRODID:-//Sessionably Claims//Calendar Feed//EN`,
+    `PRODID:-//Reddably//Calendar Feed//EN`,
     'CALSCALE:GREGORIAN',
     'METHOD:PUBLISH',
-    'X-WR-CALNAME:Sessionably Claims Sessions',
+    'X-WR-CALNAME:Reddably Sessions',
   ];
   const body = (Array.isArray(sessions) ? sessions : []).map(renderEvent);
   const tail = ['END:VCALENDAR'];

@@ -156,18 +156,21 @@ function humanizeRole(role) {
 // { subject, text, html }.
 function buildInvitationEmail(opts) {
   const o = opts || {};
-  const practiceName = String(o.practiceName || '').trim() || 'a Sessionably Claims practice';
+  // Fallback when the caller has no practice name. Deliberately generic: the
+  // subject already ends "... on Reddably", so naming the product here too
+  // reads as a stutter ("join a Reddably practice on Reddably").
+  const practiceName = String(o.practiceName || '').trim() || 'a practice';
   const inviteUrl = String(o.inviteUrl || '').trim();
   const roleLabel = humanizeRole(o.role);
   const invitedName = o.invitedName ? String(o.invitedName).trim() : '';
   const greeting = invitedName ? `Hi ${invitedName},` : 'Hi,';
   const asRole = roleLabel ? ` as a ${roleLabel}` : '';
 
-  const subject = `You're invited to join ${practiceName} on Sessionably Claims`;
+  const subject = `You're invited to join ${practiceName} on Reddably`;
   const lines = [
     greeting,
     '',
-    `You've been invited to join ${practiceName} on Sessionably Claims${asRole}.`,
+    `You've been invited to join ${practiceName} on Reddably${asRole}.`,
     '',
     'Accept your invitation and set a password:',
     inviteUrl,
@@ -179,7 +182,7 @@ function buildInvitationEmail(opts) {
   const html =
     `<p>${escapeHtml(greeting)}</p>` +
     `<p>You've been invited to join <strong>${escapeHtml(practiceName)}</strong> ` +
-    `on Sessionably Claims${asRole ? ' as a ' + escapeHtml(roleLabel) : ''}.</p>` +
+    `on Reddably${asRole ? ' as a ' + escapeHtml(roleLabel) : ''}.</p>` +
     `<p><a href="${escapeHtml(inviteUrl)}">Accept your invitation and set a password</a></p>` +
     `<p>This link is single-use and expires soon. If you weren't expecting this, ` +
     `you can safely ignore this email.</p>`;

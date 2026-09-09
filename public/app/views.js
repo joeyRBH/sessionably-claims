@@ -1087,7 +1087,7 @@
       badge: '03',
       eyebrow: 'We’ll keep watch',
       title: 'Know when they’re ready',
-      body: 'Sessionably Claims notifies you as soon as your client completes their '
+      body: 'Reddably notifies you as soon as your client completes their '
         + 'information. No chasing forms or checking inboxes.',
       callout: 'You’ll know exactly when you can move forward.',
       demo: function () {
@@ -1109,7 +1109,7 @@
       badge: '04',
       eyebrow: 'Keep the record current',
       title: 'Add sessions to their chart',
-      body: 'Record completed sessions as you go. Sessionably Claims keeps the '
+      body: 'Record completed sessions as you go. Reddably keeps the '
         + 'reimbursement workflow organized around the client.',
       callout: 'A few seconds now saves administrative time later.',
       demo: function () {
@@ -1172,7 +1172,7 @@
     var closeBtn = h('button',
       { class: 'tutorial__close', type: 'button', 'aria-label': 'Close tutorial' }, '×');
     var headEl = h('div', { class: 'tutorial__head' }, [
-      h('p', { class: 'tutorial__brand' }, 'Sessionably Claims · Quick Start'),
+      h('p', { class: 'tutorial__brand' }, 'Reddably · Quick Start'),
       h('div', { class: 'tutorial__headmeta' }, [counterEl, closeBtn]),
     ]);
 
