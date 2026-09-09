@@ -327,6 +327,19 @@
       color: var(--ink-muted);
     }
 
+    .pricing-note__link {
+      color: var(--primary);
+      font-weight: 600;
+      border-bottom: 1px solid var(--primary);
+      white-space: nowrap;
+      transition: color 180ms var(--ease), border-color 180ms var(--ease);
+    }
+
+    .pricing-note__link:hover {
+      color: var(--primary-hover);
+      border-color: var(--primary-hover);
+    }
+
     /* Plain-language pricing terms, sat directly under the fee headline so the
        basis and the charge trigger are stated where the fee is first mentioned. */
     .pricing-note {
@@ -611,6 +624,86 @@
       font-size: 14px;
     }
 
+    .pricing {
+      padding: 56px 0;
+      border-top: 1px solid var(--border);
+    }
+
+    .pricing h2 {
+      font-size: 34px;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    .pricing-lede {
+      margin: 0 0 28px;
+      color: var(--ink-muted);
+      font-size: 15px;
+    }
+
+    .pricing-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+    }
+
+    .price-card {
+      background: var(--paper-raised);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 24px;
+      box-shadow: var(--shadow-1);
+    }
+
+    .price-figure {
+      font-family: var(--serif);
+      font-size: 40px;
+      line-height: 1;
+      letter-spacing: -0.04em;
+      color: var(--ink);
+    }
+
+    .price-figure span {
+      font-size: 18px;
+      color: var(--ink-muted);
+      letter-spacing: 0;
+    }
+
+    .price-label {
+      margin-top: 8px;
+      font-size: 12px;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      color: var(--primary);
+      font-weight: 600;
+    }
+
+    .price-card p {
+      margin: 12px 0 0;
+      font-size: 14px;
+      line-height: 1.55;
+      color: var(--ink-muted);
+    }
+
+    .pricing-terms {
+      margin: 20px 0 0;
+      padding: 18px 20px;
+      background: var(--paper-sunken);
+      border-radius: 10px;
+      font-size: 13.5px;
+      line-height: 1.6;
+      color: var(--ink-secondary);
+      max-width: 860px;
+    }
+
+    .pricing-terms strong {
+      color: var(--ink);
+    }
+
+    .pricing-terms + .pricing-terms {
+      margin-top: 12px;
+    }
+
     .etymology-band {
       padding: 34px 0;
     }
@@ -733,6 +826,10 @@
       }
 
       .etymology-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .pricing-grid {
         grid-template-columns: 1fr;
       }
 
@@ -920,9 +1017,9 @@
         <div class="micro-note">No setup fees.</div>
 
         <p class="pricing-note">
-          The 5% claim submission fee is calculated on the amount billed to the payer and
-          charged to the client&rsquo;s saved card when the claim is submitted — not on what the
-          payer reimburses. Optional benefit verification is available for $25/month.
+          5% per submitted claim, charged to the client&rsquo;s saved payment method and
+          calculated on the amount billed to the insurer — not the reimbursement received.
+          <a class="pricing-note__link" href="#pricing">See pricing</a>
         </p>
       </div>
 
@@ -1067,6 +1164,52 @@
       </div>
     </section>
 
+    <section class="pricing" id="pricing">
+      <div class="container">
+        <h2>Pricing</h2>
+        <p class="pricing-lede">No setup fees or required monthly subscription.</p>
+
+        <div class="pricing-grid">
+          <div class="price-card">
+            <div class="price-figure">$0</div>
+            <div class="price-label">To start</div>
+            <p>Create a practice, add clients and prepare claims without a paid plan.
+              Nothing is charged until you submit a claim.</p>
+          </div>
+
+          <div class="price-card">
+            <div class="price-figure">5%</div>
+            <div class="price-label">Per submitted claim</div>
+            <p>A 5% fee is charged to the client&rsquo;s saved payment method after
+              successful claim submission. It is calculated on the amount billed to the
+              insurer, not the reimbursement received.</p>
+          </div>
+
+          <div class="price-card">
+            <div class="price-figure">$25<span>/month</span></div>
+            <div class="price-label">Optional benefit verification</div>
+            <p>Instant out-of-network benefit checks for a client&rsquo;s plan. Optional —
+              the rest of Reddably does not require it.</p>
+          </div>
+        </div>
+
+        <p class="pricing-terms">
+          <strong>When the fee is charged.</strong> The fee is charged once, after a claim
+          is successfully submitted — not when the insurer pays, and not on the amount
+          reimbursed. A replacement claim that supersedes a claim whose fee was already
+          charged is not charged again.
+        </p>
+
+        <p class="pricing-terms">
+          <strong>Refunds.</strong> If a claim is denied, the 5% fee can be refunded.
+          Refunds are not automatic: a refund has to be requested against the claim, and a
+          practice admin reviews and decides it. A claim applied to the client&rsquo;s
+          deductible is a successful outcome, not a denial, and does not qualify for a
+          refund.
+        </p>
+      </div>
+    </section>
+
     <section class="etymology-band" id="about">
       <div class="container etymology-grid">
         <div class="definition">
@@ -1093,6 +1236,7 @@
       <div class="footer-links">
         <a href="#product">Product</a>
         <a href="#how">How It Works</a>
+        <a href="#pricing">Pricing</a>
         <a href="#about">About</a>
       </div>
     </div>
