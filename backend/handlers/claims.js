@@ -25,7 +25,7 @@
 // so error logs stay generic. Soft-delete via is_hidden; never hard-delete.
 
 const db = require('../lib/db');
-const { requireAuth } = require('../lib/auth');
+const { resolvePrincipal, requireScope, authContext } = require('../lib/principal');
 const { json, preflight } = require('../lib/response');
 const { parseBody } = require('../lib/util');
 const { audit, sanitizeFields } = require('../lib/audit');
@@ -186,6 +186,20 @@ function cleanText(v) {
   if (v == null) return null;
   const s = String(v).trim();
   return s === '' ? null : s;
+}
+
+// WHO ACTED, for a claim_events row (migration 024). Returns BOTH actor
+// columns together so a call site cannot set one and forget the other — the
+// combination is what the CHECK constraint governs, and the dangerous miss is
+// silent rather than loud: a partner event with neither column set is a legal
+// 'system' row, and the attribution would just be gone.
+//
+// Every logEvent() call in this file goes through here for that reason.
+function actorOf(authCtx) {
+  const ctx = authCtx || {};
+  return ctx.partnerCredentialId
+    ? { createdBy: null, createdByPartnerCredentialId: ctx.partnerCredentialId }
+    : { createdBy: ctx.userId || null, createdByPartnerCredentialId: null };
 }
 
 function isUUID(v) {
@@ -369,13 +383,9 @@ function shapeEvent(r) {
 
 // --- practice scoping + lookups ---------------------------------------------
 
-async function loadPracticeId(userId) {
-  const res = await db.query(
-    `select practice_id from users where id = $1 and is_active = true limit 1`,
-    [userId]
-  );
-  return res.rows[0] ? res.rows[0].practice_id : null;
-}
+// loadPracticeId() removed: lib/principal.js now derives practiceId for BOTH
+// actor types, and a second copy here would be a second answer to the same
+// question — the shape that lets a partner and a human diverge.
 
 async function loadSession(practiceId, sessionId) {
   const res = await db.query(
@@ -534,7 +544,7 @@ async function createClaim(practiceId, userId, body, event, authCtx) {
       insuranceRecordId,
       claimNumber: cleanText(body.claim_number),
       billedAmount,
-      createdBy: userId,
+      ...actorOf(authCtx),
     });
   });
 
@@ -1012,7 +1022,7 @@ async function submitClaim(practiceId, userId, id, body, event, authCtx) {
     await logEvent(client, {
       practiceId,
       claimId: id,
-      createdBy: userId,
+      ...actorOf(authCtx),
       eventType: 'note',
       statusFrom: 'draft',
       statusTo: 'submitted',
@@ -1053,7 +1063,7 @@ async function submitClaim(practiceId, userId, id, body, event, authCtx) {
           await logEvent(client, {
             practiceId,
             claimId: id,
-            createdBy: userId,
+            ...actorOf(authCtx),
             eventType: 'note',
             statusFrom: 'submitted',
             statusTo: 'draft',
@@ -1074,7 +1084,7 @@ async function submitClaim(practiceId, userId, id, body, event, authCtx) {
         await logEvent(client, {
           practiceId,
           claimId: id,
-          createdBy: userId,
+          ...actorOf(authCtx),
           eventType: 'note',
           note: `Submission outcome unknown (${clearinghouseFailureClass(err)}). Do not resubmit — reconcile with the clearinghouse first.`,
         });
@@ -1110,7 +1120,7 @@ async function submitClaim(practiceId, userId, id, body, event, authCtx) {
     await logEvent(client, {
       practiceId,
       claimId: row.id,
-      createdBy: userId,
+      ...actorOf(authCtx),
       eventType: 'submitted',
       statusFrom: 'draft',
       statusTo: 'submitted',
@@ -1201,7 +1211,7 @@ async function reconcileClaim(practiceId, userId, id, body, event, authCtx) {
       await logEvent(client, {
         practiceId,
         claimId: id,
-        createdBy: userId,
+        ...actorOf(authCtx),
         eventType: 'note',
         statusFrom: 'submitted',
         statusTo: 'draft',
@@ -1242,7 +1252,7 @@ async function reconcileClaim(practiceId, userId, id, body, event, authCtx) {
       await logEvent(client, {
         practiceId,
         claimId: id,
-        createdBy: userId,
+        ...actorOf(authCtx),
         eventType: 'note',
         note: 'Operator confirmed the clearinghouse received this claim; its control number was recorded.',
       });
@@ -1321,7 +1331,7 @@ async function reconcileClaim(practiceId, userId, id, body, event, authCtx) {
     await logEvent(client, {
       practiceId,
       claimId: row.id,
-      createdBy: userId,
+      ...actorOf(authCtx),
       eventType: eventTypeForStatus(newStatus),
       statusFrom: 'submitted',
       statusTo: newStatus,
@@ -1442,7 +1452,7 @@ async function refreshClaim(practiceId, userId, id, event, authCtx) {
       await logEvent(client, {
         practiceId,
         claimId: row.id,
-        createdBy: userId,
+        ...actorOf(authCtx),
         eventType: eventTypeForStatus(newStatus),
         statusFrom: claim.status,
         statusTo: newStatus,
@@ -1502,7 +1512,7 @@ async function voidClaim(practiceId, userId, id, event, authCtx) {
     await logEvent(client, {
       practiceId,
       claimId: row.id,
-      createdBy: userId,
+      ...actorOf(authCtx),
       eventType: 'voided',
       statusFrom: claim.status,
       statusTo: 'void',
@@ -1569,7 +1579,7 @@ async function replaceClaim(practiceId, userId, id, body, event, authCtx) {
       practiceId,
       original,
       payerClaimControlNumber,
-      createdBy: userId,
+      ...actorOf(authCtx),
     });
   });
 
@@ -1650,7 +1660,7 @@ async function regenerateClaim(practiceId, userId, id, event, authCtx) {
     await logEvent(client, {
       practiceId,
       claimId: row.id,
-      createdBy: userId,
+      ...actorOf(authCtx),
       eventType: 'note',
       note: lines.length > 1
         ? 'Claim fields regenerated from its ' + lines.length + ' sessions.'
@@ -1780,7 +1790,7 @@ async function groupClaims(practiceId, userId, body, event, authCtx) {
       clinicianId: first.clinician_id,
       insuranceRecordId: first.insurance_record_id,
       billedAmount: verdict.total,
-      createdBy: userId,
+      ...actorOf(authCtx),
       lines: ordered.map((c) => ({ session_id: c.session_id, charge: c.billed_amount })),
     });
 
@@ -1790,7 +1800,7 @@ async function groupClaims(practiceId, userId, body, event, authCtx) {
       await logEvent(client, {
         practiceId,
         claimId: source.id,
-        createdBy: userId,
+        ...actorOf(authCtx),
         eventType: 'note',
         note: 'Grouped into claim #' + String(created.id).slice(0, 8) +
           ' and retired unsubmitted; it was never filed and never charged a fee.',
@@ -1877,7 +1887,7 @@ async function ungroupClaim(practiceId, userId, id, event, authCtx) {
         // The line's OWN filed charge, not the group total — splitting must not
         // multiply what the payer is billed.
         billedAmount: line.line_charge != null ? line.line_charge : line.fee,
-        createdBy: userId,
+        ...actorOf(authCtx),
         note: 'Split out of grouped claim #' + String(claim.id).slice(0, 8) + '.',
       });
       out.push(created);
@@ -1885,7 +1895,7 @@ async function ungroupClaim(practiceId, userId, id, event, authCtx) {
     await logEvent(client, {
       practiceId,
       claimId: claim.id,
-      createdBy: userId,
+      ...actorOf(authCtx),
       eventType: 'note',
       note: 'Ungrouped into ' + out.length + ' separate draft claims and retired unsubmitted.',
     });
@@ -1952,25 +1962,70 @@ exports.handler = async (event) => {
     return preflight(event);
   }
 
-  let auth;
+  // A staff Bearer JWT or a Partner credential. resolvePrincipal decides which
+  // (the Authorization SCHEME distinguishes them; see lib/partner_auth.js) and
+  // returns one shape either way. practiceId is server-derived in both cases —
+  // from users.practice_id for a human, from the credential row for a partner —
+  // so every practice-scoped query below is correct for both, unchanged.
+  let principal;
   try {
-    auth = requireAuth(event);
+    principal = await resolvePrincipal(event);
   } catch (err) {
     return json(err.statusCode || 401, { error: 'Unauthorized' }, event);
   }
 
   try {
-    const practiceId = await loadPracticeId(auth.user.sub);
-    if (!practiceId) {
-      return json(401, { error: 'Unauthorized' }, event);
-    }
-    const userId = auth.user.sub;
+    const practiceId = principal.practiceId;
+    const userId = principal.userId;
     // `role` rides along for the submit endpoint's test-submission guard; audit()
     // reads named fields off authCtx, so the extra key is inert everywhere else.
-    const authCtx = { userId, practiceId, role: auth.user.role || null };
+    // actorType + partnerCredentialId ride along for claim_events attribution
+    // (migration 024).
+    const authCtx = authContext(principal);
     const id = pathId(event);
     const action = subAction(event);
     const body = method === 'POST' || method === 'PATCH' ? parseBody(event) : null;
+
+    // PER-ACTION SCOPE, NOT PER-ROUTE.
+    //
+    // Every branch below arrives at the same Lambda, and they are emphatically
+    // not the same permission: GET /claims/{id} reads, POST /claims/{id}/submit
+    // files an irreversible claim with a payer. A single route-level check would
+    // have let a read-only credential submit.
+    //
+    // A human is unaffected — requireScope() is a no-op for actorType 'user',
+    // whose authority is their role, checked the way it always has been.
+    //
+    // Anything not named here is refused for a partner by the `null` default:
+    // an action added later is denied until somebody decides which scope it
+    // needs, rather than silently inheriting one.
+    const SCOPE_FOR_ACTION = {
+      submit:     'claims:submit',
+      replace:    'claims:submit',   // files a REPLACEMENT claim — same irreversibility
+      refresh:    'claims:read',     // pulls payer status; no mutation of our own record
+      reconcile:  'claims:write',
+      void:       'claims:write',
+      regenerate: 'claims:write',
+      events:     'claims:read',
+      ungroup:    'claims:write',
+    };
+    if (action) {
+      try {
+        requireScope(principal, SCOPE_FOR_ACTION[action] || null);
+      } catch (err) {
+        return json(err.statusCode || 403, { error: 'Forbidden' }, event);
+      }
+    } else {
+      const base = (method === 'GET') ? 'claims:read'
+        : (method === 'POST' || method === 'PATCH') ? 'claims:write'
+        : (method === 'DELETE') ? 'claims:write'
+        : null;
+      try {
+        requireScope(principal, base);
+      } catch (err) {
+        return json(err.statusCode || 403, { error: 'Forbidden' }, event);
+      }
+    }
 
     // Action sub-routes (id always present) take precedence over base CRUD.
     if (action === 'submit' && method === 'POST' && id) return await submitClaim(practiceId, userId, id, body, event, authCtx);

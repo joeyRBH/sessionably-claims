@@ -13,7 +13,7 @@
 // Twilio call. Clients are PHI — error logs never include names or contact info.
 
 const db = require('../lib/db');
-const { requireAuth } = require('../lib/auth');
+const { resolvePrincipal, requireScope } = require('../lib/principal');
 const paymentToken = require('../lib/payment_token');
 const { json, preflight } = require('../lib/response');
 const { normalizePhone } = require('../lib/util');
@@ -41,29 +41,35 @@ function isUUID(v) {
   return typeof v === 'string' && UUID_RE.test(v.trim());
 }
 
-async function loadPracticeId(userId) {
-  const r = await db.query(
-    `select practice_id from users where id = $1 and is_active = true limit 1`,
-    [userId]
-  );
-  return r.rows[0] ? r.rows[0].practice_id : null;
-}
+// loadPracticeId() removed — lib/principal.js derives practiceId for both a
+// staff JWT and a partner credential.
 
 exports.handler = async (event) => {
   const method = httpMethod(event);
   if (method === 'OPTIONS') return preflight(event);
   if (method !== 'POST') return json(405, { error: 'Method not allowed' }, event);
 
-  let auth;
+  // Staff JWT or partner credential; practiceId is server-derived either way.
+  let principal;
   try {
-    auth = requireAuth(event);
+    principal = await resolvePrincipal(event);
   } catch (err) {
     return json(err.statusCode || 401, { error: 'Unauthorized' }, event);
   }
 
+  // ITS OWN SCOPE. Sending a person a text message is not a claims permission
+  // and is not implied by any amount of claims access — a credential issued to
+  // prepare and file claims must not be able to message that practice's
+  // clients. partner_auth.SCOPES keeps them separate; this is where that
+  // separation is enforced for this action.
   try {
-    const practiceId = await loadPracticeId(auth.user.sub);
-    if (!practiceId) return json(401, { error: 'Unauthorized' }, event);
+    requireScope(principal, 'payment_link:send');
+  } catch (err) {
+    return json(err.statusCode || 403, { error: 'Forbidden' }, event);
+  }
+
+  try {
+    const practiceId = principal.practiceId;
 
     const id = pathId(event);
     if (!isUUID(id)) return json(404, { error: 'Not found' }, event);

@@ -97,15 +97,42 @@ async function logClaimAcknowledgment(q, a) {
 }
 
 // Insert a claim_events row. `q` is a pg client (inside a transaction) or db.
+//
+// ACTOR ATTRIBUTION (migration 024). Three columns move together and the CHECK
+// constraint refuses any other combination:
+//
+//   actor_type 'user'     created_by set,      partner id null
+//   actor_type 'partner'  created_by null,     partner id set
+//   actor_type 'system'   both null
+//
+// The type is DERIVED here rather than taken from the caller, so a caller that
+// passes only createdBy (every existing call site) keeps working and lands the
+// correct type. A caller that passes createdByPartnerCredentialId gets
+// 'partner'. Neither gets 'system' by accident — that requires passing neither,
+// which is exactly what our own generated events do.
+//
+// Deriving rather than accepting an actorType argument is deliberate: it makes
+// the illegal combinations unrepresentable at the only place a claim event is
+// written, instead of relying on every call site to pass a consistent trio.
 async function logClaimEvent(q, e) {
+  const partnerId = e.createdByPartnerCredentialId || null;
+  const userId = e.createdBy || null;
+  const actorType = partnerId ? 'partner' : (userId ? 'user' : 'system');
+
   await q.query(
     `insert into claim_events
-       (practice_id, claim_id, created_by, event_type, status_from, status_to, note, payload)
-     values ($1, $2, $3, $4, $5, $6, $7, $8)`,
+       (practice_id, claim_id, created_by, created_by_partner_credential_id, actor_type,
+        event_type, status_from, status_to, note, payload)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
     [
       e.practiceId,
       e.claimId,
-      e.createdBy || null,
+      // A partner event carries no user id, and a user event carries no
+      // credential id. Nulled explicitly against each other rather than trusting
+      // the caller to have passed only one.
+      partnerId ? null : userId,
+      partnerId,
+      actorType,
       e.eventType,
       e.statusFrom || null,
       e.statusTo || null,
