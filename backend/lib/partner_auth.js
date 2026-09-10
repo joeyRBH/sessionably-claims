@@ -57,6 +57,14 @@ const SALT_LEN = 16;
 // some future check spells differently).
 const SCOPES = Object.freeze([
     'clients:read',        // resolve and read the linked client (no write)
+    'sessions:read',       // find a session by the partner's own external id
+    // Creating or COMPLETING a session. Completion is deliberately in the same
+    // scope as creation rather than in claims:write, because completing a
+    // session auto-creates its draft claim in the same transaction
+    // (handlers/sessions.js). It is a claim-creating act, and a credential
+    // granted it can produce drafts — but still cannot SUBMIT one, which
+    // remains claims:submit.
+    'sessions:write',
     'claims:read',         // list/get claims and their events, incl. status
     'claims:write',        // create and amend a draft claim
     'claims:submit',       // the irreversible one: send a claim to the payer
