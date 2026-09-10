@@ -242,7 +242,30 @@ async function test(name, fn) {
         exitCode = 1;
     } finally {
         await raw.end().catch(() => {});
-        try { if (db && typeof db.end === 'function') await db.end(); } catch (_) {}
+
+        // CLOSE THE HANDLER'S OWN POOL, not a method it does not have.
+        //
+        // This used to read `if (db && typeof db.end === 'function') await db.end()`.
+        // backend/lib/db.js exports { getPool, query, withTransaction } and has no
+        // `end`, so that branch never ran and the module-scope Pool stayed open.
+        // pg_terminate_backend below then killed its backend, the orphaned pool
+        // emitted an unhandled 'error' ("terminating connection due to
+        // administrator command"), and node died before `process.exit(exitCode)`.
+        //
+        // The visible effect was a test that printed "12 passed, 0 failed" and
+        // then exited 1 — so the whole suite went red for anyone with a
+        // DATABASE_URL set, while staying green in CI where this file skips.
+        try {
+            if (db && typeof db.getPool === 'function') {
+                const pool = db.getPool();
+                // A pool whose backend is terminated mid-teardown emits 'error'.
+                // Nothing is left to report by then, so absorb it rather than
+                // letting it become an unhandled event.
+                pool.on('error', () => {});
+                await pool.end();
+            }
+        } catch (_) { /* the pool may never have been created */ }
+
         const cleanup = new Client({ connectionString: ADMIN_URL });
         await cleanup.connect();
         await cleanup.query(
