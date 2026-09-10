@@ -19,19 +19,55 @@ evolves after the initial `schema.sql` apply.
 
 ## Applying
 
-```bash
-# Apply a single migration (psql connection from your env / secrets manager):
-psql -v ON_ERROR_STOP=1 -f db/migrations/001_example.sql
+> **There is no psql path to this database, and there never was.** RDS is
+> `publicly_accessible = false`, the account has no EC2 instances and none
+> registered with SSM, and `infra/terraform/backfill.tf` states it plainly:
+> *"there is no bastion"*. Earlier revisions of this file told operators to run
+> `psql -f` from "a bastion / tunnel". Following that instruction is impossible,
+> and believing it is how migration 023 was merged (#116) with no way to apply
+> it. Two supported mechanisms replace it.
 
-# Or all in order:
-for f in db/migrations/[0-9]*.sql; do
-  echo ">> $f"
-  psql -v ON_ERROR_STOP=1 -f "$f" || break
-done
+### 1. Fold it into `schema.sql` — the default
+
+For a migration that is idempotent and carries **no data backfill**, fold the
+DDL into `../schema.sql` (which you must keep in sync anyway, see Convention
+above) and it is applied by the `claimsub-<env>-migrate` Lambda, which
+`deploy.sh` invokes on every deploy.
+
+Drop the migration's `begin;` / `commit;` wrappers when folding: `schema.sql` is
+executed as a single simple-query batch in one implicit transaction, and a
+nested `commit` would end it early.
+
+Watch for constraints that `schema.sql` **re-adds on every deploy** — the
+`audit_log_actor_type_check` `do $$` block is one. Widening such a constraint in
+a migration without widening it there too does not merely fail to apply: the
+next deploy actively reverts it.
+
+### 2. The one-off runner — for the exceptions
+
+For a migration that carries a data backfill, or whose timing must be
+operator-controlled rather than a side effect of shipping code (migration 024 is
+both), use the `claimsub-<env>-apply-migration` Lambda. It reads the file from
+the deployed bundle, so the migration must be committed and deployed first.
+
+```bash
+# STATUS — read-only. Lists bundled migrations and their ledger state.
+aws lambda invoke --function-name $(terraform output -raw apply_migration_function_name) \
+  /tmp/migration.json && cat /tmp/migration.json
+
+# APPLY — one named migration, in one transaction, recorded in schema_migrations.
+aws lambda invoke --function-name $(terraform output -raw apply_migration_function_name) \
+  --payload '{"migration":"024_partner_claim_event_attribution","apply":true}' \
+  --cli-binary-format raw-in-base64-out \
+  /tmp/migration.json && cat /tmp/migration.json
 ```
 
-> RDS sits inside a VPC — run these from a host with network access (bastion / tunnel).
-> Never commit real credentials.
+`apply` is a strict boolean — the string `"true"` reads as a status request, not
+a write. An already-recorded migration is refused; one whose checksum no longer
+matches the recorded run is refused outright and `force` will not override it.
+
+Never commit real credentials. The runner reads `DATABASE_URL` from SSM at
+runtime and never logs it.
 
 ## Status
 

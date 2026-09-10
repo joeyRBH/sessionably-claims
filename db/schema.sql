@@ -524,6 +524,43 @@ begin
   end if;
 end $$;
 
+-- Migration (idempotent): an external reference on sessions — the durable
+-- identity anchor a partner system uses to ask "does a session already exist for
+-- MY appointment?" without guessing from client + date. Purely additive and
+-- inert: both columns are nullable with no default, the CHECK admits the
+-- all-NULL case every existing row is in, and the unique index is PARTIAL on
+-- `external_id is not null`, so it indexes nothing until a partner writes one.
+-- That unique index — not application logic — is what makes partner session
+-- creation idempotent: a retry-after-timeout raises 23505 instead of creating a
+-- twin. See db/migrations/025_session_external_reference.sql.
+alter table sessions add column if not exists external_source text;
+alter table sessions add column if not exists external_id     text;
+
+comment on column sessions.external_source is
+  'Which partner system owns external_id (currently only ''sessionably''). NULL for sessions created here.';
+comment on column sessions.external_id is
+  'That system''s own identifier for the appointment this session represents. Opaque; never PHI.';
+
+-- Only a known partner may claim an external identity, and the pair travels
+-- together. Dropped-then-added rather than guarded, because unlike
+-- sessions_source_check above this predicate may need to gain a partner name in
+-- a later change — re-running must converge on the CURRENT definition, not skip
+-- because some older version of the constraint happens to exist.
+alter table sessions drop constraint if exists sessions_external_ref_check;
+alter table sessions add constraint sessions_external_ref_check
+  check (
+    (external_source is null and external_id is null)
+    or (external_source in ('sessionably') and external_id is not null)
+  );
+
+create unique index if not exists sessions_external_ref_uq
+  on sessions (practice_id, external_source, external_id)
+  where external_id is not null;
+
+create index if not exists sessions_external_lookup_idx
+  on sessions (external_source, external_id)
+  where external_id is not null;
+
 -- =============================================================================
 -- 8. claims — OON claim records (multiple allowed per session for resubmit/appeal).
 -- =============================================================================
@@ -1145,6 +1182,54 @@ create trigger trg_calendar_events_updated_at
   for each row execute function set_updated_at();
 
 -- =============================================================================
+-- partner_credentials — machine-to-machine access, scoped to ONE practice.
+-- =============================================================================
+-- A credential that belongs to an INTEGRATION rather than to a person: bound to
+-- exactly one practice, carrying only the scopes it was granted, revocable on
+-- its own without touching anybody's ability to sign in. Defined BEFORE
+-- audit_log because audit_log carries an FK to it.
+--
+-- The secret is never stored. `secret_hash` holds a scrypt digest with a
+-- per-credential random salt (backend/lib/partner_auth.js). The plaintext exists
+-- exactly once, in the output of the issuing script, and is not recoverable — a
+-- lost secret is rotated, not looked up. `key_id` is the public half and IS
+-- stored in the clear: it is the lookup key and is safe in a log line.
+--
+-- There is deliberately NO HTTP endpoint that mints one. Rows are created by an
+-- operator running backend/scripts/partner_credential.js. An ordinary
+-- authenticated user — including a practice admin — cannot grant an external
+-- system access to their practice's PHI.
+--
+-- See db/migrations/023_partner_credentials.sql.
+create table if not exists partner_credentials (
+  id            uuid primary key default gen_random_uuid(),
+  practice_id   uuid not null references practices (id) on delete restrict,
+  partner       text not null check (partner in ('sessionably')),
+  key_id        text not null unique,
+  secret_hash   text not null,
+  scopes        text[] not null default '{}',
+  created_at    timestamptz not null default now(),
+  created_by    uuid references users (id) on delete restrict,
+  last_used_at  timestamptz,
+  expires_at    timestamptz,
+  revoked_at    timestamptz,
+  label         text
+);
+
+comment on table partner_credentials is
+  'Machine-to-machine credentials for a sibling product, scoped to one practice and one scope set. Secret is scrypt-hashed and never recoverable. Issued only by an operator script; revoked_at is the immediate off switch.';
+
+-- The hot path: look a credential up by its public half. Partial — a revoked
+-- credential is never a candidate, so it does not sit in the index every request
+-- probes.
+create index if not exists partner_credentials_active_key_idx
+  on partner_credentials (key_id)
+  where revoked_at is null;
+
+create index if not exists partner_credentials_practice_idx
+  on partner_credentials (practice_id);
+
+-- =============================================================================
 -- audit_log — append-only HIPAA compliance trail (no updated_at, no trigger).
 -- =============================================================================
 -- HIPAA 45 CFR 164.312(b) requires recording and examining activity in systems
@@ -1159,7 +1244,7 @@ create table if not exists audit_log (
   occurred_at    timestamptz not null default now(),
   practice_id    uuid references practices (id) on delete restrict,  -- nullable: pre-auth events (login failure) have none
   actor_user_id  uuid references users (id) on delete restrict,      -- nullable: patient-link / system actors have no user
-  actor_type     text not null check (actor_type in ('user', 'patient_link', 'system')),
+  actor_type     text not null check (actor_type in ('user', 'patient_link', 'system', 'partner')),
   action         text not null,                                      -- dot notation, e.g. 'client.view', 'claim.submit'
   resource_type  text,                                               -- 'client' | 'insurance_record' | 'session' | 'claim' | 'vob' | 'user' | 'practice' | 'invitation' | 'auth' | 'payer_enrollment' | 'refund_request'
   resource_id    uuid,
@@ -1191,16 +1276,32 @@ begin
   end if;
 end $$;
 
--- actor_type: replace the older check (which allowed 'client') with the new set
--- ('user' | 'patient_link' | 'system'). Drop-then-add so it re-runs cleanly.
+-- actor_type: replace the older check (which allowed 'client') with the current
+-- set ('user' | 'patient_link' | 'system' | 'partner'). Drop-then-add so it
+-- re-runs cleanly.
+--
+-- 'partner' MUST stay in this list. This block runs on EVERY deploy, so a
+-- narrower predicate here does not merely fail to widen the constraint — it
+-- actively reverts it, and the next partner-attributed audit write starts
+-- failing on a system that was working an hour earlier. See
+-- db/migrations/023_partner_credentials.sql, which widened it.
 do $$
 begin
   if exists (select 1 from pg_constraint where conname = 'audit_log_actor_type_check') then
     alter table audit_log drop constraint audit_log_actor_type_check;
   end if;
   alter table audit_log add constraint audit_log_actor_type_check
-    check (actor_type in ('user', 'patient_link', 'system'));
+    check (actor_type in ('user', 'patient_link', 'system', 'partner'));
 end $$;
+
+-- Which credential acted. Nullable: every pre-existing row, and every human
+-- request, has none. See db/migrations/023_partner_credentials.sql.
+alter table audit_log
+  add column if not exists actor_partner_credential_id uuid
+    references partner_credentials (id) on delete restrict;
+
+comment on column audit_log.actor_partner_credential_id is
+  'Set when actor_type = ''partner''. Names the credential, never the secret.';
 
 create index if not exists idx_audit_log_practice_occurred on audit_log (practice_id, occurred_at desc);
 create index if not exists idx_audit_log_resource on audit_log (resource_type, resource_id);
@@ -1221,6 +1322,32 @@ update practices set plan = 'founder'
     limit 1
  )
    and plan <> 'founder';
+
+-- =============================================================================
+-- schema_migrations — ledger for migrations applied OUTSIDE this file.
+-- =============================================================================
+-- Most migrations are folded into this file and applied by the migrate Lambda on
+-- every deploy; those are idempotent and need no ledger. This table records the
+-- exception: a migration applied by the one-off runner
+-- (backend/handlers/apply_migration.js) because it carries a data backfill or
+-- must be timed by an operator rather than by a deploy.
+--
+-- The runner writes the row in the SAME transaction as the migration's DDL, so
+-- there is no state where one landed without the other, and refuses to re-apply
+-- a name it already holds. A recorded name whose file now has a different
+-- checksum is refused outright — the file was edited after it was applied.
+--
+-- Declared here so a database built fresh from this file has it. The runner also
+-- creates it if absent, so the two are independent.
+create table if not exists schema_migrations (
+    name        text primary key,
+    checksum    text not null,
+    applied_at  timestamptz not null default now(),
+    applied_by  text
+);
+
+comment on table schema_migrations is
+  'Migrations applied by the one-off runner rather than folded into schema.sql. Written atomically with the migration DDL.';
 
 -- =============================================================================
 -- End of schema.

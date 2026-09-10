@@ -70,6 +70,11 @@ output "backfill_claim_fields_function_name" {
   value       = aws_lambda_function.backfill_claim_fields.function_name
 }
 
+output "apply_migration_function_name" {
+  description = "Name of the one-off migration runner. Operator-invoked only — deploy.sh never calls it. Read-only status unless invoked with {\"migration\": \"<name>\", \"apply\": true}."
+  value       = aws_lambda_function.apply_migration.function_name
+}
+
 # ─────────────────────────────────────────────────────────────
 # API
 # ─────────────────────────────────────────────────────────────
