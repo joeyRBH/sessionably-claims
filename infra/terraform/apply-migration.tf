@@ -23,6 +23,11 @@
 //     writes nothing; only a payload naming a migration with a strict
 //     {"apply": true} performs the migration.
 //
+//   # verify (read-only) - structural + aggregate evidence of what landed:
+//   aws lambda invoke --function-name $(terraform output -raw apply_migration_function_name) \
+//     --payload '{"verify":true}' --cli-binary-format raw-in-base64-out \
+//     /tmp/verify.json && cat /tmp/verify.json
+//
 //   # status (read-only):
 //   aws lambda invoke --function-name $(terraform output -raw apply_migration_function_name) \
 //     /tmp/migration.json && cat /tmp/migration.json
@@ -55,7 +60,7 @@ resource "aws_cloudwatch_log_group" "apply_migration" {
 
 resource "aws_lambda_function" "apply_migration" {
   function_name = "${local.prefix}-apply-migration"
-  description   = "Claimsub one-off migration runner: applies ONE named file from db/migrations. Read-only status unless invoked with {migration:<name>, apply:true}. Never invoked by deploy.sh."
+  description   = "Claimsub one-off migration runner: applies ONE named file from db/migrations. Read-only status/verify unless invoked with {migration:<name>, apply:true}. Never invoked by deploy.sh."
 
   role    = aws_iam_role.lambda_exec.arn
   runtime = var.lambda_runtime

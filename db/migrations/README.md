@@ -66,6 +66,39 @@ aws lambda invoke --function-name $(terraform output -raw apply_migration_functi
 a write. An already-recorded migration is refused; one whose checksum no longer
 matches the recorded run is refused outright and `force` will not override it.
 
+### 3. Verifying what actually landed
+
+RDS is private, so without this there is no way to *observe* a migration's
+effect — only to infer it from a Lambda exiting zero. Run this before and after
+any apply:
+
+```bash
+aws lambda invoke --function-name $(terraform output -raw apply_migration_function_name) \
+  --payload '{"verify":true}' --cli-binary-format raw-in-base64-out \
+  /tmp/verify.json && cat /tmp/verify.json
+```
+
+Read-only, and read-only wins: a payload carrying both `verify` and `apply`
+performs the verification and nothing else. It does not even create the ledger
+table.
+
+It reports **structure** (table / column / index / foreign-key / CHECK presence,
+plus each CHECK's predicate text) and **aggregates** (`claim_events` counts by
+`actor_type`, and counts of invalid attribution). It returns **no row-level data
+and no secrets** — `claim_events` is a PHI-adjacent audit stream, so that rule is
+absolute.
+
+Two fields earn their place:
+
+- `checks.<name>.admits` — a constraint can be *present* and still have been
+  narrowed back. `schema.sql` re-adds `audit_log_actor_type_check` on every
+  deploy, so a predicate that lost `'partner'` is reverted rather than failed,
+  and only a check on the predicate text catches it.
+- `attribution.would_violate_one_actor` — the pre-flight for 024. That migration
+  adds its CHECK in the same transaction as its backfill, so one offending row
+  aborts it. Confirm this is `0` before applying, and confirm
+  `projected_after_backfill` matches `by_actor_type` afterwards.
+
 Never commit real credentials. The runner reads `DATABASE_URL` from SSM at
 runtime and never logs it.
 

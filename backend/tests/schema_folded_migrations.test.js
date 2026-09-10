@@ -147,6 +147,40 @@ check('schema_migrations ledger is declared', () => {
 });
 
 // ---------------------------------------------------------------------------
+// The claim_events EXPAND phase — and, more importantly, what must NOT be here
+// ---------------------------------------------------------------------------
+
+check('expand: claim_events gains both attribution columns', () => {
+    has(/alter table claim_events\s+add column if not exists actor_type text\s*;/i, 'claim_events.actor_type');
+    has(/add column if not exists created_by_partner_credential_id uuid[\s\S]{0,120}?references partner_credentials \(id\)/i,
+        'claim_events.created_by_partner_credential_id');
+});
+
+check('expand: the partner-credential index is present and partial', () => {
+    has(/create index if not exists idx_claim_events_partner_credential[\s\S]{0,200}?where created_by_partner_credential_id is not null/i,
+        'idx_claim_events_partner_credential');
+});
+
+// THE POINT OF THE SPLIT. Either of these in schema.sql re-creates the
+// two-sided incompatibility: schema.sql lands on an ordinary deploy, ahead of
+// the writer that sets actor_type, so a NOT NULL or a CHECK here breaks every
+// system event the currently deployed writer produces (reproduced as
+// 23514 violates constraint claim_events_one_actor_check).
+check('expand: schema.sql declares NO actor_type NOT NULL and NO default', () => {
+    assert.ok(!/add column if not exists actor_type text\s+not null/i.test(sql),
+        'schema.sql makes claim_events.actor_type NOT NULL — that belongs in migration 024, after the writer ships');
+    assert.ok(!/add column if not exists actor_type text[^;]*default/i.test(sql),
+        "schema.sql gives claim_events.actor_type a default — a legacy insert would then take it and fail 024's one-actor CHECK");
+});
+
+check('expand: schema.sql declares NEITHER claim_events CHECK', () => {
+    for (const c of ['claim_events_actor_type_check', 'claim_events_one_actor_check']) {
+        assert.ok(!sql.includes(c),
+            `schema.sql adds ${c}. It runs on every deploy, ahead of the partner-aware writer, so this would break the deployed writer's system events.`);
+    }
+});
+
+// ---------------------------------------------------------------------------
 // schema.sql runs as ONE implicit transaction
 // ---------------------------------------------------------------------------
 

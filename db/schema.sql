@@ -1230,6 +1230,64 @@ create index if not exists partner_credentials_practice_idx
   on partner_credentials (practice_id);
 
 -- =============================================================================
+-- claim_events partner attribution — EXPAND PHASE ONLY
+-- =============================================================================
+--
+-- This is the safe half of migration 024, deliberately separated from it.
+--
+-- WHY IT IS SPLIT
+--
+-- 024 originally did everything at once: added these two columns WITH
+-- `not null default 'user'`, backfilled, and added two CHECK constraints. That
+-- created a two-sided incompatibility with no safe ordering, both halves of
+-- which were reproduced against a real PostgreSQL 16:
+--
+--   * Ship the partner-aware writer BEFORE 024 and every claim-event insert
+--     fails — `42703 column "created_by_partner_credential_id" does not exist`.
+--   * Apply 024 BEFORE that writer ships and the deployed writer's SYSTEM
+--     events fail — `23514 violates constraint claim_events_one_actor_check`,
+--     because an insert omitting actor_type takes the 'user' default while
+--     carrying no created_by.
+--
+-- And the two deadlock: the one-off runner can only apply a migration that is
+-- already in the deployed bundle, so 024 cannot run before the deploy that
+-- ships it, yet the code in that deploy needs it already applied.
+--
+-- The expand/contract split removes the window rather than shrinking it:
+--
+--   1. THIS BLOCK — both columns NULLABLE, no default, no CHECK. Purely
+--      additive, so the currently deployed writer (which names neither column)
+--      is completely unaffected, and it lands via the ordinary deploy path.
+--   2. The partner-aware writer ships. Both columns exist, so it succeeds.
+--      Rows it writes carry a real actor_type; older rows carry NULL, which no
+--      constraint yet forbids.
+--   3. Migration 024, now CONTRACT-ONLY, backfills the NULLs and then adds the
+--      default, the NOT NULL and both CHECKs — at which point every live
+--      writer already sets actor_type explicitly.
+--
+-- NO CHECK CONSTRAINT AND NO NOT NULL BELONGS HERE. Adding either would
+-- re-create exactly the breakage this split exists to prevent. The constraints
+-- live in 024 and are applied only after the writer is live.
+--
+-- See db/migrations/024_partner_claim_event_attribution.sql.
+
+alter table claim_events
+  add column if not exists actor_type text;
+
+alter table claim_events
+  add column if not exists created_by_partner_credential_id uuid
+    references partner_credentials (id) on delete restrict;
+
+comment on column claim_events.actor_type is
+  'Who acted: user | system | partner. Nullable during the expand phase; made NOT NULL by migration 024 once every writer sets it.';
+comment on column claim_events.created_by_partner_credential_id is
+  'Set when a partner integration performed this action. Mutually exclusive with created_by (enforced by migration 024). Names the credential, never the secret.';
+
+create index if not exists idx_claim_events_partner_credential
+  on claim_events (created_by_partner_credential_id)
+  where created_by_partner_credential_id is not null;
+
+-- =============================================================================
 -- audit_log — append-only HIPAA compliance trail (no updated_at, no trigger).
 -- =============================================================================
 -- HIPAA 45 CFR 164.312(b) requires recording and examining activity in systems
