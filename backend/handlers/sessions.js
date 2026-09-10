@@ -19,7 +19,7 @@
 
 const crypto = require('crypto');
 const db = require('../lib/db');
-const { requireAuth } = require('../lib/auth');
+const { resolvePrincipal, requireScope, authContext } = require('../lib/principal');
 const { json, preflight } = require('../lib/response');
 const { parseBody } = require('../lib/util');
 const { audit, sanitizeFields } = require('../lib/audit');
@@ -135,6 +135,8 @@ function shapeSession(r) {
     practice_id: r.practice_id,
     client_id: r.client_id,
     clinician_id: r.clinician_id,
+    external_source: r.external_source || null,
+    external_id: r.external_id || null,
     session_date: r.session_date,
     duration_minutes: r.duration_minutes,
     cpt_code: r.cpt_code,
@@ -153,13 +155,8 @@ function shapeSession(r) {
 
 // --- practice scoping --------------------------------------------------------
 
-async function loadPracticeId(userId) {
-  const res = await db.query(
-    `select practice_id from users where id = $1 and is_active = true limit 1`,
-    [userId]
-  );
-  return res.rows[0] ? res.rows[0].practice_id : null;
-}
+// loadPracticeId() removed — lib/principal.js derives practiceId for both a
+// staff JWT and a partner credential, so there is one answer rather than two.
 
 // True if clientId is a non-hidden client within this practice.
 // The client row when clientId is a visible client of this practice, else null.
@@ -185,10 +182,58 @@ async function clinicianInPractice(practiceId, clinicianId) {
 
 // --- handlers ----------------------------------------------------------------
 
+const EXTERNAL_SOURCES = ['sessionably'];
+
+// The partner's own identifier for the appointment this session represents.
+// Both halves travel together (the CHECK in migration 025 enforces that), and
+// an unknown source is refused rather than stored — an external reference
+// nobody can resolve is worse than none.
+function readExternalRef(body) {
+  const source = cleanText(body.external_source);
+  const id = cleanText(body.external_id);
+  if (!source && !id) return { ok: true, source: null, id: null };
+  if (!source || !id) {
+    return { ok: false, error: 'external_source and external_id must be supplied together.' };
+  }
+  if (!EXTERNAL_SOURCES.includes(source)) {
+    return { ok: false, error: `Unknown external_source. Expected one of: ${EXTERNAL_SOURCES.join(', ')}` };
+  }
+  if (id.length > 128) return { ok: false, error: 'external_id is too long.' };
+  return { ok: true, source, id };
+}
+
+async function findByExternalRef(practiceId, source, id) {
+  const r = await db.query(
+    `select * from sessions
+      where practice_id = $1 and external_source = $2 and external_id = $3
+        and is_hidden = false
+      limit 1`,
+    [practiceId, source, id]
+  );
+  return r.rows[0] || null;
+}
+
 async function createSession(practiceId, body, event, authCtx) {
   const clientId = cleanText(body.client_id);
   const clinicianId = cleanText(body.clinician_id);
   const sessionDate = cleanText(body.session_date);
+
+  // THE EXTERNAL REFERENCE, AND THE IDEMPOTENT SHORT-CIRCUIT.
+  //
+  // A partner retrying after a timeout must not create a twin. Checked here
+  // first (the common case: the session already exists and we simply hand it
+  // back), and backstopped by the UNIQUE index below for the case where two
+  // requests race past this check simultaneously.
+  const ext = readExternalRef(body || {});
+  if (!ext.ok) return json(400, { error: ext.error }, event);
+  if (ext.id) {
+    const existing = await findByExternalRef(practiceId, ext.source, ext.id);
+    if (existing) {
+      // 200, not 201: nothing was created. The caller gets the same session it
+      // would have got from a successful first call.
+      return json(200, { session: shapeSession(existing), created: false }, event);
+    }
+  }
 
   const missing = [];
   if (!clientId) missing.push('client_id');
@@ -269,11 +314,14 @@ async function createSession(practiceId, body, event, authCtx) {
   const placeOfService = seeded.place_of_service;
 
   if (recurrence === 'none') {
-    const res = await db.query(
+    let res;
+    try {
+    res = await db.query(
       `insert into sessions
          (practice_id, client_id, clinician_id, session_date, duration_minutes,
-          cpt_code, diagnosis_codes, place_of_service, procedure_modifiers, fee, notes, status)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, coalesce($12, 'scheduled'))
+          cpt_code, diagnosis_codes, place_of_service, procedure_modifiers, fee, notes, status,
+          external_source, external_id)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, coalesce($12, 'scheduled'), $13, $14)
        returning *`,
       [
         practiceId,
@@ -288,15 +336,28 @@ async function createSession(practiceId, body, event, authCtx) {
         seeded.fee,
         notes,
         status.value,
+        ext.source,
+        ext.id,
       ]
     );
+    } catch (err) {
+      // THE RACE. Both requests passed the existence check above and both
+      // inserted; sessions_external_ref_uq let exactly one through. The loser
+      // returns the winner's row, so a partner retrying under concurrency gets
+      // one session and two identical answers rather than a 500.
+      if (err && err.code === '23505' && ext.id) {
+        const winner = await findByExternalRef(practiceId, ext.source, ext.id);
+        if (winner) return json(200, { session: shapeSession(winner), created: false }, event);
+      }
+      throw err;
+    }
     const created = res.rows[0];
     await audit(event, authCtx, {
       action: 'session.create',
       resourceType: 'session',
       resourceId: created.id,
     });
-    return json(201, { session: shapeSession(created) }, event);
+    return json(201, { session: shapeSession(created), created: true }, event);
   }
 
   const endDate = cleanText(body.recurrence_end_date);
@@ -366,6 +427,16 @@ async function createSession(practiceId, body, event, authCtx) {
 async function listSessions(practiceId, event, authCtx) {
   const params = [practiceId];
   let where = `practice_id = $1 and is_hidden = false`;
+
+  // Lookup by the partner's own identifier. This is what makes recovery
+  // deterministic: after a timeout the caller asks "is there a session for MY
+  // appointment 4172", and the answer is a row or nothing — never a guess.
+  const externalId = queryParam(event, 'external_id');
+  if (externalId) {
+    const externalSource = queryParam(event, 'external_source') || 'sessionably';
+    params.push(externalSource, externalId);
+    where += ` and external_source = $${params.length - 1} and external_id = $${params.length}`;
+  }
 
   const clientId = queryParam(event, 'client_id');
   if (clientId != null && clientId !== '') {
@@ -642,24 +713,36 @@ exports.handler = async (event) => {
     return preflight(event);
   }
 
-  let auth;
+  // Staff JWT or partner credential; practiceId is server-derived either way.
+  let principal;
   try {
-    auth = requireAuth(event);
+    principal = await resolvePrincipal(event);
   } catch (err) {
     return json(err.statusCode || 401, { error: 'Unauthorized' }, event);
   }
 
   try {
-    const practiceId = await loadPracticeId(auth.user.sub);
-    if (!practiceId) {
-      return json(401, { error: 'Unauthorized' }, event);
+    const practiceId = principal.practiceId;
+
+    // PER-ACTION SCOPE. Reading a session and COMPLETING one are different
+    // permissions: completion auto-creates a draft claim in the same
+    // transaction (see updateSession), so it is a claim-creating act and is
+    // scoped as one. A human is unaffected — requireScope() is a no-op for
+    // actorType 'user'.
+    const scopeForMethod = method === 'GET' ? 'sessions:read'
+      : (method === 'POST' || method === 'PATCH') ? 'sessions:write'
+      : null;
+    try {
+      requireScope(principal, scopeForMethod);
+    } catch (err) {
+      return json(err.statusCode || 403, { error: 'Forbidden' }, event);
     }
 
     const id = pathId(event);
     const body = method === 'POST' || method === 'PATCH' ? parseBody(event) : null;
 
-    const userId = auth.user.sub;
-    const authCtx = { userId, practiceId };
+    const userId = principal.userId;
+    const authCtx = authContext(principal);
 
     if (method === 'POST' && !id) return await createSession(practiceId, body, event, authCtx);
     if (method === 'GET' && !id) return await listSessions(practiceId, event, authCtx);
