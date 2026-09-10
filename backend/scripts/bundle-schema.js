@@ -35,6 +35,17 @@ const migSrcDir = path.join(__dirname, '..', '..', 'db', 'migrations');
 const migDestDir = path.join(destDir, 'migrations');
 
 if (fs.existsSync(migSrcDir)) {
+  // CLEAR FIRST. This directory is a build artifact, and copying into it without
+  // clearing only ever ACCUMULATES: a migration deleted, renamed, or simply not
+  // present on the branch being built lingers from whatever was built here last.
+  //
+  // That is not cosmetic. The bundle is what the one-off runner can invoke, so a
+  // stale file makes a migration invocable on a deploy that does not contain it
+  // — which for the expand/contract pair means 024 could be applied before the
+  // writer it depends on has shipped, the exact ordering failure the split
+  // exists to prevent. Caught on a reused deploy checkout; a fresh clone hides
+  // it, because there is nothing left over to go stale.
+  fs.rmSync(migDestDir, { recursive: true, force: true });
   fs.mkdirSync(migDestDir, { recursive: true });
   const files = fs.readdirSync(migSrcDir).filter((f) => /^\d{3}_.*\.sql$/.test(f));
   for (const f of files) {
