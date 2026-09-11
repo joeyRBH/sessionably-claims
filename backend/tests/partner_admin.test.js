@@ -153,6 +153,38 @@ async function dbTests() {
         assert.equal(second.changed, false, 'second revoke reported a change');
     });
 
+    await check('practices lists counts only — no member details in the bare listing', async () => {
+        const r = await handler({ practices: {} });
+        assert.equal(r.ok, true);
+        assert.ok(Array.isArray(r.practices) && r.practices.length >= 1);
+        for (const p of r.practices) {
+            assert.ok(p.id && typeof p.name === 'string', 'missing id/name');
+            for (const k of ['clients', 'sessions', 'claims', 'members']) {
+                assert.equal(typeof p[k], 'number', `count ${k} missing`);
+            }
+            assert.ok(!('email' in p) && !('members_list' in p), 'bare listing leaked member detail');
+        }
+    });
+
+    await check('practices refuses an unknown name and says what exists', async () => {
+        const r = await handler({ practices: { name: 'No Such Practice Anywhere' } });
+        assert.equal(r.ok, false);
+        assert.ok(Array.isArray(r.available_names));
+    });
+
+    await check('practices returns members only for an exactly-named practice', async () => {
+        const all = await handler({ practices: {} });
+        const target = all.practices[0].name;
+        const r = await handler({ practices: { name: target } });
+        if (r.ok) {
+            assert.ok(Array.isArray(r.members), 'no members returned for an exact name');
+            for (const m of r.members) assert.ok(m.user_id && m.role, 'member missing ids');
+        } else {
+            // Duplicate names are a legitimate refusal, and the point of the mode.
+            assert.match(r.message, /share that name/);
+        }
+    });
+
     await check('resolve refuses an unknown email rather than guessing', async () => {
         const r = await handler({ resolve: { email: 'nobody@example.invalid' } });
         assert.equal(r.ok, false);
