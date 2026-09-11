@@ -25,6 +25,8 @@
 // ============================================================================
 //
 //   {}                                    -> summary counts, no PII
+//   {"practices":{}}                      -> every practice + data counts, no PII
+//   {"practices":{"name":"..."}}          -> that ONE practice's members
 //   {"resolve":{"email":"..."}}           -> ONE user's ids, for linking
 //   {"list":{"practice_id":"..."}}        -> that practice's credentials
 //   {"issue":{"practice_id":"...", ...}}  -> WRITES. Returns the secret ONCE.
@@ -58,6 +60,11 @@
 // not unique — a credential or a clinician link recorded against the wrong
 // identity is a misattributed clinical and financial record. Summary mode
 // returns counts only. No patient data is reachable from this handler at all.
+//
+// `practices` lists every practice with COUNTS ONLY. This database holds other
+// customers' practices, so member details come back only for a practice named
+// exactly — one the operator already knows — and even then they are clinician
+// ids, names and emails, never a patient's anything.
 
 const db = require('../lib/db');
 const partner = require('../lib/partner_auth');
@@ -90,12 +97,72 @@ async function summary() {
         counts: r.rows[0],
         known_scopes: partner.SCOPES,
         usage: {
+            practices: '{"practices":{}}  (add {"name":"Exact Practice Name"} for its members)',
             resolve: '{"resolve":{"email":"someone@example.com"}}',
             list: '{"list":{"practice_id":"<uuid>"}}',
             issue: '{"issue":{"practice_id":"<uuid>","scopes":["clients:read"],"label":"..."}}',
             revoke: '{"revoke":{"key_id":"rdbp_..."}}',
         },
     };
+}
+
+/**
+ * Which practice actually holds the data?
+ *
+ * Linking the WRONG practice is not a recoverable typo: oon_practice_links
+ * constrains both practice_id and remote_practice_id UNIQUE, so by the time a
+ * claim is keyed to the link, unwinding it means unpicking clinical and
+ * financial records. Resolving by email turned out not to settle it — the same
+ * person can hold several accounts with similarly-named practices — so this
+ * answers the question by EVIDENCE instead: the practice with the clients and
+ * sessions in it is the live one.
+ *
+ * PII: the bare listing returns id, name and COUNTS only. This database holds
+ * other customers' practices, and an operator resolving their own account has
+ * no business reading the membership of anyone else's. Member details are
+ * returned only for a practice named EXACTLY, i.e. one the operator already
+ * knows the name of — and even then it is ids, names and emails of clinicians,
+ * never anything about a patient.
+ */
+async function practices(spec) {
+    const name = typeof spec.name === 'string' ? spec.name.trim() : '';
+
+    const rows = await db.query(`
+        SELECT p.id, p.name,
+               (SELECT count(*)::int FROM clients  c WHERE c.practice_id = p.id) AS clients,
+               (SELECT count(*)::int FROM sessions s WHERE s.practice_id = p.id) AS sessions,
+               (SELECT count(*)::int FROM claims   k WHERE k.practice_id = p.id) AS claims,
+               (SELECT count(*)::int FROM users    u WHERE u.practice_id = p.id) AS members
+          FROM practices p
+         ORDER BY (SELECT count(*) FROM sessions s WHERE s.practice_id = p.id) DESC,
+                  (SELECT count(*) FROM clients  c WHERE c.practice_id = p.id) DESC,
+                  p.name`);
+
+    if (!name) {
+        return { ok: true, mode: 'practices', practices: rows.rows };
+    }
+
+    const match = rows.rows.filter((r) => r.name.toLowerCase() === name.toLowerCase());
+    if (match.length === 0) {
+        return {
+            ok: false,
+            mode: 'practices',
+            message: `no practice named "${name}"`,
+            available_names: rows.rows.map((r) => r.name),
+        };
+    }
+    if (match.length > 1) {
+        // Two practices sharing a name is exactly the ambiguity this mode
+        // exists to expose. Return both with their counts rather than picking.
+        return { ok: false, mode: 'practices', message: `${match.length} practices share that name`, matches: match };
+    }
+
+    const members = await db.query(
+        `SELECT id AS user_id, role, first_name, last_name, email
+           FROM users WHERE practice_id = $1 ORDER BY role, last_name`,
+        [match[0].id]
+    );
+    return { ok: true, mode: 'practices', practice: match[0], members: members.rows };
 }
 
 /**
@@ -264,6 +331,7 @@ exports.handler = async (event) => {
 
         // Each mode is opted into by name. An unknown or empty payload is a
         // read-only summary, never a write.
+        if (payload.practices && typeof payload.practices === 'object') return await practices(payload.practices);
         if (payload.resolve && typeof payload.resolve === 'object') return await resolve(payload.resolve);
         if (payload.list && typeof payload.list === 'object') return await list(payload.list);
         if (payload.revoke && typeof payload.revoke === 'object') return await revoke(payload.revoke);
@@ -276,4 +344,4 @@ exports.handler = async (event) => {
     }
 };
 
-exports._internals = { UUID_RE, summary, resolve, list, issue, revoke };
+exports._internals = { UUID_RE, summary, practices, resolve, list, issue, revoke };
