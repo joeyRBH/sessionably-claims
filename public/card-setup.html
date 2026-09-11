@@ -278,7 +278,15 @@
       <!-- Form state. -->
       <div id="state-form" hidden>
         <h1 id="cs-heading">Save your card</h1>
-        <p class="subhead">Your practice will use this to securely collect the platform
+        <!-- NAME THE PARTY THAT ACTUALLY CHARGES THE CARD. This used to read
+             "Your practice will use this…", which was false: the practice never
+             touches this money. Stripe Connect is not implemented here — there is
+             no Stripe-Account header anywhere in this repo — so createPaymentIntent
+             runs on Reddably's own key and the platform fee settles in Reddably's
+             balance. The charge reaches the patient's statement as Reddably, and a
+             statement descriptor that matches nothing they were told is how a
+             routine fee becomes a dispute. -->
+        <p class="subhead">Reddably will use this to securely collect the platform
           fee on your insurance claims. You won't be charged anything now.</p>
 
         <form id="card-form" novalidate>
