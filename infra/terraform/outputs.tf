@@ -65,6 +65,11 @@ output "migrate_function_name" {
   value       = aws_lambda_function.migrate.function_name
 }
 
+output "partner_admin_function_name" {
+  description = "Name of the operator-only partner-credential admin Lambda. Operator-invoked only — deploy.sh never calls it. Read-only unless a write mode is named in the payload; an `issue` response carries the plaintext credential exactly once."
+  value       = aws_lambda_function.partner_admin.function_name
+}
+
 output "backfill_claim_fields_function_name" {
   description = "Name of the one-off claim-backfill Lambda. Operator-invoked only — deploy.sh never calls it. Dry-run unless invoked with {\"apply\": true}."
   value       = aws_lambda_function.backfill_claim_fields.function_name
