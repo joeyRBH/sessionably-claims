@@ -185,6 +185,32 @@ async function dbTests() {
         }
     });
 
+    await check('client lookup refuses without a practice_id uuid', async () => {
+        const r = await handler({ client: { name: 'Someone' } });
+        assert.equal(r.ok, false);
+        assert.match(r.message, /practice_id uuid/);
+    });
+
+    await check('client lookup refuses an unknown name — never enumerates', async () => {
+        const r = await handler({ client: { practice_id: PRACTICE, name: 'Nobody At All' } });
+        assert.equal(r.ok, false);
+        assert.ok(!('candidates' in r) || r.candidates.length === 0);
+        assert.ok(!JSON.stringify(r).match(/first_name/), 'refusal leaked client rows');
+    });
+
+    await check('client lookup returns ids only, no clinical or contact detail', async () => {
+        const seeded = await db.query(
+            `INSERT INTO clients (practice_id, first_name, last_name)
+             VALUES ($1, 'Zz', 'Fixture') RETURNING id`, [PRACTICE]);
+        const r = await handler({ client: { practice_id: PRACTICE, name: 'Zz Fixture' } });
+        assert.equal(r.ok, true);
+        assert.equal(r.client_id, seeded.rows[0].id);
+        for (const forbidden of ['date_of_birth', 'dob', 'phone', 'email', 'address', 'insurance']) {
+            assert.ok(!(forbidden in r), `client lookup returned ${forbidden}`);
+        }
+        await db.query('DELETE FROM clients WHERE id = $1', [seeded.rows[0].id]);
+    });
+
     await check('resolve refuses an unknown email rather than guessing', async () => {
         const r = await handler({ resolve: { email: 'nobody@example.invalid' } });
         assert.equal(r.ok, false);
