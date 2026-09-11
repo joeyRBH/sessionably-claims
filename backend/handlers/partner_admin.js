@@ -27,6 +27,7 @@
 //   {}                                    -> summary counts, no PII
 //   {"practices":{}}                      -> every practice + data counts, no PII
 //   {"practices":{"name":"..."}}          -> that ONE practice's members
+//   {"client":{"practice_id":…,"name":…}} -> ONE client's uuid, by exact name
 //   {"resolve":{"email":"..."}}           -> ONE user's ids, for linking
 //   {"list":{"practice_id":"..."}}        -> that practice's credentials
 //   {"issue":{"practice_id":"...", ...}}  -> WRITES. Returns the secret ONCE.
@@ -98,6 +99,7 @@ async function summary() {
         known_scopes: partner.SCOPES,
         usage: {
             practices: '{"practices":{}}  (add {"name":"Exact Practice Name"} for its members)',
+            client: '{"client":{"practice_id":"<uuid>","name":"Exact Client Name"}}',
             resolve: '{"resolve":{"email":"someone@example.com"}}',
             list: '{"list":{"practice_id":"<uuid>"}}',
             issue: '{"issue":{"practice_id":"<uuid>","scopes":["clients:read"],"label":"..."}}',
@@ -163,6 +165,64 @@ async function practices(spec) {
         [match[0].id]
     );
     return { ok: true, mode: 'practices', practice: match[0], members: members.rows };
+}
+
+/**
+ * Resolve ONE client's uuid, by exact name within one practice.
+ *
+ * Linking a Sessionably client to a Reddably one needs the Reddably uuid, and
+ * the Reddably UI does not surface it anywhere the operator can copy.
+ *
+ * NAMED, NEVER LISTED. This takes a name the operator already knows and returns
+ * that one client's id. It will not enumerate a caseload: these are patients,
+ * and a convenience that pulled 29 names into an operator's terminal — or into
+ * a transcript — would be a disclosure with no operational purpose. A name that
+ * matches nothing, or more than one client, is REFUSED rather than resolved, so
+ * a link can never be recorded against a guess.
+ *
+ * Returns the id, the name the caller already supplied, and status. No date of
+ * birth, no contact details, no insurance, no claims.
+ */
+async function client(spec) {
+    const practiceId = typeof spec.practice_id === 'string' ? spec.practice_id.trim() : '';
+    const name = typeof spec.name === 'string' ? spec.name.trim() : '';
+    if (!UUID_RE.test(practiceId)) {
+        return { ok: false, mode: 'client', message: 'client lookup requires a practice_id uuid' };
+    }
+    if (!name) {
+        return { ok: false, mode: 'client', message: 'client lookup requires an exact name, e.g. "Jane Doe"' };
+    }
+
+    const r = await db.query(
+        `SELECT id, first_name, last_name, status, is_hidden
+           FROM clients
+          WHERE practice_id = $1
+            AND lower(trim(first_name || ' ' || last_name)) = lower($2)`,
+        [practiceId, name]
+    );
+
+    if (r.rows.length === 0) {
+        return { ok: false, mode: 'client', message: `no client named "${name}" in that practice` };
+    }
+    if (r.rows.length > 1) {
+        // Two clients sharing a name is precisely when a guess would be worst.
+        return {
+            ok: false,
+            mode: 'client',
+            message: `${r.rows.length} clients share that name — resolve by hand, do not link a guess`,
+            candidates: r.rows.map((c) => ({ id: c.id, status: c.status, hidden: c.is_hidden })),
+        };
+    }
+
+    const c = r.rows[0];
+    return {
+        ok: true,
+        mode: 'client',
+        client_id: c.id,
+        name: `${c.first_name} ${c.last_name}`,
+        status: c.status,
+        hidden: c.is_hidden,
+    };
 }
 
 /**
@@ -332,6 +392,7 @@ exports.handler = async (event) => {
         // Each mode is opted into by name. An unknown or empty payload is a
         // read-only summary, never a write.
         if (payload.practices && typeof payload.practices === 'object') return await practices(payload.practices);
+        if (payload.client && typeof payload.client === 'object') return await client(payload.client);
         if (payload.resolve && typeof payload.resolve === 'object') return await resolve(payload.resolve);
         if (payload.list && typeof payload.list === 'object') return await list(payload.list);
         if (payload.revoke && typeof payload.revoke === 'object') return await revoke(payload.revoke);
@@ -344,4 +405,4 @@ exports.handler = async (event) => {
     }
 };
 
-exports._internals = { UUID_RE, summary, practices, resolve, list, issue, revoke };
+exports._internals = { UUID_RE, summary, practices, client, resolve, list, issue, revoke };
