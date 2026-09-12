@@ -139,6 +139,28 @@ check('025: the partner lookup index exists', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Migration 026 — refund-request provenance
+// ---------------------------------------------------------------------------
+
+check('026: refund_requests gains the provenance column', () => {
+    has(/alter table refund_requests\s+add column if not exists source text not null default 'patient_reported'/i,
+        'refund_requests.source');
+});
+
+// The default is what makes this migration safe to apply BEFORE the handler
+// ships: every currently deployed INSERT omits the column, takes the default,
+// and satisfies the CHECK. Without it this would be migration 024's trap again.
+check('026: source is NOT NULL with a default, so existing writers keep working', () => {
+    has(/add column if not exists source text not null default 'patient_reported'/i,
+        "refund_requests.source's NOT NULL default");
+});
+
+check('026: the provenance CHECK admits exactly the two sources', () => {
+    has(/refund_requests_source_check[\s\S]{0,200}?check \(source in \('patient_reported', 'system_denial'\)\)/i,
+        'refund_requests_source_check');
+});
+
+// ---------------------------------------------------------------------------
 // The ledger the one-off runner writes to
 // ---------------------------------------------------------------------------
 

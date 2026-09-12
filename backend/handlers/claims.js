@@ -48,6 +48,7 @@ const {
 const {
   evaluateGroup, orderForFiling, suggestGroups, MAX_GROUPED_LINES,
 } = require('../lib/claim_grouping');
+const { maybeCreateForDenial } = require('../lib/refund_auto');
 // Every PURE pre-submission rule lives in lib/claim_readiness.js — one
 // implementation shared by this submit path and the readiness projection on
 // GET /claims, so the list can never disagree with the gate. See that module's
@@ -1492,12 +1493,58 @@ async function refreshClaim(practiceId, userId, id, event, authCtx) {
   });
 
   if (!updated) return json(404, { error: 'Not found' }, event);
+
+  // A denial the payer actually adjudicated raises a refund request for the
+  // practice admin, so the fee guarantee does not depend on the patient
+  // noticing, telling their clinician, and somebody typing it in.
+  //
+  // DELIBERATELY OUTSIDE THE TRANSACTION ABOVE, and deliberately swallowed. The
+  // status update is what the payer told us and must survive on its own; a
+  // request that fails to be raised is recoverable (the acknowledgment is
+  // stored, the claim reads 'denied', an admin can still file it by hand),
+  // whereas rolling back the status because a queue insert failed throws away
+  // the only record of the payer's answer. Same best-effort posture as the fee
+  // charge on submit.
+  //
+  // Nothing here approves anything: it creates an OPEN request a human decides.
+  let autoRefund = null;
+  try {
+    autoRefund = await maybeCreateForDenial(db, {
+      claim: updated,
+      status: newStatus,
+      statusChanged: changed,
+      denialClass: status.denial_class || null,
+    });
+  } catch (err) {
+    // Never the reason, which could echo payer text; never the claim's content.
+    console.error('claims refresh: auto refund-request creation failed');
+    autoRefund = null;
+  }
+
   await audit(event, authCtx, {
     action: 'claim.refresh',
     resourceType: 'claim',
     resourceId: id,
-    metadata: { status: updated.status, outcome: changed ? 'updated' : 'no_update' },
+    metadata: {
+      status: updated.status,
+      outcome: changed ? 'updated' : 'no_update',
+      // Non-PHI: an enum code saying whether a request was raised and, when not,
+      // which rule declined. This is the audit trail for money the guarantee
+      // promises back, so "we looked and decided not to" has to be legible.
+      refund_request: autoRefund
+        ? (autoRefund.created ? 'created' : autoRefund.reason)
+        : 'error',
+    },
   });
+
+  if (autoRefund && autoRefund.created) {
+    await audit(event, authCtx, {
+      action: 'refund_request.auto_create',
+      resourceType: 'refund_request',
+      resourceId: autoRefund.request.id,
+      metadata: { claim_id: id, source: 'system_denial' },
+    });
+  }
 
   // (a) Status updated, or (b) a valid response that matched our current status
   // with no change. Both are 200; the outcome/message let the UI pick the toast.
@@ -1505,6 +1552,9 @@ async function refreshClaim(practiceId, userId, id, event, authCtx) {
     claim: shapeClaim(updated),
     outcome: changed ? 'updated' : 'no_update',
     message: changed ? 'Status updated from payer response.' : 'Payer has no update yet.',
+    // Lets the UI say "a refund request was raised" in the same toast, rather
+    // than the admin discovering it later in the queue with no idea why.
+    refund_request_created: !!(autoRefund && autoRefund.created),
   }, event);
 }
 

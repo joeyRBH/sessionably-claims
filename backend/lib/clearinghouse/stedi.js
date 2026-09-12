@@ -996,6 +996,37 @@ function mapStatusCategory(cat) {
   return null;
 }
 
+// Which KIND of "denied" a 277 category code describes. mapStatusCategory above
+// deliberately collapses both kinds into the single `denied` status the rest of
+// the app understands — but they are not the same event, and the difference is
+// the difference between refunding a fee and not:
+//
+//   'adjudicated'           F2, Finalized/Denial. The payer looked at the claim
+//                           and said no. This is the outcome the fee guarantee
+//                           is about.
+//
+//   'acknowledgement_reject' A3/A6/A7/A8, rejected at the front door. The claim
+//                           was never adjudicated — it was malformed, or the
+//                           member/provider could not be matched. It is FIXABLE:
+//                           the practice corrects it and resubmits, and that
+//                           resubmission charges its own fee. Treating this as a
+//                           denial would refund a fee for a claim that is about
+//                           to be filed again.
+//
+//   null                    We could not tell. Includes every denial derived
+//                           from a bare statusCode with no category (mapStatus
+//                           below), because a statusCode alone does not say
+//                           whether adjudication happened.
+//
+// Callers deciding anything consequential must treat null as "not adjudicated" —
+// see backend/lib/refund_auto.js, which acts only on 'adjudicated'.
+function denialClass(cat) {
+  const c = String(cat == null ? '' : cat).trim().toUpperCase();
+  if (c === 'F2') return 'adjudicated';
+  if (c === 'A3' || c === 'A6' || c === 'A7' || c === 'A8') return 'acknowledgement_reject';
+  return null;
+}
+
 // Map a Stedi claim statusCode (numeric or descriptive) to the Reddably enum.
 // Fallback only — used when a response carries a statusCode but no category code we
 // recognize. Returns null for values we can't place, so the caller can treat the
@@ -1120,6 +1151,10 @@ async function getStatus({ control_number, claim, ctx }) {
   return {
     status,
     denial_reason: denialReason,
+    // Only meaningful when status === 'denied'; null everywhere else, and null
+    // ALSO when the denial came from a bare statusCode with no category, since
+    // that cannot tell us whether the payer actually adjudicated.
+    denial_class: status === 'denied' ? denialClass(category) : null,
     allowed_amount: allowed,
     reimbursed_amount: reimbursed,
     patient_responsibility: patientResp,
@@ -1482,6 +1517,7 @@ module.exports = {
   searchPayers,
   mapStatus,
   mapStatusCategory,
+  denialClass,
   firstStatus,
   // ERA enrollment (Enrollments API).
   ensureEnrollmentProvider,

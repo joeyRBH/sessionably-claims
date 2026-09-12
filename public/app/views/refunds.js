@@ -56,6 +56,21 @@
     return h('span', { class: 'badge badge--' + tone }, label || '—');
   }
 
+  // Where the request came from. STONE, always — provenance is context for the
+  // decision, not a verdict on it. Sage would read as "this one is good" and
+  // urgent as "this one is trouble"; it is neither, and the admin still decides.
+  // A patient-reported request gets no marker: it is the norm this queue was
+  // built around, and marking both would make the distinction louder than the
+  // outcome it sits next to.
+  function sourceMark(r) {
+    if (r.source !== 'system_denial') return null;
+    return h('span', {
+      class: 'badge badge--neutral',
+      style: 'margin-left:var(--space-2)',
+      title: 'Raised automatically from a payer denial, not reported by the patient',
+    }, 'Auto');
+  }
+
   function shortClaim(r) {
     if (r.claim_number) return r.claim_number;
     return r.claim_id ? String(r.claim_id).slice(0, 8) : '—';
@@ -110,7 +125,7 @@
         h('td', { style: 'white-space:nowrap' }, R.fmtDate(r.created_at)),
         h('td', null, r.client_name || '—'),
         h('td', null, h('code', { style: 'font-size:var(--font-size-2)' }, shortClaim(r))),
-        h('td', null, badge(r.outcome_label, 'outcome')),
+        h('td', null, [badge(r.outcome_label, 'outcome'), sourceMark(r)]),
         h('td', null, badge(r.status, 'status')),
         h('td', null, actionsCell(r)),
       ]);
