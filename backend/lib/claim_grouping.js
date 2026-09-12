@@ -222,6 +222,143 @@ function orderForFiling(claims) {
   });
 }
 
+// =============================================================================
+// SUGGESTION — which drafts the software should point out, unprompted.
+// =============================================================================
+//
+// Same authority, opposite direction. evaluateGroup() answers "may THESE be
+// filed together?" about a selection a human already made. suggestGroups()
+// answers "which sets WOULD be groupable?" over the whole draft queue, so the
+// biller is told rather than having to notice.
+//
+// It ADVISES AND NEVER ACTS. Nothing here groups a claim, retires a draft or
+// moves money; the output is a list of claim ids the UI offers, and grouping
+// still happens only when a human confirms and POSTs. That is why this function
+// is allowed to be opinionated about which drafts to put in front of someone —
+// being wrong costs a dismissed suggestion, not a wrongly-filed claim.
+//
+// Every emitted set is run back through evaluateGroup() before it is returned,
+// so a suggestion can never be something the server would then refuse. The two
+// cannot drift, because there is only one rulebook and the suggester is a
+// caller of it rather than a copy of it.
+
+// The compatibility key: two drafts can share a claim only if all five
+// must-match values agree, so drafts that agree on all five land in one bucket.
+// Built from CLAIM_LEVEL_FIELDS rather than a second hand-written list — adding
+// a field to the contract must change the buckets automatically, or the
+// suggester would go on offering sets the gate has started refusing.
+//
+// null and '' collapse to the same key component, matching how evaluateGroup
+// compares them (`(c[key] || null) !== (first[key] || null)`).
+function groupingKey(claim) {
+  const parts = CLAIM_LEVEL_FIELDS.map(({ key }) => String(claim[key] || ''));
+  // Diagnoses are claim-level too, normalized to a SET — same rule as
+  // sameDiagnoses, reusing the same normalizer.
+  parts.push(normalizedDiagnoses(claim.diagnosis_codes).join(','));
+  // \u0000 cannot occur in a uuid, a POS code or an ICD-10 code, so no
+  // combination of field values can collide into another bucket's key.
+  return parts.join('\u0000');
+}
+
+// The per-claim half of evaluateGroup's eligibility, applied BEFORE bucketing so
+// one ineligible draft cannot suppress a suggestion for the eligible ones around
+// it. Kept deliberately in the same order as the checks in evaluateGroup.
+function isGroupCandidate(claim) {
+  if (!claim) return false;
+  if (claim.status !== 'draft') return false;
+  if (isReplacement(claim)) return false;
+  if (claim.control_number != null || claim.submitted_at != null) return false;
+  const amount = money(claim.billed_amount);
+  return amount != null && amount > 0;
+}
+
+// Drop every claim of any session that appears more than once in a bucket.
+//
+// Two drafts billing the SAME session is legal (claims are 1:many with sessions,
+// for resubmission and appeal), but a suggestion containing both is one
+// evaluateGroup would refuse as duplicate_session. The fix is NOT to pick one of
+// the twins: which of two drafts for a session should be filed is a judgement
+// about the claim, and making it silently inside a suggestion is exactly the
+// kind of quiet filing decision this module exists to prevent. So the ambiguity
+// is EXCLUDED rather than resolved — both twins step out, the unambiguous drafts
+// around them are still suggested, and the biller resolves the pair themselves.
+function withoutAmbiguousSessions(rows) {
+  const seen = Object.create(null);
+  rows.forEach((c) => {
+    const sid = c.session_id;
+    if (!sid) return;
+    seen[sid] = (seen[sid] || 0) + 1;
+  });
+  return rows.filter((c) => !c.session_id || seen[c.session_id] === 1);
+}
+
+// Suggest groupable sets over a list of claims (typically one practice's whole
+// draft queue, already scoped by the caller's role).
+//
+// Returns, ordered so the list is stable across reloads:
+//   [{ client_id, claim_ids: [...], lines, total }, ...]
+//
+// PHI: ids, counts and a money total only — never a name, a member id or a
+// diagnosis value. The browser already holds the claims these ids refer to and
+// does its own labelling.
+function suggestGroups(claims) {
+  const rows = (Array.isArray(claims) ? claims : []).filter(isGroupCandidate);
+
+  const buckets = new Map();
+  rows.forEach((c) => {
+    const key = groupingKey(c);
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key).push(c);
+  });
+
+  const out = [];
+  buckets.forEach((bucket) => {
+    const eligible = withoutAmbiguousSessions(bucket);
+    if (eligible.length < 2) return;
+
+    // Filing order first, then split into claim-sized chunks. A client with
+    // eight groupable drafts cannot file one claim — a CMS-1500 holds six
+    // service lines — but they CAN file two, and saying "group six of these"
+    // while silently ignoring the rest would leave the remainder looking
+    // ungroupable. Chunking by date keeps each suggested claim contiguous in
+    // time, which is how a payer reads it; a trailing chunk of one is dropped,
+    // because one claim is not a grouping.
+    const ordered = orderForFiling(eligible);
+    for (let i = 0; i < ordered.length; i += MAX_GROUPED_LINES) {
+      const chunk = ordered.slice(i, i + MAX_GROUPED_LINES);
+      if (chunk.length < 2) continue;
+
+      // The gate has the final word on every set that leaves here.
+      const verdict = evaluateGroup(chunk);
+      if (!verdict.ok) continue;
+
+      out.push({
+        // chunk is in filing order, so chunk[0] carries the earliest date of
+        // service. Captured here for the sort below and stripped before the
+        // suggestion is returned — it is an ordering key, not part of the API.
+        earliest: chunk[0].session_date ? String(chunk[0].session_date).slice(0, 10) : '9999-12-31',
+        client_id: chunk[0].client_id || null,
+        claim_ids: chunk.map((c) => c.id),
+        lines: verdict.lines,
+        total: verdict.total,
+      });
+    }
+  });
+
+  // Oldest work first — the draft that has been waiting longest is the one most
+  // worth filing. Tie-broken on the first claim id so the order never depends on
+  // Map iteration or row order.
+  out.sort((a, b) => {
+    if (a.earliest < b.earliest) return -1;
+    if (a.earliest > b.earliest) return 1;
+    return a.claim_ids[0] < b.claim_ids[0] ? -1 : 1;
+  });
+
+  return out.map(({ client_id, claim_ids, lines, total }) => ({
+    client_id, claim_ids, lines, total,
+  }));
+}
+
 module.exports = {
   MAX_GROUPED_LINES,
   CLAIM_LEVEL_FIELDS,
@@ -230,4 +367,5 @@ module.exports = {
   isReplacement,
   evaluateGroup,
   orderForFiling,
+  suggestGroups,
 };

@@ -1114,3 +1114,56 @@ textarea.field__control {
     max-width: none;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Grouping suggestions — "these drafts could be one claim".
+
+   STONE, deliberately. A suggestion is unstarted work, not a resolved state, so
+   it earns neither sage (which marks a claim actually paid/accepted) nor urgent
+   (which is reserved for a rejection or a failed payment). It is a quiet note in
+   the same stone as the table it sits above — no urgency theater for something
+   the biller is free to ignore.
+   ------------------------------------------------------------------------- */
+.claim-suggest {
+  margin: 0 0 var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-width-1) solid var(--color-border);
+  border-radius: var(--radius-3);
+  background: var(--color-surface-sunken);
+}
+.claim-suggest__lede {
+  margin: 0 0 var(--space-3);
+  font-size: var(--font-size-2);
+  color: var(--color-text-muted);
+}
+.claim-suggest__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-2) 0;
+  border-top: var(--border-width-1) solid var(--color-border);
+}
+.claim-suggest__item:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+.claim-suggest__what {
+  min-width: 0;
+  font-size: var(--font-size-3);
+  color: var(--color-text);
+}
+/* Dates and the total are supporting detail, not the headline. */
+.claim-suggest__detail {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--font-size-2);
+  color: var(--color-text-muted);
+}
+@media (max-width: 640px) {
+  .claim-suggest__item {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-2);
+  }
+}

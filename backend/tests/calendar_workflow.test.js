@@ -413,10 +413,11 @@ assert.strictEqual(bustOf('./views/dashboard.js'), '20260728c',
   'the Dashboard cache-buster is untouched — its source did not change');
 assert.strictEqual(bustOf('./views/calendar.js'), '20260728c',
   'the Calendar cache-buster is untouched — its source did not change');
-// claims.js has since been re-bumped by the per-client billing defaults change
-// (the Edit-claim form gained the "save as defaults" control). Still pinned, so
-// that an unintended bump is still caught — just at its current value.
-assert.strictEqual(bustOf('./views/claims.js'), '20260824b',
+// claims.js has since been re-bumped twice: by the per-client billing defaults
+// change (the Edit-claim form gained the "save as defaults" control), and by the
+// grouping-suggestion callout on the draft queue. Still pinned, so that an
+// UNINTENDED bump is still caught — just at its current value.
+assert.strictEqual(bustOf('./views/claims.js'), '20260912a',
   'the Claims cache-buster is at its current value');
 
 console.log('PASS calendar_workflow.test.js');

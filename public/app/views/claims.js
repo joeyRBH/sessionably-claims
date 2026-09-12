@@ -186,7 +186,11 @@
         var history = results[1]
           ? ((results[1].claims) || [])
           : first.filter(function (c) { return c.status !== 'draft'; });
-        render(drafts, history, historyStatus || '');
+        // results[0] is ALWAYS the draft-bearing request (unfiltered, or an
+        // explicit status:'draft'), so its suggestions are computed over exactly
+        // the drafts being rendered. The history request never carries any.
+        var suggestions = (results[0] && results[0].suggestions) || [];
+        render(drafts, history, historyStatus || '', suggestions);
       }).catch(function (err) {
         R.renderError(root, err, function () { load(historyStatus); });
       });
@@ -376,11 +380,16 @@
       });
     }
 
-    function draftsCard(drafts) {
+    function draftsCard(drafts, suggestions) {
       var body;
       // id -> claim, for everything currently ticked. Lives per render, so a
       // reload clears it rather than acting on claims that may no longer exist.
       var selected = {};
+      // id -> the row's checkbox, so a suggestion can tick exactly the rows it
+      // names. Same lifetime as `selected`, and the two are only ever changed
+      // together — a ticked box whose claim is not in `selected` would group a
+      // different set than the one on screen.
+      var boxes = {};
       var groupBtn = h('button', {
         class: 'btn btn--secondary btn--sm', type: 'button',
         onClick: function () {
@@ -396,6 +405,84 @@
         groupBtn.textContent = n >= 2 ? 'Group ' + n + ' claims into one' : 'Group selected';
       }
 
+      // --- suggestions ------------------------------------------------------
+      //
+      // The server (backend/lib/claim_grouping.js) decides which drafts WOULD
+      // group and hands back sets of claim ids. This renders them and nothing
+      // more: clicking one ticks exactly those rows and opens the SAME confirm
+      // dialog the manual path uses. No separate submit, no shortcut past the
+      // confirmation — the suggestion changes what the biller notices, never
+      // what gets filed.
+      var draftById = {};
+      drafts.forEach(function (c) { draftById[c.id] = c; });
+
+      // Tick a suggested set, and only it. The selection is cleared first so the
+      // ticked rows always match what the dialog is about to describe —
+      // otherwise an earlier stray tick would ride along into the grouping.
+      function applySuggestion(claimIds) {
+        Object.keys(selected).forEach(function (id) {
+          if (boxes[id]) boxes[id].checked = false;
+          delete selected[id];
+        });
+        var rows = [];
+        claimIds.forEach(function (id) {
+          var claim = draftById[id];
+          var box = boxes[id];
+          if (!claim || !box) return;
+          box.checked = true;
+          selected[id] = claim;
+          rows.push(claim);
+        });
+        refreshGroupBtn();
+        // Below two, there is nothing to confirm — the list moved under us
+        // (someone else filed one of these in another tab). Leave the ticks
+        // showing what survived and let the biller decide.
+        if (rows.length >= 2) confirmGroup(rows, function () { load(); });
+      }
+
+      function suggestionLabel(claimIds) {
+        var rows = claimIds.map(function (id) { return draftById[id]; }).filter(Boolean);
+        var dates = rows.map(function (c) { return c.session_date; }).filter(Boolean).sort();
+        if (!dates.length) return rows.length + ' sessions';
+        var span = R.fmtDate(dates[0]);
+        if (dates[dates.length - 1] !== dates[0]) span += ' – ' + R.fmtDate(dates[dates.length - 1]);
+        return rows.length + ' sessions, ' + span;
+      }
+
+      function suggestionsCallout() {
+        var items = (suggestions || []).filter(function (s) {
+          // Only offer a set whose rows are all on screen. A suggestion naming a
+          // draft this render does not have would tick fewer rows than it
+          // promises.
+          return s && s.claim_ids && s.claim_ids.length >= 2
+            && s.claim_ids.every(function (id) { return !!draftById[id]; });
+        });
+        if (!items.length) return null;
+
+        return h('div', { class: 'claim-suggest' }, [
+          h('p', { class: 'claim-suggest__lede' },
+            items.length === 1
+              ? 'These drafts share a client, clinician, policy, place of service and '
+                + 'diagnosis, so they can be filed as one claim.'
+              : 'Some of these drafts share a client, clinician, policy, place of service '
+                + 'and diagnosis, so each set can be filed as one claim.'),
+          h('div', null, items.map(function (s) {
+            var name = (draftById[s.claim_ids[0]] || {}).client_name || 'This client';
+            return h('div', { class: 'claim-suggest__item' }, [
+              h('div', { class: 'claim-suggest__what' }, [
+                h('strong', null, name),
+                h('span', { class: 'claim-suggest__detail' },
+                  suggestionLabel(s.claim_ids) + ' · ' + R.fmtMoney(s.total) + ' total'),
+              ]),
+              h('button', {
+                class: 'btn btn--secondary btn--sm', type: 'button',
+                onClick: function () { applySuggestion(s.claim_ids); },
+              }, 'Review these ' + s.claim_ids.length),
+            ]);
+          })),
+        ]);
+      }
+
       if (!drafts.length) {
         body = inlineEmpty('No claims waiting for verification.');
       } else {
@@ -408,6 +495,7 @@
             'aria-label': 'Select the claim for ' + (c.client_name || 'this client')
               + ' on ' + R.fmtDate(c.session_date),
           });
+          boxes[c.id] = box;
           box.addEventListener('click', function (e) { e.stopPropagation(); });
           box.addEventListener('change', function () {
             if (box.checked) selected[c.id] = c;
@@ -454,6 +542,7 @@
           }, 'Tick several sessions for the same client to file them on one claim — '
             + 'one submission, and one platform fee on the total instead of one per session.')
           : null,
+        drafts.length ? suggestionsCallout() : null,
         body,
       ]);
     }
@@ -510,7 +599,7 @@
       ]);
     }
 
-    function render(drafts, history, status) {
+    function render(drafts, history, status, suggestions) {
       R.clear(root);
 
       // Nothing at all, and nothing filtered away: the one case that still gets
@@ -537,7 +626,7 @@
               'New claim'),
           ]),
         ]),
-        draftsCard(drafts),
+        draftsCard(drafts, suggestions),
         submittedCard(history, status),
       ]);
 

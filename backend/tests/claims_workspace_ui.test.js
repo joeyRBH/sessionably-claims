@@ -210,6 +210,10 @@ const HISTORY = [
 
 const calls = [];
 let listResult = DRAFTS.concat(HISTORY);
+// What the SERVER says is groupable. The browser never derives this — it renders
+// what it is handed — so the stub is the whole of the rule as far as this test
+// is concerned. backend/tests/claim_grouping_suggestions.test.js tests the rule.
+let listSuggestions = [];
 
 const api = {
   claims: {
@@ -217,7 +221,15 @@ const api = {
       calls.push({ name: 'claims.list', args: [filters] });
       const status = filters && filters.status;
       const rows = status ? listResult.filter((c) => c.status === status) : listResult;
-      return Promise.resolve({ claims: rows });
+      // Suggestions ride the draft-bearing response only, as the handler sends
+      // them: computed over drafts, so a history-only request carries none.
+      const suggestions = (!status || status === 'draft') ? listSuggestions : [];
+      return Promise.resolve({ claims: rows, suggestions });
+    },
+    // Recorded, never expected: a suggestion must not file anything on its own.
+    group(ids) {
+      calls.push({ name: 'claims.group', args: [ids] });
+      return Promise.resolve({ claim: { id: 'grouped' } });
     },
   },
   clients: {
@@ -237,6 +249,7 @@ const api = {
 // --- fake window.Reddably kit ------------------------------------------------
 
 const modals = [];
+const confirms = [];
 let emptyState = null;
 
 function clear(el) {
@@ -261,7 +274,7 @@ const Reddably = {
   scrubVendor(s) { return s; },
   toast() {},
   navigate(hash) { calls.push({ name: 'navigate', args: [hash] }); },
-  confirmModal() { return Promise.resolve(false); },
+  confirmModal(opts) { confirms.push(opts); return Promise.resolve(false); },
   formModal(opts) { modals.push(opts); return Promise.resolve(null); },
   registerView(name, fn) { if (name === 'claims') viewFn = fn; },
 };
@@ -462,10 +475,127 @@ function plain(v) {
     assert.ok((r.listeners.click || []).length <= 1, 'each row carries a single click handler');
   });
 
-  // 15. The cache-buster for this view was bumped.
+  // 15. Grouping suggestions — the software spots groupable drafts itself.
+  //
+  // The invariant under test is ADVISE, NEVER ACT: a suggestion may change what
+  // the biller notices and what is ticked, and nothing else. It routes through
+  // the SAME confirmation the manual path uses, and this test refuses to let it
+  // reach api.claims.group without one.
+  const G1 = claim({ id: 'g-1', client_id: 'cg', client_name: 'Client Grouped',
+    session_date: '2026-08-01', created_at: '2026-08-01T09:00:00.000Z' });
+  const G2 = claim({ id: 'g-2', client_id: 'cg', client_name: 'Client Grouped',
+    session_date: '2026-08-15', created_at: '2026-08-15T09:00:00.000Z' });
+  const G3 = claim({ id: 'g-3', client_id: 'cs', client_name: 'Client Solo',
+    session_date: '2026-08-20', created_at: '2026-08-20T09:00:00.000Z' });
+
+  async function workspace(rows, suggestions) {
+    listResult = rows;
+    listSuggestions = suggestions;
+    calls.length = 0;
+    confirms.length = 0;
+    const el = createElement('div');
+    viewFn(el, []);
+    await flush();
+    return el;
+  }
+  function calloutOf(node) {
+    return walk(node).find((el) => el.className === 'claim-suggest') || null;
+  }
+
+  const sRoot = await workspace([G1, G2, G3],
+    [{ client_id: 'cg', claim_ids: ['g-1', 'g-2'], lines: 2, total: 300 }]);
+  const sDrafts = section(sRoot, 'Ready to verify and submit');
+  const callout = calloutOf(sDrafts);
+
+  assert.ok(callout, 'a groupable set is offered without the biller having to spot it');
+  assert.ok(/Client Grouped/.test(callout.textContent), 'the suggestion names the client');
+  assert.ok(/2026-08-01/.test(callout.textContent) && /2026-08-15/.test(callout.textContent),
+    'it shows the span of service dates the grouped claim would cover');
+  assert.ok(/\$300/.test(callout.textContent),
+    'it shows the total that will be filed — and that the 5% fee will be taken on');
+  assert.ok(!/Client Solo/.test(callout.textContent),
+    'a draft the server did not put in a set is never named in one');
+
+  // It sits above the queue it is about, inside the verification card.
+  assert.ok(walk(sDrafts).indexOf(callout) < walk(sDrafts).findIndex((el) => el.tagName === 'TBODY'),
+    'the suggestion is read before the table it refers to');
+
+  // Rendering alone files nothing.
+  assert.ok(!calls.some((c) => c.name === 'claims.group'),
+    'ADVISE, NEVER ACT: showing a suggestion does not group anything');
+
+  // 16. Acting on a suggestion ticks exactly its rows and asks for confirmation.
+  const reviewBtn = tagged(callout, 'BUTTON')[0];
+  assert.strictEqual(reviewBtn.textContent, 'Review these 2',
+    'the button says how many claims it is about');
+
+  // A stray tick from before must not ride along into the grouping: the dialog
+  // names dates and a total, not rows, so the ticked set has to be exactly what
+  // the dialog is about to describe.
+  const soloBox = tagged(
+    bodyRows(sDrafts).find((r) => cellTexts(r)[1] === 'Client Solo'), 'INPUT')[0];
+  soloBox.checked = true;
+  soloBox.dispatch('change');
+
+  reviewBtn.dispatch('click');
+  await flush();
+
+  const rowsByClient = {};
+  bodyRows(sDrafts).forEach((r) => { rowsByClient[cellTexts(r)[1]] = r; });
+  const tickedRows = bodyRows(sDrafts)
+    .filter((r) => tagged(r, 'INPUT')[0].checked === true);
+  assert.strictEqual(tickedRows.length, 2, 'exactly the suggested rows are ticked');
+  assert.ok(tagged(rowsByClient['Client Solo'], 'INPUT')[0].checked !== true,
+    'a draft ticked beforehand is cleared, not folded into the suggested claim');
+
+  assert.strictEqual(confirms.length, 1,
+    'acting on a suggestion opens the same confirmation the manual path uses');
+  assert.ok(/Group 2 claims into one/.test(confirms[0].title),
+    'the dialog describes the grouping in the biller\'s terms');
+  assert.ok(!calls.some((c) => c.name === 'claims.group'),
+    'nothing is filed while the confirmation is unanswered — the stub declines it');
+
+  // 17. A suggestion naming a draft that is not on screen is not offered at all.
+  //
+  // Rather than ticking fewer rows than its button promises. The list and the
+  // suggestions come from one response, so this means the queue moved under us.
+  const staleRoot = await workspace([G1, G2, G3],
+    [{ client_id: 'cg', claim_ids: ['g-1', 'g-gone'], lines: 2, total: 300 }]);
+  assert.strictEqual(calloutOf(section(staleRoot, 'Ready to verify and submit')), null,
+    'a suggestion it cannot fully honour is withheld, not partially applied');
+
+  // 18. Nothing groupable, nothing said. A quiet queue stays quiet.
+  const quietRoot = await workspace([G1, G3], []);
+  assert.strictEqual(calloutOf(section(quietRoot, 'Ready to verify and submit')), null,
+    'no callout when the server suggests nothing');
+
+  // 19. An older client without suggestions still renders — the field is optional
+  // on the response, so a cached/older API must not blank the workspace.
+  listResult = [G1, G3];
+  calls.length = 0;
+  const legacyApiRoot = createElement('div');
+  const realList = api.claims.list;
+  api.claims.list = function (filters) {
+    calls.push({ name: 'claims.list', args: [filters] });
+    return Promise.resolve({ claims: listResult });
+  };
+  viewFn(legacyApiRoot, []);
+  await flush();
+  api.claims.list = realList;
+  assert.strictEqual(bodyRows(section(legacyApiRoot, 'Ready to verify and submit')).length, 2,
+    'a response with no suggestions field still renders the queue');
+  assert.strictEqual(calloutOf(section(legacyApiRoot, 'Ready to verify and submit')), null);
+
+  // Restore the fixtures the remaining assertions expect.
+  listResult = DRAFTS.concat(HISTORY);
+  listSuggestions = [];
+
+  // 20. The cache-buster for this view was bumped.
   const appHtml = fs.readFileSync(path.join(__dirname, '..', '..', 'public', 'app', 'app.html'), 'utf8');
-  assert.match(appHtml, /\.\/views\/claims\.js\?v=20260824b/,
-    'app.html serves claims.js?v=20260824b');
+  assert.match(appHtml, /\.\/views\/claims\.js\?v=20260912a/,
+    'app.html serves claims.js?v=20260912a');
+  assert.match(appHtml, /\.\/components\.css\?v=20260912a/,
+    'app.html serves components.css?v=20260912a — the suggestion callout is styled there');
 
   console.log('PASS claims_workspace_ui.test.js');
 })().catch((err) => {
