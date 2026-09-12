@@ -45,7 +45,9 @@ const {
 // MONEY-PATH: a grouped claim is one filing and one platform fee covering
 // several dates of service. Pure rules, evaluated here authoritatively and
 // mirrored by the UI only to decide whether to OFFER the action.
-const { evaluateGroup, orderForFiling, MAX_GROUPED_LINES } = require('../lib/claim_grouping');
+const {
+  evaluateGroup, orderForFiling, suggestGroups, MAX_GROUPED_LINES,
+} = require('../lib/claim_grouping');
 // Every PURE pre-submission rule lives in lib/claim_readiness.js — one
 // implementation shared by this submit path and the readiness projection on
 // GET /claims, so the list can never disagree with the gate. See that module's
@@ -630,12 +632,28 @@ async function listClaims(practiceId, event, authCtx) {
       order by c.created_at desc`,
     params
   );
+  const claims = res.rows.map(shapeClaimRow);
+
+  // Which of these drafts WOULD group, offered without the biller having to
+  // spot it. Computed from the rows already in hand — no second query — by the
+  // same module that authorizes the actual grouping, so a suggestion can never
+  // be something POST /claims/group would refuse.
+  //
+  // ADVISORY ONLY. Nothing here groups anything: the response carries claim ids
+  // the UI offers, and a claim is grouped only when a human confirms and posts.
+  // It inherits this query's scoping for free — a clinician is suggested groups
+  // only from their own caseload, and a client_id filter narrows the
+  // suggestions with it.
+  const suggestions = suggestGroups(claims);
+
   await audit(event, authCtx, {
     action: 'claim.list',
     resourceType: 'claim',
-    metadata: { count: res.rowCount },
+    // Counts only, never ids or names — this row is read by anyone with audit
+    // access, and how many groupable sets a practice has is not PHI.
+    metadata: { count: res.rowCount, suggested_groups: suggestions.length },
   });
-  return json(200, { claims: res.rows.map(shapeClaimRow) }, event);
+  return json(200, { claims, suggestions }, event);
 }
 
 // Shape the service lines for the claim detail. Dates, codes and per-line
