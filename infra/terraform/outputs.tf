@@ -75,6 +75,16 @@ output "backfill_claim_fields_function_name" {
   value       = aws_lambda_function.backfill_claim_fields.function_name
 }
 
+output "claim_status_poll_function_name" {
+  description = "Name of the scheduled claim-status poll Lambda. Invoke by hand to exercise it; the EventBridge schedule is disabled unless claim_status_poll_enabled = true."
+  value       = aws_lambda_function.claim_status_poll.function_name
+}
+
+output "claim_status_poll_schedule_state" {
+  description = "ENABLED or DISABLED. DISABLED means the poller never runs on its own."
+  value       = aws_cloudwatch_event_rule.claim_status_poll.state
+}
+
 output "apply_migration_function_name" {
   description = "Name of the one-off migration runner. Operator-invoked only — deploy.sh never calls it. Read-only status unless invoked with {\"migration\": \"<name>\", \"apply\": true}."
   value       = aws_lambda_function.apply_migration.function_name
