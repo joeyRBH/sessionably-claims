@@ -48,7 +48,15 @@ const {
 const {
   evaluateGroup, orderForFiling, suggestGroups, MAX_GROUPED_LINES,
 } = require('../lib/claim_grouping');
-const { maybeCreateForDenial } = require('../lib/refund_auto');
+const { applyStatusResult, refundOutcomeCode } = require('../lib/claim_status_apply');
+// Assembling the normalized claim context, and the status→event-type map. In
+// their own module rather than here because the scheduled poller
+// (handlers/claim_status_poll.js) must build the IDENTICAL context: the 276 it
+// sends has to mirror the 837 that was filed, and a second assembly would be a
+// second answer to 'who was this claim filed for'.
+const {
+  loadSession, loadInsuranceRecord, buildClaimContext, eventTypeForStatus,
+} = require('../lib/claim_context');
 // Every PURE pre-submission rule lives in lib/claim_readiness.js — one
 // implementation shared by this submit path and the readiness projection on
 // GET /claims, so the list can never disagree with the gate. See that module's
@@ -117,18 +125,6 @@ function clearinghouseFailureClass(err) {
 }
 
 // claim_events.event_type enum (distinct from claim status). Used when logging.
-function eventTypeForStatus(status) {
-  switch (status) {
-    case 'submitted': return 'submitted';
-    case 'processing': return 'processing';
-    case 'info_requested': return 'info_requested';
-    case 'denied': return 'denied';
-    case 'appealed': return 'appealed';
-    case 'paid': return 'paid';
-    case 'void': return 'voided';
-    default: return 'note';
-  }
-}
 
 // --- request helpers ---------------------------------------------------------
 
@@ -390,22 +386,7 @@ function shapeEvent(r) {
 // actor types, and a second copy here would be a second answer to the same
 // question — the shape that lets a partner and a human diverge.
 
-async function loadSession(practiceId, sessionId) {
-  const res = await db.query(
-    `select * from sessions where id = $1 and practice_id = $2 and is_hidden = false limit 1`,
-    [sessionId, practiceId]
-  );
-  return res.rows[0] || null;
-}
 
-async function loadInsuranceRecord(practiceId, recordId) {
-  const res = await db.query(
-    `select * from insurance_records
-      where id = $1 and practice_id = $2 and is_hidden = false limit 1`,
-    [recordId, practiceId]
-  );
-  return res.rows[0] || null;
-}
 
 async function loadClaim(practiceId, id) {
   const res = await db.query(
@@ -451,56 +432,6 @@ async function loadClaimDetail(practiceId, id) {
 }
 
 // Assemble the normalized context an adapter needs (no DB access in adapters).
-async function buildClaimContext(practiceId, claim) {
-  const [sessionRes, clientRes, clinicianRes, practiceRes, profileRes] = await Promise.all([
-    db.query(`select * from sessions where id = $1 and practice_id = $2 limit 1`, [claim.session_id, practiceId]),
-    db.query(`select * from clients where id = $1 and practice_id = $2 limit 1`, [claim.client_id, practiceId]),
-    db.query(`select * from users where id = $1 and practice_id = $2 limit 1`, [claim.clinician_id, practiceId]),
-    db.query(`select * from practices where id = $1 limit 1`, [practiceId]),
-    db.query(
-      `select * from provider_billing_profiles where practice_id = $1 and provider_user_id = $2 limit 1`,
-      [practiceId, claim.clinician_id]
-    ),
-  ]);
-  let insurance = null;
-  if (claim.insurance_record_id) {
-    insurance = await loadInsuranceRecord(practiceId, claim.insurance_record_id);
-  }
-
-  // The rendering clinician's billing profile decides how the 837P billing- and
-  // rendering-provider loops are built (person vs organization). Decrypt the
-  // person billing TIN here so the adapter stays a pure, DB-/key-free function of
-  // ctx (it reads billingProfile.billing_tin as plaintext digits). A decrypt
-  // failure leaves billing_tin undefined; the adapter falls back accordingly.
-  let billingProfile = profileRes.rows[0] || null;
-  if (billingProfile && billingProfile.billing_tin_ciphertext) {
-    try {
-      billingProfile = { ...billingProfile, billing_tin: fieldCrypto.decrypt(billingProfile.billing_tin_ciphertext) };
-    } catch (_) {
-      billingProfile = { ...billingProfile, billing_tin: null };
-    }
-  }
-
-  // Every session billed on this claim, in filing order — one 837P service line
-  // each. ctx.session stays the ANCHOR (claims.session_id) because the claim-LEVEL
-  // fields the builder reads from it (place of service, the diagnosis set) are
-  // single-valued on an 837P. A claim predating migration 022's backfill would
-  // load no lines, so fall back to the anchor rather than building an empty claim.
-  const lines = await loadClaimSessions(db, practiceId, claim.id);
-  const anchor = sessionRes.rows[0] || null;
-
-  return {
-    claim,
-    sessions: lines.length ? lines : (anchor ? [anchor] : []),
-    session: anchor,
-    client: clientRes.rows[0] || null,
-    clinician: clinicianRes.rows[0] || null,
-    practice: practiceRes.rows[0] || null,
-    billingProfile,
-    insurance,
-    payer_id: null, // not modeled yet; the Claim.MD adapter flags this
-  };
-}
 
 // --- handlers ----------------------------------------------------------------
 
@@ -1437,89 +1368,21 @@ async function refreshClaim(practiceId, userId, id, event, authCtx) {
     return json(502, { error: 'Clearinghouse returned an unrecognized status.' }, event);
   }
 
-  // Coalesce optional amounts; ignore anything that isn't a valid money value.
-  const amount = (v) => {
-    const p = parseMoney(v);
-    return p.ok ? p.value : null;
-  };
-
-  const changed = newStatus !== claim.status;
-
-  const updated = await db.withTransaction(async (client) => {
-    const res = await client.query(
-      `update claims
-          set status = $1,
-              allowed_amount = coalesce($2, allowed_amount),
-              reimbursed_amount = coalesce($3, reimbursed_amount),
-              patient_responsibility = coalesce($4, patient_responsibility),
-              denial_reason = coalesce($5, denial_reason)
-        where id = $6 and practice_id = $7 and is_hidden = false
-        returning *`,
-      [
-        newStatus,
-        amount(status.allowed_amount),
-        amount(status.reimbursed_amount),
-        amount(status.patient_responsibility),
-        cleanText(status.denial_reason),
-        id,
-        practiceId,
-      ]
-    );
-    if (res.rowCount === 0) return null;
-    const row = res.rows[0];
-    if (changed) {
-      await logEvent(client, {
-        practiceId,
-        claimId: row.id,
-        ...actorOf(authCtx),
-        eventType: eventTypeForStatus(newStatus),
-        statusFrom: claim.status,
-        statusTo: newStatus,
-        note: 'Status updated from payer response.',
-        payload: status.raw,
-      });
-    }
-    // Persist every claim-status (276/277) payload we receive verbatim, whether or
-    // not it changed our status — this is the passive dataset, stored not acted on.
-    await logAck(client, {
-      practiceId,
-      claimId: row.id,
-      source: adapter.name,
-      kind: 'status',
-      controlNumber: claim.control_number,
-      payload: status.raw,
-    });
-    return row;
+  // Apply it. The DB write, the claim_event, the verbatim acknowledgment and the
+  // refund-request rule all live in lib/claim_status_apply.js, shared verbatim
+  // with the scheduled poller — one answer from the payer must mean one thing,
+  // whichever path learned it.
+  const applied = await applyStatusResult(db, {
+    practiceId,
+    claim,
+    statusResult: status,
+    actor: { userId: (authCtx && authCtx.userId) || userId },
+    adapterName: adapter.name,
+    deps: { logEvent, logAck, eventTypeForStatus },
   });
 
+  const { updated, changed, autoRefund } = applied;
   if (!updated) return json(404, { error: 'Not found' }, event);
-
-  // A denial the payer actually adjudicated raises a refund request for the
-  // practice admin, so the fee guarantee does not depend on the patient
-  // noticing, telling their clinician, and somebody typing it in.
-  //
-  // DELIBERATELY OUTSIDE THE TRANSACTION ABOVE, and deliberately swallowed. The
-  // status update is what the payer told us and must survive on its own; a
-  // request that fails to be raised is recoverable (the acknowledgment is
-  // stored, the claim reads 'denied', an admin can still file it by hand),
-  // whereas rolling back the status because a queue insert failed throws away
-  // the only record of the payer's answer. Same best-effort posture as the fee
-  // charge on submit.
-  //
-  // Nothing here approves anything: it creates an OPEN request a human decides.
-  let autoRefund = null;
-  try {
-    autoRefund = await maybeCreateForDenial(db, {
-      claim: updated,
-      status: newStatus,
-      statusChanged: changed,
-      denialClass: status.denial_class || null,
-    });
-  } catch (err) {
-    // Never the reason, which could echo payer text; never the claim's content.
-    console.error('claims refresh: auto refund-request creation failed');
-    autoRefund = null;
-  }
 
   await audit(event, authCtx, {
     action: 'claim.refresh',
@@ -1528,12 +1391,10 @@ async function refreshClaim(practiceId, userId, id, event, authCtx) {
     metadata: {
       status: updated.status,
       outcome: changed ? 'updated' : 'no_update',
-      // Non-PHI: an enum code saying whether a request was raised and, when not,
-      // which rule declined. This is the audit trail for money the guarantee
-      // promises back, so "we looked and decided not to" has to be legible.
-      refund_request: autoRefund
-        ? (autoRefund.created ? 'created' : autoRefund.reason)
-        : 'error',
+      // Non-PHI: an enum saying whether a request was raised and, when not,
+      // which rule declined. This is the trail for money the guarantee promises
+      // back, so "we looked and decided not to" has to be legible.
+      refund_request: refundOutcomeCode(autoRefund),
     },
   });
 
@@ -1546,8 +1407,6 @@ async function refreshClaim(practiceId, userId, id, event, authCtx) {
     });
   }
 
-  // (a) Status updated, or (b) a valid response that matched our current status
-  // with no change. Both are 200; the outcome/message let the UI pick the toast.
   return json(200, {
     claim: shapeClaim(updated),
     outcome: changed ? 'updated' : 'no_update',

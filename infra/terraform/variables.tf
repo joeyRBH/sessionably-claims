@@ -259,3 +259,60 @@ variable "create_api_custom_domain" {
   type        = bool
   default     = false
 }
+
+# ─────────────────────────────────────────────────────────────
+# Claim status poll (infra/terraform/claim-status-poll.tf)
+# ─────────────────────────────────────────────────────────────
+
+variable "claim_status_poll_enabled" {
+  description = <<-EOT
+    Turn the scheduled clearinghouse status check ON. Default false, which
+    creates the EventBridge rule DISABLED so nothing runs.
+
+    Enabling it makes the denial classifier run unattended across every
+    practice's open claims. Enable with claim_status_poll_dry_run still true
+    first, read what it collects, and only then consider disabling dry run.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "claim_status_poll_dry_run" {
+  description = <<-EOT
+    When true (the default), the poller fetches real statuses and stores the
+    verbatim payloads in claim_acknowledgments, but writes NOTHING else: no
+    status change, no claim_event, no refund request. It logs what it would
+    have done.
+
+    Setting this to false lets a scheduled job change claim status and raise
+    refund requests with no human in the loop. Do not set it false until
+    denialClass() in lib/clearinghouse/stedi.js has been confirmed against a
+    real 277 denial — that file's own header flags its mappings as unverified.
+  EOT
+  type        = bool
+  default     = true
+}
+
+variable "claim_status_poll_schedule" {
+  description = "EventBridge schedule for the status poll. Only meaningful when claim_status_poll_enabled = true."
+  type        = string
+  default     = "rate(6 hours)"
+}
+
+variable "claim_status_poll_max_claims" {
+  description = "Hard cap on claims examined per run. Bounds both the clearinghouse call volume and the blast radius of a bad run."
+  type        = number
+  default     = 50
+}
+
+variable "claim_status_poll_min_age_hours" {
+  description = "Do not poll a claim until it has been submitted this long. Payers do not answer immediately, and asking early wastes a call."
+  type        = number
+  default     = 24
+}
+
+variable "claim_status_poll_recheck_hours" {
+  description = "Do not re-poll a claim checked within this window. Measured from the last stored claim_acknowledgment, so a dry run counts as having asked."
+  type        = number
+  default     = 24
+}
