@@ -152,6 +152,9 @@ function shapeRequest(r) {
     claim_number: r.claim_number || null,
     claim_status: r.claim_status || null,
     outcome_label: r.outcome_label,
+    // Provenance, so the admin can see WHAT KIND of evidence they are approving
+    // against: a patient's account of an EOB, or an inference from a 277.
+    source: r.source || 'patient_reported',
     status: r.status,
     patient_note: r.patient_note,
     decision_reason: r.decision_reason,
@@ -186,6 +189,11 @@ async function createRequest(caller, event, authCtx) {
     return json(400, { error: 'A valid claim_id is required.' }, event);
   }
 
+  // NOTE: `source` is NOT read from the body and must never be. This endpoint
+  // creates patient-reported requests by definition; a caller able to claim
+  // 'system_denial' could dress its own guess up as the clearinghouse's, and an
+  // admin adjudicating the queue would have no way to tell. The only writer of
+  // 'system_denial' is lib/refund_auto.js, reached from a real payer response.
   const outcome = body.outcome_label;
   if (!OUTCOME_LABELS.includes(outcome)) {
     return json(400, { error: `outcome_label must be one of: ${OUTCOME_LABELS.join(', ')}.` }, event);
@@ -210,8 +218,8 @@ async function createRequest(caller, event, authCtx) {
   try {
     const res = await db.query(
       `insert into refund_requests
-         (practice_id, claim_id, client_id, outcome_label, status, patient_note)
-       values ($1, $2, $3, $4, 'open', $5)
+         (practice_id, claim_id, client_id, outcome_label, status, patient_note, source)
+       values ($1, $2, $3, $4, 'open', $5, 'patient_reported')
        returning *`,
       [practiceId, claimId, claim.client_id, outcome, cleanText(body.patient_note)]
     );

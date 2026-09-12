@@ -816,6 +816,8 @@ create table if not exists refund_requests (
   claim_id         uuid not null references claims (id) on delete restrict,
   client_id        uuid not null references clients (id) on delete restrict,  -- the patient
   outcome_label    text not null check (outcome_label in ('paid', 'deductible', 'denied')),
+  source           text not null default 'patient_reported'   -- provenance: who ASKED (never read from a request body)
+                     check (source in ('patient_reported', 'system_denial')),
   status           text not null default 'open'
                      check (status in ('open', 'approved', 'denied')),
   patient_note     text,                                    -- optional note captured with the request
@@ -839,6 +841,23 @@ create index if not exists idx_refund_requests_status on refund_requests (status
 -- after the prior request is resolved.
 create unique index if not exists idx_refund_requests_one_open_per_claim
   on refund_requests (claim_id)
+  where status = 'open';
+
+-- Migration (idempotent): where the request came from — a person or the
+-- clearinghouse. refund_requests records who DECIDED but never who ASKED, which
+-- was fine while there was only one answer. Once the software creates requests
+-- itself from a clearinghouse denial, the admin approving a refund needs to know
+-- which kind of evidence they are approving against: a patient's account of an
+-- EOB in their hand, or an inference from a 277 claim-status response.
+-- NEVER read from a request body — both writers set it as a literal. See
+-- db/migrations/026_add_source_to_refund_requests.sql.
+alter table refund_requests
+  add column if not exists source text not null default 'patient_reported';
+alter table refund_requests drop constraint if exists refund_requests_source_check;
+alter table refund_requests add constraint refund_requests_source_check
+  check (source in ('patient_reported', 'system_denial'));
+create index if not exists idx_refund_requests_source
+  on refund_requests (practice_id, source)
   where status = 'open';
 
 drop trigger if exists trg_refund_requests_updated_at on refund_requests;
