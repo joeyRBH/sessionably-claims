@@ -87,6 +87,31 @@ locals {
         { method = "POST", path = "claims/{id}/void" },
         { method = "POST", path = "claims/{id}/regenerate" },
         { method = "GET", path = "claims/{id}/events" },
+
+        # Replacement (CMS frequency 7): mint a new draft that supersedes a
+        # payer-accepted claim. Same omission as the grouping routes below — the
+        # handler, the UI and the claims columns shipped, the route did not, so
+        # a practice could not correct an accepted claim at all.
+        { method = "POST", path = "claims/{id}/replace" },
+
+        # Grouping: fold several draft claims for one client into ONE multi-line
+        # claim, and split one back apart. The handler, the rules
+        # (backend/lib/claim_grouping.js), the claim_sessions table and the UI
+        # all shipped in #115 — these two routes did not, so every call landed on
+        # API Gateway's own 404 ({"message":"Not Found"}, capital M) without ever
+        # reaching the Lambda. Worse than a plain 404: the gateway's default
+        # response carries no CORS header, so the browser blocked it and the
+        # biller saw "Failed to fetch", which reads as a network fault rather
+        # than a missing route.
+        #
+        # /claims/group is a COLLECTION action with no {id}. It is safe beside
+        # the {id} routes below because API Gateway gives a literal segment
+        # precedence over a path variable, and because there is no POST
+        # /claims/{id} route for it to shadow. claims.js guards the same
+        # ambiguity on its side with an allow-list (COLLECTION_ACTIONS), so
+        # "group" can never be read as a claim id.
+        { method = "POST", path = "claims/group" },
+        { method = "POST", path = "claims/{id}/ungroup" },
       ]
     }
     refund_requests = {
