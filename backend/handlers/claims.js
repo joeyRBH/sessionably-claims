@@ -1339,6 +1339,26 @@ async function refreshClaim(practiceId, userId, id, event, authCtx) {
   try {
     status = await adapter.getStatus({ control_number: claim.control_number, claim, ctx });
   } catch (err) {
+    // A payer that does not support status inquiries is NOT a failure of this
+    // system. Reporting it as a 502 told the biller "something is broken" when
+    // the truth is "this payer cannot be polled, ever" — a fact they can act on
+    // (chase the payer by phone, or wait for the ERA) and which no amount of
+    // retrying will change. 422: the request was fine, the outcome is not
+    // available. The message is OURS and vendor-neutral; the clearinghouse's own
+    // text stays in CloudWatch.
+    if (err && err.isStatusUnsupported) {
+      await audit(event, authCtx, {
+        action: 'claim.refresh',
+        resourceType: 'claim',
+        resourceId: id,
+        metadata: { status: claim.status, outcome: 'payer_unsupported' },
+      });
+      return json(422, {
+        error: 'This payer does not support automated status checks. '
+          + 'Check the claim with the payer directly, or wait for the remittance.',
+        outcome: 'payer_unsupported',
+      }, event);
+    }
     // (c) Upstream failure — network/timeout, or a required field the adapter
     // named as missing. Keep the user-facing message generic (it can echo PHI).
     console.error('claims refresh (clearinghouse) error:', err && err.message);
