@@ -1073,24 +1073,84 @@ function firstStatus(data) {
 // code and the offending field/location/path that name WHICH field was wrong.
 // Never the field values, messages, or any PHI (names/DOB/member id), which the
 // human-readable message text can echo. Returns compact "code=.. field=.." strings.
+// Redact the value shapes most likely to be PHI before anything reaches a log.
+// Long digit runs are member ids, dates of birth and SSNs; a field NAME is not
+// PHI, a long number very well may be.
+function redactValues(text) {
+  return String(text == null ? '' : text)
+    .replace(/\d{6,}/g, '[redacted]')
+    .slice(0, 300);
+}
+
+// Pull the useful, loggable parts out of a Stedi error body.
+//
+// THE DOCUMENTED SHAPE IS NOT THE SHAPE THIS ENDPOINT SENDS. Stedi's API
+// reference describes `{ code, description, errors: [{ code, field, location,
+// value }] }`, and this function was written to that. Probing the live endpoint
+// on 2026-09-12 with synthetic data returned something else entirely:
+//
+//     { "code": "BAD_REQUEST", "id": "...", "message": "Payer ZZZZZ is not
+//       configured. Please check our published payer list..." }
+//
+// No `description`. No `errors`. The reason lives in `message` — the one field
+// the original never read — so a real production failure logged exactly
+// "code=BAD_REQUEST" and nothing else, and could not be diagnosed at all.
+//
+// Both shapes are handled: the documented one in case another endpoint (or a
+// later version) uses it, and the observed one because it is what actually
+// arrives.
+//
+// ON LOGGING `message`: this is a deliberate, narrow relaxation of the "never
+// echo the response body" rule above it. The body as a whole can carry PHI —
+// `errors[].value` echoes submitted values verbatim, and is still never logged.
+// `message` is Stedi's own validation/routing text; the two classes observed
+// name a FIELD ("missing field `memberId` at line 1 column 295") or a PAYER ID,
+// neither of which is PHI. Digit runs are redacted anyway, because that sampling
+// is two examples and not a guarantee. If a message is ever seen echoing patient
+// data, THIS is the line to change.
 function statusErrorHints(data) {
   if (!data || typeof data !== 'object') return [];
+  const out = [];
+
+  // The observed shape first — it is the one that actually arrives.
+  if (data.code != null) out.push(`code=${redactValues(data.code)}`);
+  if (data.message != null) out.push(`message=${redactValues(data.message)}`);
+
+  // The documented shape, kept for other endpoints and future versions.
   const arr = Array.isArray(data.errors) ? data.errors
     : Array.isArray(data.fieldErrors) ? data.fieldErrors
       : (data.error && typeof data.error === 'object') ? [data.error]
-        : (data.code != null || data.field != null || data.location != null || data.path != null) ? [data]
-          : [];
-  const out = [];
+        : [];
   for (const e of arr) {
     if (!e || typeof e !== 'object') continue;
     const parts = [];
-    if (e.code != null) parts.push(`code=${String(e.code)}`);
-    if (e.field != null) parts.push(`field=${String(e.field)}`);
-    if (e.location != null) parts.push(`location=${String(e.location)}`);
-    if (e.path != null) parts.push(`path=${String(e.path)}`);
+    // NOTE: `e.value` is deliberately absent — it echoes the submitted value.
+    if (e.code != null) parts.push(`code=${redactValues(e.code)}`);
+    if (e.field != null) parts.push(`field=${redactValues(e.field)}`);
+    if (e.location != null) parts.push(`location=${redactValues(e.location)}`);
+    if (e.path != null) parts.push(`path=${redactValues(e.path)}`);
+    if (e.description != null) parts.push(`description=${redactValues(e.description)}`);
     if (parts.length) out.push(parts.join(' '));
   }
   return out.slice(0, 5);
+}
+
+// Which KIND of 4xx this is, which decides whether it is OUR bug or the payer's
+// capability. The distinction is real in Stedi's vocabulary, confirmed by probe:
+//
+//   INVALID_REQUEST_BODY  the request failed schema validation. OURS. A caller
+//                         should see this loudly, because code has to change.
+//   BAD_REQUEST           the request was well-formed and refused on its merits
+//                         — most commonly "Payer X is not configured", i.e. the
+//                         payer does not support 276 status inquiries at all.
+//                         Nothing is broken; this claim simply cannot be polled.
+//
+// Anything else is treated as ours, because an unrecognized failure should be
+// loud rather than quietly excused.
+function statusErrorKind(data) {
+  const code = String((data && data.code) || '').trim().toUpperCase();
+  if (code === 'BAD_REQUEST') return 'payer_unsupported';
+  return 'request_invalid';
 }
 
 async function getStatus({ control_number, claim, ctx }) {
@@ -1109,7 +1169,15 @@ async function getStatus({ control_number, claim, ctx }) {
     if (res.status >= 400 && res.status < 500) {
       const hints = statusErrorHints(data);
       if (hints.length) {
-        console.error(`Stedi status check ${res.status} fields: ${hints.join('; ')}`);
+        console.error(`Stedi status check ${res.status}: ${hints.join('; ')}`);
+      }
+      // A payer that does not support status inquiries is not a failure of this
+      // system, and must not be reported as one. Flag it so the handler can say
+      // something a biller can act on instead of a 502.
+      if (statusErrorKind(data) === 'payer_unsupported') {
+        const e = new Error('Payer does not support automated status checks.');
+        e.isStatusUnsupported = true;
+        throw e;
       }
     }
     // Never echo the response body — it can carry PHI (member id, name, DOB).
@@ -1518,6 +1586,8 @@ module.exports = {
   mapStatus,
   mapStatusCategory,
   denialClass,
+  statusErrorHints,
+  statusErrorKind,
   firstStatus,
   // ERA enrollment (Enrollments API).
   ensureEnrollmentProvider,
