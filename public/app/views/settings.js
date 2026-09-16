@@ -39,6 +39,10 @@
   // empty-state hint.
   var NOTIFY_HINT = 'Add an email to receive intake notifications.';
 
+  // Mirrors backend/lib/password.js MIN_LENGTH. The server is authoritative and
+  // re-checks; this only spares the user a round trip to be told the obvious.
+  var MIN_PASSWORD_LENGTH = 10;
+
   // Mirror backend/lib/email.js isValidEmail: one @, non-empty local part, dotted
   // domain with a 2+ char TLD. Blocks a login username (e.g. "BigRedd") from ever
   // reaching SES, which rejects it with "Missing final '@domain'".
@@ -150,6 +154,121 @@
             notifyError,
             notifyHint,
           ]),
+        ]);
+      }
+
+      // --- Your account: change password -------------------------------------
+      // A SIBLING of the practice form, never inside it. The page's Save button
+      // PUTs practice identity + billing address; a password must not ride along
+      // with it, and saving the practice must not require touching a password
+      // field. Own inputs, own validation, own button, own endpoint.
+      function passwordCard() {
+        var pwControls = {};
+        var pwErrors = {};
+
+        function pwField(name, label, autocomplete, hint) {
+          var input = h('input', {
+            class: 'field__control',
+            type: 'password',
+            name: name,
+            autocomplete: autocomplete,
+          });
+          pwControls[name] = input;
+          var errorEl = h('span', { class: 'field__error', hidden: 'hidden' });
+          pwErrors[name] = errorEl;
+          var children = [
+            h('span', { class: 'field__label' }, label),
+            input,
+          ];
+          if (hint) {
+            children.push(h('p', {
+              class: 'field__hint',
+              style: 'margin:var(--space-1) 0 0;color:var(--color-text-muted);' +
+                'font-size:var(--font-size-2)',
+            }, hint));
+          }
+          children.push(errorEl);
+          return h('label', { class: 'field' }, children);
+        }
+
+        function setPwError(name, message) {
+          var errEl = pwErrors[name];
+          if (!errEl) return;
+          errEl.textContent = message || '';
+          errEl.hidden = !message;
+          errEl.parentNode.classList.toggle('field--invalid', !!message);
+        }
+
+        function clearPwErrors() {
+          Object.keys(pwErrors).forEach(function (n) { setPwError(n, null); });
+        }
+
+        var currentField = pwField('current_password', 'Current password', 'current-password');
+        var newField = pwField('new_password', 'New password', 'new-password',
+          'At least ' + MIN_PASSWORD_LENGTH + ' characters.');
+        var confirmField = pwField('confirm_password', 'Confirm new password', 'new-password');
+
+        var pwBtn = h('button', { class: 'btn btn--primary', type: 'submit' }, 'Change password');
+
+        function onPwSubmit(e) {
+          if (e) e.preventDefault();
+          clearPwErrors();
+
+          var current = pwControls.current_password.value;
+          var next = pwControls.new_password.value;
+          var confirm = pwControls.confirm_password.value;
+          var ok = true;
+
+          // Passwords are NOT trimmed — a leading or trailing space is a real
+          // character of the secret, and silently stripping it here would set a
+          // password the user could never type again.
+          if (current === '') { setPwError('current_password', 'Enter your current password.'); ok = false; }
+          if (next.length < MIN_PASSWORD_LENGTH) {
+            setPwError('new_password',
+              'Your new password must be at least ' + MIN_PASSWORD_LENGTH + ' characters.');
+            ok = false;
+          } else if (next === current) {
+            setPwError('new_password', 'Your new password must be different from your current one.');
+            ok = false;
+          }
+          if (confirm !== next) { setPwError('confirm_password', 'The two passwords do not match.'); ok = false; }
+          if (!ok) return;
+
+          // Local busy handling: this card owns its one button. (A shared busy
+          // primitive for the whole kit is a separate change.)
+          pwBtn.disabled = true;
+          pwBtn.textContent = 'Changing…';
+          api.changePassword(current, next).then(function () {
+            R.toast('Password changed.', 'success');
+            // Clear all three so the secret does not sit in the DOM afterwards.
+            Object.keys(pwControls).forEach(function (n) { pwControls[n].value = ''; });
+          }).catch(function (err) {
+            var msg = (err && err.message) || 'Could not change your password.';
+            // The server tells us WHICH field is wrong; put the message on it
+            // rather than in a toast that vanishes.
+            if (/current password/i.test(msg)) setPwError('current_password', msg);
+            else if (err && err.status === 400) setPwError('new_password', msg);
+            else R.toast(msg, 'error');
+          }).then(function () {
+            pwBtn.disabled = false;
+            pwBtn.textContent = 'Change password';
+          });
+        }
+
+        return h('form', { class: 'card', novalidate: 'novalidate', onSubmit: onPwSubmit }, [
+          h('div', { class: 'card__header' }, [
+            h('h2', { class: 'card__title' }, 'Your password'),
+          ]),
+          h('p', {
+            style: 'margin:0 0 var(--space-4);color:var(--color-text-muted);' +
+              'font-size:var(--font-size-3)',
+          }, 'Changes the password for your own sign-in only — not the practice, and ' +
+             'not anyone else on your team. You stay signed in on this device.'),
+          h('div', {
+            style: 'display:grid;grid-template-columns:repeat(auto-fit,minmax(14rem,1fr));' +
+              'gap:var(--space-4)',
+          }, [currentField, newField, confirmField]),
+          h('div', { class: 'page-header__actions', style: 'margin-top:var(--space-4)' }, [pwBtn]),
         ]);
       }
 
@@ -388,6 +507,7 @@
           h('h1', { class: 'page-header__title' }, 'Settings'),
         ]),
         form,
+        passwordCard(),
         calendarCard(),
       ]);
 

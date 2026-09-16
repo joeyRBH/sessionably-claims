@@ -179,6 +179,17 @@
     return request('GET', '/me');
   }
 
+  // changePassword(current, next) -> POST /me/password. Self only — the endpoint
+  // has no {id}, so this can never address another account. The existing token
+  // stays valid, so the caller is not signed out of the tab they are standing in.
+  // Neither password is ever logged, stored, or put in a URL.
+  function changePassword(currentPassword, newPassword) {
+    return request('POST', '/me/password', {
+      current_password: currentPassword,
+      new_password: newPassword,
+    });
+  }
+
   // --- resource methods ------------------------------------------------------
   // Each method resolves to the backend's response object as-is, e.g.
   //   clients.list()        -> { clients: [...] }
@@ -544,6 +555,7 @@
     login: login,
     logout: logout,
     me: me,
+    changePassword: changePassword,
     // resources
     clients: clients,
     insuranceRecords: insuranceRecords,
