@@ -25,6 +25,12 @@ locals {
       handler = "handlers/me.handler"
       routes  = [{ method = "GET", path = "me" }]
     }
+    password = {
+      handler = "handlers/password.handler"
+      # The signed-in user changes their OWN password. Self only by construction:
+      # there is no {id} segment, so the route cannot address another account.
+      routes = [{ method = "POST", path = "me/password" }]
+    }
     practice = {
       handler = "handlers/practice.handler"
       # The caller's own practice: settings summary (GET) + identity/billing-address
