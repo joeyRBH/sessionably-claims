@@ -49,6 +49,7 @@ const {
   evaluateGroup, orderForFiling, suggestGroups, MAX_GROUPED_LINES,
 } = require('../lib/claim_grouping');
 const { applyStatusResult, refundOutcomeCode } = require('../lib/claim_status_apply');
+const payerCapability = require('../lib/payer_capability');
 // Assembling the normalized claim context, and the status→event-type map. In
 // their own module rather than here because the scheduled poller
 // (handlers/claim_status_poll.js) must build the IDENTICAL context: the 276 it
@@ -620,6 +621,15 @@ async function getClaim(practiceId, id, event, authCtx) {
   // line, so the view never has to branch on "grouped or not".
   const lineRows = await loadClaimSessions(db, practiceId, id);
   detail.service_lines = shapeClaimLines(lineRows, row);
+  // Whether an automated status check can reach this claim's payer at all, so
+  // the detail can say so BEFORE a biller clicks Refresh and waits for a 422.
+  // ADDITIVE and advisory: false-y for every payer we have not seen refuse, and
+  // it never disables anything — a wrong flag must not strand a biller, and a
+  // click is exactly what re-probes and clears it.
+  detail.payer_status_unsupported = await payerCapability.isUnsupported({
+    practiceId,
+    payerId: payerCapability.payerIdForStatus(row, { payer_id: row.ins_payer_id }),
+  });
   return json(200, { claim: detail }, event);
 }
 
@@ -1347,6 +1357,15 @@ async function refreshClaim(practiceId, userId, id, event, authCtx) {
     // available. The message is OURS and vendor-neutral; the clearinghouse's own
     // text stays in CloudWatch.
     if (err && err.isStatusUnsupported) {
+      // Remember it, so the scheduled poller stops asking too and the claim can
+      // warn the next biller before they click. Bookkeeping only — it never
+      // blocks a future Refresh, and any success clears it.
+      await payerCapability.recordProbe({
+        practiceId,
+        payerId: payerCapability.payerIdForStatus(claim, ctx && ctx.insurance),
+        supported: false,
+        errorCode: 'BAD_REQUEST',
+      });
       await audit(event, authCtx, {
         action: 'claim.refresh',
         resourceType: 'claim',
@@ -1364,6 +1383,17 @@ async function refreshClaim(practiceId, userId, id, event, authCtx) {
     console.error('claims refresh (clearinghouse) error:', err && err.message);
     return json(502, { error: 'Clearinghouse status check failed.' }, event);
   }
+
+  // It answered at all, so this payer supports status inquiries — clear any stale
+  // refusal. Done here rather than only on a status CHANGE: "no update yet" is
+  // still the payer answering, which is exactly what the flag is about. It is
+  // also what makes a biller's Refresh click the manual re-probe that heals a
+  // wrong flag.
+  await payerCapability.recordProbe({
+    practiceId,
+    payerId: payerCapability.payerIdForStatus(claim, ctx && ctx.insurance),
+    supported: true,
+  });
 
   // (b) Valid response, but the payer has no matching claim / no new status yet.
   // The claim keeps its current status; return 200 so the UI can show an info
