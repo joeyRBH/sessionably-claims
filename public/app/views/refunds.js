@@ -71,6 +71,32 @@
     }, 'Auto');
   }
 
+  // What approving this request would actually do, decided by the SERVER
+  // (shapeRequest's fee_state) rather than guessed at here. Stone throughout:
+  // none of these is a verdict on the claim, only a statement about whether
+  // there is money to give back. Sage would read as "resolved" on a row still
+  // waiting for a decision.
+  //
+  // 'collected' gets no marker — it is the state this queue was built around,
+  // and labelling the normal case makes the exceptions harder to spot.
+  function feeMark(r) {
+    if (r.fee_state === 'none') {
+      return h('span', {
+        class: 'badge badge--neutral',
+        style: 'margin-left:var(--space-2)',
+        title: 'No platform fee was ever collected on this claim — there is nothing to refund.',
+      }, 'No fee charged');
+    }
+    if (r.fee_state === 'refunded') {
+      return h('span', {
+        class: 'badge badge--neutral',
+        style: 'margin-left:var(--space-2)',
+        title: 'The platform fee on this claim has already been refunded.',
+      }, 'Already refunded');
+    }
+    return null;
+  }
+
   function shortClaim(r) {
     if (r.claim_number) return r.claim_number;
     return r.claim_id ? String(r.claim_id).slice(0, 8) : '—';
@@ -108,11 +134,23 @@
           r.status === 'approved' ? ('Refunded ' + when) : ('Denied ' + when));
       }
       var btns = [];
-      // Only a denied outcome is refundable.
-      if (r.outcome_label === 'denied') {
-        var approveBtn = h('button', { class: 'btn btn--primary btn--sm', type: 'button' }, 'Approve refund');
+      // Only a denied outcome is refundable AT ALL — and, of those, only one on a
+      // claim that actually collected a fee. Offering "Approve refund" on a claim
+      // with no collected fee was a button that could only ever fail: the server
+      // 409s ("nothing to refund"), no money moves, and the request stays Open
+      // for ever. It is replaced by the decision that CAN be made — closing it.
+      if (r.outcome_label === 'denied' && r.fee_state === 'collected') {
+        var approveBtn = h('button', { class: 'btn btn--primary btn--sm', type: 'button' },
+          r.fee_amount ? ('Refund ' + R.fmtMoney(r.fee_amount)) : 'Approve refund');
         approveBtn.addEventListener('click', function () { onApprove(r); });
         btns.push(approveBtn);
+      } else if (r.outcome_label === 'denied' && r.fee_state === 'none') {
+        // Stone, not primary: this resolves a queue entry, it does not move money,
+        // and it should not wear the weight of the action it replaces.
+        var closeBtn = h('button', { class: 'btn btn--secondary btn--sm', type: 'button' },
+          'Close — nothing to refund');
+        closeBtn.addEventListener('click', function () { onCloseNoFee(r); });
+        btns.push(closeBtn);
       }
       var denyBtn = h('button', { class: 'btn btn--ghost btn--sm', type: 'button' }, 'Deny');
       denyBtn.addEventListener('click', function () { onDeny(r); });
@@ -125,7 +163,7 @@
         h('td', { style: 'white-space:nowrap' }, R.fmtDate(r.created_at)),
         h('td', null, r.client_name || '—'),
         h('td', null, h('code', { style: 'font-size:var(--font-size-2)' }, shortClaim(r))),
-        h('td', null, [badge(r.outcome_label, 'outcome'), sourceMark(r)]),
+        h('td', null, [badge(r.outcome_label, 'outcome'), sourceMark(r), feeMark(r)]),
         h('td', null, badge(r.status, 'status')),
         h('td', null, actionsCell(r)),
       ]);
@@ -184,7 +222,41 @@
           load();
         }).catch(function (err) {
           R.toast((err && err.message) || 'The refund could not be completed.', 'error');
+          // A stale page can still offer Approve on a request whose fee turns out
+          // not to exist. Reloading swaps the button for "Close — nothing to
+          // refund", so the admin is not left pressing something that cannot work.
           load();
+        });
+      });
+    }
+
+    // Close a request that can never be approved because no platform fee was ever
+    // collected on the claim (no card on file when it was submitted, or the charge
+    // failed). This is the ordinary deny transition — it records a decision and an
+    // audited reason, and moves no money — but it is presented as CLOSING rather
+    // than DENYING, because denying a patient's refund request and telling them
+    // there was never a fee to return are different things to say.
+    //
+    // The reason is prefilled, not fixed: it is what actually happened, and the
+    // admin can still add detail before recording it.
+    function onCloseNoFee(r) {
+      R.formModal({
+        title: 'Close this request?',
+        submitLabel: 'Close request',
+        fields: [
+          { name: 'reason', label: 'Reason (recorded on the decision)', type: 'textarea',
+            required: true,
+            hint: 'No platform fee was collected on this claim, so there is nothing to ' +
+              'refund. Closing records the decision; no money moves either way.' },
+        ],
+        values: { reason: 'No platform fee was collected on this claim, so there is nothing to refund.' },
+      }).then(function (out) {
+        if (!out) return;
+        api.refunds.deny(r.id, out.reason).then(function () {
+          R.toast('Request closed — no fee was charged.', 'success');
+          load();
+        }).catch(function (err) {
+          R.toast((err && err.message) || 'Could not close the request.', 'error');
         });
       });
     }
@@ -290,7 +362,9 @@
           style: 'margin:0 0 var(--space-4);color:var(--color-text-muted);font-size:var(--font-size-3)',
         }, 'When a patient’s claim is denied, refund the submission fee here. A paid or ' +
            'deductible claim is a success — only a denied claim refunds the fee. Approving ' +
-           'issues the refund to the card on file; every decision is logged.'),
+           'issues the refund to the card on file; every decision is logged. A claim that ' +
+           'never collected a fee — no card on file when it was submitted — is marked ' +
+           '“No fee charged” and can only be closed, since there is nothing to give back.'),
         h('label', { class: 'field', style: 'max-width:12rem' }, [
           h('span', { class: 'field__label' }, 'Show'),
           filterSelect,

@@ -161,21 +161,70 @@ function shapeRequest(r) {
     decided_by: r.decided_by,
     decided_at: r.decided_at,
     stripe_refund_id: r.stripe_refund_id,
+    // What approving this request would actually DO, decided here rather than
+    // guessed at by the client:
+    //   'refunded'  — the fee has already been given back; approving is a no-op.
+    //   'collected' — a fee was charged and can be returned. The only refundable
+    //                 state.
+    //   'none'      — no platform fee was ever collected on this claim (no card
+    //                 on file at submit time, or the charge failed). There is
+    //                 nothing to give back, and no approval will ever succeed.
+    // fee_amount is the fee in dollars, present only when state is 'collected'.
+    fee_state: feeState(r),
+    fee_amount: r.fee_amount != null ? Number(r.fee_amount) : null,
     created_at: r.created_at,
     updated_at: r.updated_at,
   };
 }
 
+// Pure — exported for unit tests. Mirrors approveContext's guard ordering exactly:
+// already-refunded wins over everything, then a positive fee with a Stripe handle
+// to refund against, else nothing to refund.
+function feeState(r) {
+  if (!r) return 'none';
+  if (r.stripe_refund_id || r.claim_has_refund === true) return 'refunded';
+  const amount = r.fee_amount == null ? 0 : Number(r.fee_amount);
+  if (!Number.isFinite(amount) || amount <= 0) return 'none';
+  // A recorded fee with no Stripe reference cannot be refunded through Stripe,
+  // which is the same 409 approveContext raises — so the queue must not present
+  // it as refundable either.
+  if (!r.fee_charge_id && !r.fee_intent_id) return 'none';
+  return 'collected';
+}
+
+// The queue needs to know, PER ROW, whether there is actually a fee to give
+// back — otherwise it offers "Approve refund" on requests that can only ever
+// 409, and those requests sit Open for ever. Two lateral joins answer it without
+// an N+1: the most recent PAID platform fee on the claim, and whether any refund
+// transaction already exists for it. Both are the same predicates approveContext
+// applies, so the queue cannot disagree with the guard it is previewing.
 const SELECT_WITH_JOINS = `
   select rr.*,
          c.claim_number,
          c.status              as claim_status,
          cl.first_name         as client_first_name,
          cl.last_name          as client_last_name,
-         cl.preferred_name     as client_preferred_name
+         cl.preferred_name     as client_preferred_name,
+         fee.amount            as fee_amount,
+         fee.stripe_charge_id  as fee_charge_id,
+         fee.stripe_payment_intent_id as fee_intent_id,
+         (refunded.one is not null) as claim_has_refund
     from refund_requests rr
     join claims  c  on c.id  = rr.claim_id
     join clients cl on cl.id = rr.client_id
+    left join lateral (
+      select t.amount, t.stripe_charge_id, t.stripe_payment_intent_id
+        from transactions t
+       where t.claim_id = rr.claim_id and t.type = 'platform_fee' and t.status = 'paid'
+       order by t.created_at desc
+       limit 1
+    ) fee on true
+    left join lateral (
+      select 1 as one
+        from transactions t
+       where t.claim_id = rr.claim_id and t.type = 'refund'
+       limit 1
+    ) refunded on true
 `;
 
 // --- create ------------------------------------------------------------------
@@ -356,19 +405,33 @@ async function approveContext(caller, id, event) {
   const fee = await loadPaidFee(rr.claim_id);
   if (!fee) {
     // No platform fee was ever successfully charged — there is nothing to refund.
-    return json(409, { error: 'No platform fee was charged for this claim; there is nothing to refund.' }, event);
+    // The queue now shows this state up front (shapeRequest's fee_state) and
+    // offers "Close — nothing to refund" instead of Approve, so reaching this
+    // guard means a stale page or a direct call. Say what to do about it rather
+    // than leaving the request stuck open.
+    return json(409, {
+      error: 'No platform fee was charged for this claim, so there is nothing to refund. ' +
+        'Close the request instead — it records the decision without moving money.',
+      code: 'no_fee_collected',
+    }, event);
   }
 
   const amountCents = Math.round(Number(fee.amount) * 100);
   if (!Number.isFinite(amountCents) || amountCents <= 0) {
-    return json(409, { error: 'The recorded platform fee has no positive amount to refund.' }, event);
+    return json(409, {
+      error: 'The recorded platform fee has no positive amount to refund. Close the request instead.',
+      code: 'no_fee_collected',
+    }, event);
   }
 
   const target = {};
   if (fee.stripe_charge_id) target.charge = fee.stripe_charge_id;
   else if (fee.stripe_payment_intent_id) target.payment_intent = fee.stripe_payment_intent_id;
   else {
-    return json(409, { error: 'The platform-fee charge has no Stripe reference to refund.' }, event);
+    return json(409, {
+      error: 'The platform-fee charge has no Stripe reference to refund against. Close the request instead.',
+      code: 'no_fee_collected',
+    }, event);
   }
 
   return json(
@@ -519,3 +582,7 @@ exports.handler = async (event) => {
     return json(500, { error: 'Internal server error' }, event);
   }
 };
+
+// Pure helper, exported so the queue's refundability projection can be unit
+// tested against the same rows the guard sees. Not part of the HTTP surface.
+exports.feeState = feeState;
