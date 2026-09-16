@@ -213,6 +213,81 @@ async function sendInvitationEmail(opts, deps) {
   }
 }
 
+// Compose the "finish your insurance details" patient reminder.
+//
+// THIS ONE GOES TO A PATIENT, so the PHI ceiling in this file's header is not a
+// style note — it is the rule. The message carries a first name, the practice's
+// name, and a link. It does NOT say why the practice is asking, name a payer or
+// a plan, mention a diagnosis, a session, a claim, or an amount, and it never
+// says the words "out of network" or "insurance claim" in the SUBJECT — an
+// email subject line is visible on a lock screen to anyone holding the phone.
+//
+// `practiceName` is the practice the patient already knows they see, so naming
+// it is what makes the mail recognisable rather than phishy. Returns
+// { subject, text, html }.
+function buildInsuranceReminderEmail(opts) {
+  const o = opts || {};
+  const practiceName = String(o.practiceName || '').trim() || 'your provider';
+  const setupUrl = String(o.setupUrl || '').trim();
+  const firstName = o.firstName ? String(o.firstName).trim() : '';
+  const greeting = firstName ? `Hi ${firstName},` : 'Hi,';
+
+  const subject = `Finish your details for ${practiceName}`;
+  const lines = [
+    greeting,
+    '',
+    `${practiceName} sent you a short form to complete, and it looks like a few ` +
+      'details are still missing.',
+    '',
+    'It takes a couple of minutes:',
+    setupUrl,
+    '',
+    'This link expires in 24 hours. If you have already completed the form, or ' +
+      "you weren't expecting this, you can ignore this message.",
+    '',
+    `Questions? Reply to ${practiceName} directly — this address is not monitored.`,
+  ];
+  const text = lines.join('\n');
+  const html =
+    `<p>${escapeHtml(greeting)}</p>` +
+    `<p><strong>${escapeHtml(practiceName)}</strong> sent you a short form to ` +
+    `complete, and it looks like a few details are still missing.</p>` +
+    `<p><a href="${escapeHtml(setupUrl)}">Finish the form</a> — it takes a couple ` +
+    `of minutes.</p>` +
+    `<p>This link expires in 24 hours. If you have already completed the form, or ` +
+    `you weren't expecting this, you can ignore this message.</p>` +
+    `<p>Questions? Reply to ${escapeHtml(practiceName)} directly — this address is ` +
+    `not monitored.</p>`;
+  return { subject, text, html };
+}
+
+// Send the patient reminder. NEVER THROWS: one patient's bad address or a
+// transient SES failure must not end a scheduled run that is working through
+// many patients. Returns { sent: boolean, error?: string }.
+//
+// The caller records "we asked" ONLY on { sent: true } — a reminder that never
+// left must not burn the single send this patient gets.
+async function sendInsuranceReminderEmail(opts, deps) {
+  const o = opts || {};
+  if (!isValidEmail(o.to)) {
+    // Never log the address itself.
+    console.warn('email: insurance reminder recipient is not a valid email');
+    return { sent: false, error: 'invalid recipient' };
+  }
+  try {
+    const content = buildInsuranceReminderEmail(o);
+    await sendEmail(
+      { to: o.to, from: o.from, subject: content.subject, text: content.text, html: content.html },
+      deps
+    );
+    return { sent: true };
+  } catch (err) {
+    // The message only — never the recipient, the name, or the token in the URL.
+    console.warn('email: insurance reminder send failed:', err && err.message);
+    return { sent: false, error: (err && err.message) || 'send failed' };
+  }
+}
+
 function escapeHtml(s) {
   return String(s)
     .replace(/&/g, '&amp;')
@@ -233,4 +308,6 @@ module.exports = {
   sendIntakeCompletionEmail,
   buildInvitationEmail,
   sendInvitationEmail,
+  buildInsuranceReminderEmail,
+  sendInsuranceReminderEmail,
 };
