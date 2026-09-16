@@ -679,22 +679,47 @@
     }
 
     // --- Lifecycle actions (each re-renders the whole detail on success) -----
-    function doSubmit(claim) {
-      // A replacement draft goes straight to send(): the server returns a
+    //
+    // SUBMITTING SHOWS ITS WORK. A submit round-trips the clearinghouse and can
+    // take many seconds (the Lambda is given 60s for exactly this reason). Until
+    // now the confirm dialog closed the instant it was clicked and nothing else
+    // on screen moved, so there was no way to tell a submission in flight from a
+    // click that had not registered — and nothing stopped a second click.
+    //
+    // Every path into a submission now keeps a spinning, disabled control on
+    // screen for as long as the request is open:
+    //   * the ordinary path      -> the "Submit claim?" dialog stays up, spinning
+    //   * a replacement draft    -> the detail page's own Submit button spins
+    //   * the warnings gate      -> the "Submit anyway" dialog stays up, spinning
+    function doSubmit(claim, sourceBtn) {
+      // A replacement draft goes straight to submitRequest(): the server returns a
       // replacement confirmation (requires_confirmation) that the dialog renders
       // with the exact "replaces a previously accepted claim" language and the
-      // payer claim number — so no generic pre-confirm here.
+      // payer claim number — so no generic pre-confirm here. With no dialog to
+      // spin, the button that was pressed carries the busy state instead.
       if (isReplacementClaim(claim)) {
-        send(false);
+        R.setBusy(sourceBtn, true, 'Submitting…');
+        submitRequest(false).then(function (outcome) {
+          R.setBusy(sourceBtn, false);
+          applySubmitOutcome(outcome);
+        });
         return;
       }
+      var outcome = null;
       R.confirmModal({
         title: 'Submit claim?',
         body: 'Sends the claim to the clearinghouse.',
         confirmLabel: 'Submit',
+        busyLabel: 'Submitting…',
+        // The dialog stays open, spinning, until the clearinghouse answers.
+        // submitRequest never rejects, so the modal always closes afterwards and
+        // the outcome is acted on below rather than behind the backdrop.
+        onConfirm: function () {
+          return submitRequest(false).then(function (res) { outcome = res; });
+        },
       }).then(function (ok) {
         if (!ok) return;
-        send(false);
+        applySubmitOutcome(outcome);
       });
     }
 
@@ -723,22 +748,34 @@
       });
     }
 
-    // Send the claim. On the first pass (confirmed=false) the server may return a
-    // soft-warning gate: { requires_confirmation, warnings }. We list the warnings
-    // and, only on explicit "Submit anyway", resend with confirmed=true.
-    function send(confirmed) {
-      api.claims.submit(id, { confirmed: confirmed }).then(function (res) {
+    // Send the claim and describe what came back. NEVER REJECTS: a failure is
+    // returned as { kind: 'error' }, so a caller driving a busy dialog can always
+    // close it cleanly and report the result in front of the user rather than
+    // behind a backdrop. On the first pass (confirmed=false) the server may
+    // answer with a soft-warning gate instead of submitting.
+    function submitRequest(confirmed) {
+      return api.claims.submit(id, { confirmed: confirmed }).then(function (res) {
         if (res && res.requires_confirmation && res.warnings && res.warnings.length) {
-          confirmWarnings(res.warnings);
-          return;
+          return { kind: 'warnings', warnings: res.warnings };
         }
-        R.toast('Claim submitted', 'success');
-        load();
+        return { kind: 'submitted' };
       }).catch(function (err) {
         // A submit failure may carry a clearinghouse rejection message — scrub
         // the vendor name before showing it.
-        R.toast(R.scrubVendor(err && err.message) || 'Claim submission failed', 'error');
+        return {
+          kind: 'error',
+          message: R.scrubVendor(err && err.message) || 'Claim submission failed',
+        };
       });
+    }
+
+    // Act on a submitRequest() outcome once any busy dialog has closed.
+    function applySubmitOutcome(outcome) {
+      if (!outcome) return;
+      if (outcome.kind === 'warnings') { confirmWarnings(outcome.warnings); return; }
+      if (outcome.kind === 'error') { R.toast(outcome.message, 'error'); return; }
+      R.toast('Claim submitted', 'success');
+      load();
     }
 
     // Modal listing the server's pre-submission warnings. "Submit anyway" resends
@@ -749,6 +786,7 @@
     function confirmWarnings(warnings) {
       var replacement = null;
       var rest = [];
+      var resent = null;       // filled by onConfirm, acted on after the dialog closes
       warnings.forEach(function (w) {
         if (w && w.code === 'replacement_claim') replacement = w;
         else rest.push(w);
@@ -783,12 +821,23 @@
         body: body,
         confirmLabel: replacement ? 'Submit replacement' : 'Submit anyway',
         cancelLabel: 'Cancel',
+        busyLabel: 'Submitting…',
+        onConfirm: function () {
+          return submitRequest(true).then(function (res) { resent = res; });
+        },
       }).then(function (ok) {
-        if (ok) send(true);
+        if (!ok) return;
+        applySubmitOutcome(resent);
       });
     }
 
-    function doRefresh() {
+    // Refresh is the SAME multi-second clearinghouse round-trip as submit, sitting
+    // on the same page under an identical-looking button. Left bare it would read
+    // as the broken one, so it carries the busy state too. `load()` re-renders the
+    // whole detail (replacing this button), so the un-busy only matters on the
+    // paths that do not reload.
+    function doRefresh(sourceBtn) {
+      R.setBusy(sourceBtn, true, 'Checking…');
       api.claims.refresh(id).then(function (res) {
         // The refresh endpoint returns a structured outcome: 'updated' when the
         // payer moved the claim, 'no_update' when there is no matching claim or no
@@ -803,6 +852,7 @@
         load();
       }).catch(function (err) {
         // A failure message may echo the clearinghouse — scrub the vendor name.
+        R.setBusy(sourceBtn, false);
         R.toast(R.scrubVendor(err && err.message) || 'Could not refresh status.', 'error');
       });
     }
@@ -1024,12 +1074,17 @@
     // Show only the buttons allowed for the current status (see matrix).
     function actionsFor(claim) {
       var s = claim.status;
+      // The handler receives its own button, so a long-running action can make
+      // the control the user actually pressed go busy — rather than guessing at
+      // it from the outside or spinning some other button on the page.
       function btn(label, cls, handler) {
-        return h('button', { class: 'btn ' + cls, type: 'button', onClick: handler }, label);
+        var el = h('button', { class: 'btn ' + cls, type: 'button' }, label);
+        el.addEventListener('click', function () { handler(el); });
+        return el;
       }
       if (s === 'draft') {
         return [
-          btn('Submit', 'btn--primary', function () { doSubmit(claim); }),
+          btn('Submit', 'btn--primary', function (el) { doSubmit(claim, el); }),
           btn('Edit claim', 'btn--ghost', function () { doEditClaim(claim); }),
           btn('Claim #', 'btn--ghost', function () { doEdit(claim); }),
           btn('Delete', 'btn--danger', doDelete),

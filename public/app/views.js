@@ -171,6 +171,46 @@
   }
 
   // ---------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // Busy state
+  // ---------------------------------------------------------------------------
+  // setBusy(el, on, busyLabel) — mark a button as running a request.
+  //
+  // A submit that round-trips the clearinghouse can take many seconds, and until
+  // now nothing on screen changed while it did: the modal closed, the page sat
+  // still, and the only way to find out whether anything was happening was to
+  // wait for the toast. Worse, nothing stopped a second click.
+  //
+  // Busy means: disabled (so it cannot be pressed twice), aria-busy for anyone on
+  // a screen reader, a spinner, and a label that says what is going on. The
+  // original label is stashed on the element and restored on the way out, so a
+  // caller never has to remember what the button used to say.
+  //
+  // Idempotent in both directions — setBusy(el, true) twice will not stash the
+  // spinner as the "original" label.
+  function setBusy(el, on, busyLabel) {
+    if (!el) return;
+    if (on) {
+      if (el.__busyLabel !== undefined) return;   // already busy
+      el.__busyLabel = el.textContent;
+      el.disabled = true;
+      el.classList.add('is-busy');
+      el.setAttribute('aria-busy', 'true');
+      clear(el);
+      el.appendChild(h('span', { class: 'spinner', 'aria-hidden': 'true' }));
+      el.appendChild(document.createTextNode(busyLabel || 'Working…'));
+      return;
+    }
+    if (el.__busyLabel === undefined) return;     // was not busy
+    var label = el.__busyLabel;
+    delete el.__busyLabel;
+    el.disabled = false;
+    el.classList.remove('is-busy');
+    el.removeAttribute('aria-busy');
+    clear(el);
+    el.appendChild(document.createTextNode(label));
+  }
+
   // Modal core (shared by confirmModal + formModal)
   // ---------------------------------------------------------------------------
   // openModal({ title, bodyNode, footerNodes, onClose }) -> { close }.
@@ -224,11 +264,26 @@
     return { close: close, panel: panel };
   }
 
-  // confirmModal({ title, body, confirmLabel, danger }) -> Promise<boolean>
+  // confirmModal({ title, body, confirmLabel, danger, onConfirm, busyLabel })
+  //   -> Promise<boolean>
+  //
+  // onConfirm is OPTIONAL and additive. Without it the modal behaves exactly as
+  // it always has: confirm closes it and resolves true, immediately.
+  //
+  // With it, confirming runs onConfirm() and KEEPS THE MODAL OPEN while the
+  // returned promise is pending, with the confirm button spinning under
+  // `busyLabel`. Cancel, Escape and backdrop-dismiss are all inert for that
+  // window — a half-sent claim must not be dismissable out from under itself.
+  //   * resolves -> the modal closes and the outer promise resolves true.
+  //   * rejects  -> the modal STAYS OPEN, the button un-busies, and the action can
+  //                 be retried or cancelled. Reject only when a retry makes sense;
+  //                 a caller that has already reported the failure itself should
+  //                 resolve.
   function confirmModal(opts) {
     opts = opts || {};
     return new Promise(function (resolve) {
       var settled = false;
+      var busy = false;
       function settle(val, modal) {
         if (settled) return;
         settled = true;
@@ -251,11 +306,31 @@
         title: opts.title || 'Are you sure?',
         bodyNode: body,
         footerNodes: [cancelBtn, confirmBtn],
-        onClose: function () { settle(false, modal); },
+        // Escape / backdrop are ignored while the action is in flight.
+        onClose: function () { if (!busy) settle(false, modal); },
       });
 
-      cancelBtn.addEventListener('click', function () { settle(false, modal); });
-      confirmBtn.addEventListener('click', function () { settle(true, modal); });
+      cancelBtn.addEventListener('click', function () { if (!busy) settle(false, modal); });
+      confirmBtn.addEventListener('click', function () {
+        if (busy) return;
+        if (typeof opts.onConfirm !== 'function') { settle(true, modal); return; }
+        busy = true;
+        setBusy(confirmBtn, true, opts.busyLabel);
+        cancelBtn.disabled = true;
+        var pending;
+        try {
+          pending = opts.onConfirm();
+        } catch (e) {
+          pending = Promise.reject(e);
+        }
+        Promise.resolve(pending).then(function () {
+          settle(true, modal);
+        }, function () {
+          busy = false;
+          setBusy(confirmBtn, false);
+          cancelBtn.disabled = false;
+        });
+      });
     });
   }
 
@@ -604,9 +679,17 @@
     return { node: node, control: hidden };
   }
 
-  // formModal({ title, fields, values, submitLabel, cancelLabel }) -> Promise<values|null>
+  // formModal({ title, fields, values, submitLabel, cancelLabel, onSubmit, busyLabel })
+  //   -> Promise<values|null>
   //   fields: [{ name, label, type, required, options, placeholder }]
   //   types: text | email | date | number | select | textarea | payer (default text)
+  //
+  // onSubmit is OPTIONAL and additive, and mirrors confirmModal's onConfirm: given
+  // one, a valid submit runs onSubmit(values) and KEEPS THE MODAL OPEN with the
+  // submit button spinning until the returned promise settles. Resolving closes the
+  // modal and resolves the outer promise with the collected values; rejecting
+  // leaves the modal open so the entered values are not lost on a retryable
+  // failure. Without it, submit closes immediately as it always has.
   function formModal(opts) {
     opts = opts || {};
     var fields = opts.fields || [];
@@ -614,6 +697,7 @@
 
     return new Promise(function (resolve) {
       var settled = false;
+      var busy = false;
       function settle(val, modal) {
         if (settled) return;
         settled = true;
@@ -836,9 +920,26 @@
 
       function onSubmit(e) {
         if (e) e.preventDefault();
+        if (busy) return;
         var result = collect();
         if (result === null) return;       // validation failed; errors are shown
-        settle(result, modal);
+        if (typeof opts.onSubmit !== 'function') { settle(result, modal); return; }
+        busy = true;
+        setBusy(submitBtn, true, opts.busyLabel);
+        cancelBtn.disabled = true;
+        var pending;
+        try {
+          pending = opts.onSubmit(result);
+        } catch (err) {
+          pending = Promise.reject(err);
+        }
+        Promise.resolve(pending).then(function () {
+          settle(result, modal);
+        }, function () {
+          busy = false;
+          setBusy(submitBtn, false);
+          cancelBtn.disabled = false;
+        });
       }
 
       form.addEventListener('submit', onSubmit);
@@ -850,10 +951,11 @@
         title: opts.title || 'Form',
         bodyNode: form,
         footerNodes: [cancelBtn, submitBtn],
-        onClose: function () { settle(null, modal); },
+        // Escape / backdrop are ignored while the submitted action is in flight.
+        onClose: function () { if (!busy) settle(null, modal); },
       });
 
-      cancelBtn.addEventListener('click', function () { settle(null, modal); });
+      cancelBtn.addEventListener('click', function () { if (!busy) settle(null, modal); });
       submitBtn.addEventListener('click', onSubmit);
     });
   }
@@ -1260,6 +1362,7 @@
     openModal: openModal,
     confirmModal: confirmModal,
     formModal: formModal,
+    setBusy: setBusy,
     // onboarding walkthrough
     openTutorial: openTutorial,
     maybeAutoOpenTutorial: maybeAutoOpenTutorial,
