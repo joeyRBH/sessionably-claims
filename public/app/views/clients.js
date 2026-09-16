@@ -1331,8 +1331,16 @@
         last_name: 'Last name',
         date_of_birth: 'Date of birth',
       };
-      var INSURANCE_FIELDS = { member_id: 1, subscriber_name: 1, subscriber_dob: 1 };
-      var CLIENT_FIELDS = { first_name: 1, last_name: 1, date_of_birth: 1 };
+      // Which record a corrected field belongs to. These are LOOKUPS, not field
+      // lists — and they are deliberately not named INSURANCE_FIELDS /
+      // CLIENT_FIELDS. Those names are already taken by the module-level FORM
+      // FIELD ARRAYS at the top of this file, and `var` is function-scoped: a
+      // second `var INSURANCE_FIELDS` here hoisted over the whole of
+      // insurancePanel, so openForm's `INSURANCE_FIELDS.forEach(...)` ran against
+      // this object and threw "forEach is not a function" — which is why both
+      // "Edit insurance" and "Add insurance" silently opened nothing.
+      var DISCREPANCY_INSURANCE_FIELDS = { member_id: 1, subscriber_name: 1, subscriber_dob: 1 };
+      var DISCREPANCY_CLIENT_FIELDS = { first_name: 1, last_name: 1, date_of_birth: 1 };
 
       function fieldLabel(f) { return DISCREPANCY_FIELD_LABELS[f] || f; }
 
@@ -1341,8 +1349,8 @@
         var cliUpd = {};
         (discrepancies || []).forEach(function (d) {
           if (!d || !d.field) return;
-          if (INSURANCE_FIELDS[d.field]) insUpd[d.field] = d.payer_returned;
-          else if (CLIENT_FIELDS[d.field]) cliUpd[d.field] = d.payer_returned;
+          if (DISCREPANCY_INSURANCE_FIELDS[d.field]) insUpd[d.field] = d.payer_returned;
+          else if (DISCREPANCY_CLIENT_FIELDS[d.field]) cliUpd[d.field] = d.payer_returned;
         });
         if (!Object.keys(insUpd).length && !Object.keys(cliUpd).length) return;
 
