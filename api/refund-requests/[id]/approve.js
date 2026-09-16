@@ -64,7 +64,22 @@ module.exports = async (req, res) => {
     } catch (err) {
       console.error('approve_refund (stripe) error:', (err && err.message) || 'refund failed');
       // Do NOT record — the request stays open and can be retried.
-      return res.status(502).json({ ok: false, refunded: false, error: 'The refund could not be processed.' });
+      //
+      // Pass Stripe's own explanation through. "The refund could not be
+      // processed." told the admin nothing: a charge that was already refunded,
+      // a charge too old to refund, and a bad API key all looked identical, and
+      // there was no way to tell a retry that would help from one that never
+      // will. Stripe's payment-error text is operational (ids and reasons), never
+      // PHI — it is generated from OUR request, not from patient data.
+      const detail = (err && err.message) || null;
+      return res.status(502).json({
+        ok: false,
+        refunded: false,
+        error: detail
+          ? `The refund could not be processed: ${detail}`
+          : 'The refund could not be processed.',
+        stripe_code: (err && err.stripeCode) || null,
+      });
     }
 
     // Record the outcome (DB) via the Lambda API. It only marks the request approved
