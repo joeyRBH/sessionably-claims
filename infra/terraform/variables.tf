@@ -316,3 +316,52 @@ variable "claim_status_poll_recheck_hours" {
   type        = number
   default     = 24
 }
+
+# ─────────────────────────────────────────────────────────────
+# Insurance reminder (infra/terraform/intake-reminder.tf)
+# ─────────────────────────────────────────────────────────────
+
+variable "intake_reminder_enabled" {
+  description = <<-EOT
+    Turn the scheduled patient intake reminder ON. Default false,
+    which creates the EventBridge rule DISABLED so nothing runs.
+
+    Enabling it sends unattended email to PATIENTS across every practice on the
+    platform. Enable with intake_reminder_dry_run still true first, read one
+    run's output, and only then consider disabling dry run.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "intake_reminder_dry_run" {
+  description = <<-EOT
+    When true (the default), the job resolves who WOULD be emailed and logs the
+    client ids and a count, but mints no token, sends no mail, and writes
+    nothing.
+
+    Setting this to false lets a scheduled job email patients with no human in
+    the loop. A wrong send cannot be recalled, and a patient who marks it as
+    spam damages the SES domain reputation every other notification depends on.
+  EOT
+  type        = bool
+  default     = true
+}
+
+variable "intake_reminder_schedule" {
+  description = "EventBridge schedule for the intake reminder. Only meaningful when intake_reminder_enabled = true. Daily is deliberate: the reminder fires a fixed delay after the link was sent, so a finer schedule buys nothing."
+  type        = string
+  default     = "rate(1 day)"
+}
+
+variable "intake_reminder_max_clients" {
+  description = "Upper bound on how many patients one run may email. Bounds the blast radius of a misconfiguration more than it bounds runtime."
+  type        = number
+  default     = 200
+}
+
+variable "intake_reminder_min_age_hours" {
+  description = "How long after the intake link was sent (clients.payment_link_sent_at) a patient becomes eligible for the one reminder. The feature as specified is 24 hours."
+  type        = number
+  default     = 24
+}

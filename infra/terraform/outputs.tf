@@ -301,3 +301,18 @@ output "nat_gateway_public_ip" {
   description = "Public egress IP (NAT Elastic IP) the in-VPC Lambdas present to Stedi and other HTTPS APIs. Null when enable_nat_gateway = false."
   value       = var.enable_nat_gateway ? aws_eip.nat[0].public_ip : null
 }
+
+output "intake_reminder_function_name" {
+  description = "Name of the scheduled intake-reminder Lambda. Invoke by hand to exercise it; the EventBridge schedule is disabled unless intake_reminder_enabled = true."
+  value       = aws_lambda_function.intake_reminder.function_name
+}
+
+output "intake_reminder_schedule_state" {
+  description = "ENABLED / DISABLED state of the intake-reminder EventBridge rule."
+  value       = aws_cloudwatch_event_rule.intake_reminder.state
+}
+
+output "intake_reminder_dry_run" {
+  description = "Whether the intake reminder is in dry-run mode (resolves and logs recipients, sends nothing)."
+  value       = var.intake_reminder_dry_run
+}

@@ -342,6 +342,27 @@ alter table clients add column if not exists default_session_fee numeric(12,2);
 alter table clients add column if not exists default_procedure_modifiers text[];
 alter table clients add column if not exists calendar_display_name text;
 
+-- Migration (idempotent): record when the automatic "finish your details"
+-- email was sent to this patient. Staff record the moment they text an
+-- intake link (payment_link_sent_at) but nothing watched whether the patient
+-- ever finished; the first anyone noticed was a claim that would not submit.
+-- The scheduled reminder (backend/handlers/intake_reminder.js) emails once,
+-- 24h later, and reads this column as its own "already asked" guard — without
+-- it a daily job re-sends to the same person every day, and a patient marking
+-- that as spam damages the SES domain reputation every other notification
+-- depends on. NOT PHI: a timestamp about our own outreach. It says we ASKED,
+-- never that the patient answered — completeness is read live from the chart
+-- (both halves of card_setup.js's intakeCompleteness: demographics AND
+-- insurance), so this column can never drift out of agreement with it.
+-- Declared above for fresh databases; this keeps a pre-existing database in
+-- sync. See db/migrations/027_add_intake_reminder_to_clients.sql.
+alter table clients add column if not exists intake_reminder_sent_at timestamptz;
+create index if not exists idx_clients_awaiting_intake_reminder
+  on clients (practice_id, payment_link_sent_at)
+  where intake_reminder_sent_at is null
+    and payment_link_sent_at is not null
+    and is_hidden = false;
+
 -- Migration (idempotent): retire the unused 'ready' client status. The allowed
 -- set is now exactly active / awaiting_info / inactive, where 'active' already
 -- means "ready for claim submission" — 'ready' was a synonym nothing ever set.
