@@ -213,7 +213,7 @@ async function sendInvitationEmail(opts, deps) {
   }
 }
 
-// Compose the "finish your insurance details" patient reminder.
+// Compose the "finish your details" patient reminder.
 //
 // THIS ONE GOES TO A PATIENT, so the PHI ceiling in this file's header is not a
 // style note — it is the rule. The message carries a first name, the practice's
@@ -225,7 +225,7 @@ async function sendInvitationEmail(opts, deps) {
 // `practiceName` is the practice the patient already knows they see, so naming
 // it is what makes the mail recognisable rather than phishy. Returns
 // { subject, text, html }.
-function buildInsuranceReminderEmail(opts) {
+function buildIntakeReminderEmail(opts) {
   const o = opts || {};
   const practiceName = String(o.practiceName || '').trim() || 'your provider';
   const setupUrl = String(o.setupUrl || '').trim();
@@ -267,15 +267,15 @@ function buildInsuranceReminderEmail(opts) {
 //
 // The caller records "we asked" ONLY on { sent: true } — a reminder that never
 // left must not burn the single send this patient gets.
-async function sendInsuranceReminderEmail(opts, deps) {
+async function sendIntakeReminderEmail(opts, deps) {
   const o = opts || {};
   if (!isValidEmail(o.to)) {
     // Never log the address itself.
-    console.warn('email: insurance reminder recipient is not a valid email');
+    console.warn('email: intake reminder recipient is not a valid email');
     return { sent: false, error: 'invalid recipient' };
   }
   try {
-    const content = buildInsuranceReminderEmail(o);
+    const content = buildIntakeReminderEmail(o);
     await sendEmail(
       { to: o.to, from: o.from, subject: content.subject, text: content.text, html: content.html },
       deps
@@ -283,7 +283,7 @@ async function sendInsuranceReminderEmail(opts, deps) {
     return { sent: true };
   } catch (err) {
     // The message only — never the recipient, the name, or the token in the URL.
-    console.warn('email: insurance reminder send failed:', err && err.message);
+    console.warn('email: intake reminder send failed:', err && err.message);
     return { sent: false, error: (err && err.message) || 'send failed' };
   }
 }
@@ -308,6 +308,6 @@ module.exports = {
   sendIntakeCompletionEmail,
   buildInvitationEmail,
   sendInvitationEmail,
-  buildInsuranceReminderEmail,
-  sendInsuranceReminderEmail,
+  buildIntakeReminderEmail,
+  sendIntakeReminderEmail,
 };

@@ -1,6 +1,6 @@
 # =============================================================================
-# INSURANCE REMINDER - scheduled "finish your insurance details" patient email
-# (reddably-<env>-insurance-reminder).
+# INTAKE REMINDER - scheduled "finish your details" patient email
+# (reddably-<env>-intake-reminder).
 #
 # Staff text a patient an intake link and we stamp clients.payment_link_sent_at.
 # Nothing then watched whether the patient finished. A client who never fills the
@@ -14,10 +14,10 @@
 # and a patient who marks it as spam damages the SES domain reputation every other
 # notification in this product depends on.
 #
-#   1. var.insurance_reminder_enabled  (default false)
+#   1. var.intake_reminder_enabled  (default false)
 #      The EventBridge rule is created DISABLED. Nothing runs at all.
 #
-#   2. var.insurance_reminder_dry_run  (default true)
+#   2. var.intake_reminder_dry_run  (default true)
 #      Even once scheduled, the function resolves WHO would be emailed and logs
 #      the client ids and a count. It mints no token, sends no mail, and writes
 #      nothing.
@@ -26,7 +26,7 @@
 # dry, read one run's output, confirm the list is who you would have chased by
 # hand, and only then set dry_run = false.
 #
-# A THIRD, QUIETER SAFETY: the handler stamps clients.insurance_reminder_sent_at
+# A THIRD, QUIETER SAFETY: the handler stamps clients.intake_reminder_sent_at
 # on a successful send and skips anyone who has one, so even a misconfigured
 # schedule (say, hourly) cannot mail the same patient twice.
 #
@@ -41,19 +41,19 @@
 # egress SES needs from inside the VPC. No new grant, no new endpoint.
 # =============================================================================
 
-resource "aws_cloudwatch_log_group" "insurance_reminder" {
-  name              = "/aws/lambda/${local.prefix}-insurance-reminder"
+resource "aws_cloudwatch_log_group" "intake_reminder" {
+  name              = "/aws/lambda/${local.prefix}-intake-reminder"
   retention_in_days = var.log_retention_days
   kms_key_id        = var.logs_kms_key_arn == "" ? null : var.logs_kms_key_arn
 }
 
-resource "aws_lambda_function" "insurance_reminder" {
-  function_name = "${local.prefix}-insurance-reminder"
-  description   = "Scheduled patient reminder to finish insurance details. DRY RUN unless INSURANCE_REMINDER_DRY_RUN=false; schedule disabled unless insurance_reminder_enabled."
+resource "aws_lambda_function" "intake_reminder" {
+  function_name = "${local.prefix}-intake-reminder"
+  description   = "Scheduled patient reminder to finish intake (demographics + insurance). DRY RUN unless INTAKE_REMINDER_DRY_RUN=false; schedule disabled unless intake_reminder_enabled."
 
   role    = aws_iam_role.lambda_exec.arn
   runtime = var.lambda_runtime
-  handler = "handlers/insurance_reminder.handler"
+  handler = "handlers/intake_reminder.handler"
 
   filename         = data.archive_file.backend.output_path
   source_code_hash = data.archive_file.backend.output_base64sha256
@@ -61,7 +61,7 @@ resource "aws_lambda_function" "insurance_reminder" {
   memory_size = var.lambda_memory_mb
   # One SES call per patient, sequentially. Invoked by EventBridge, never through
   # API Gateway, so the 29s integration limit does not apply.
-  # INSURANCE_REMINDER_MAX_CLIENTS is what actually bounds a run.
+  # INTAKE_REMINDER_MAX_CLIENTS is what actually bounds a run.
   timeout       = 300
   architectures = ["arm64"]
 
@@ -81,15 +81,15 @@ resource "aws_lambda_function" "insurance_reminder" {
       # The safety switch. The handler treats any value other than "false" as
       # dry — an unset or misspelled value must not start sending mail to
       # patients.
-      INSURANCE_REMINDER_DRY_RUN = var.insurance_reminder_dry_run ? "true" : "false"
+      INTAKE_REMINDER_DRY_RUN = var.intake_reminder_dry_run ? "true" : "false"
 
-      INSURANCE_REMINDER_MAX_CLIENTS   = tostring(var.insurance_reminder_max_clients)
-      INSURANCE_REMINDER_MIN_AGE_HOURS = tostring(var.insurance_reminder_min_age_hours)
+      INTAKE_REMINDER_MAX_CLIENTS   = tostring(var.intake_reminder_max_clients)
+      INTAKE_REMINDER_MIN_AGE_HOURS = tostring(var.intake_reminder_min_age_hours)
     }
   }
 
   depends_on = [
-    aws_cloudwatch_log_group.insurance_reminder,
+    aws_cloudwatch_log_group.intake_reminder,
     aws_iam_role_policy.lambda_runtime,
     aws_iam_role_policy_attachment.lambda_vpc,
     aws_vpc_endpoint.ssm,
@@ -104,25 +104,25 @@ resource "aws_lambda_function" "insurance_reminder" {
 # Once daily, not hourly: the reminder fires a fixed time after the link was
 # sent, so a finer schedule buys nothing but a tighter window on a 24h delay —
 # and multiplies the blast radius of a misconfiguration.
-resource "aws_cloudwatch_event_rule" "insurance_reminder" {
-  name                = "${local.prefix}-insurance-reminder"
-  description         = "Scheduled patient insurance-details reminder (disabled unless insurance_reminder_enabled)."
-  schedule_expression = var.insurance_reminder_schedule
-  state               = var.insurance_reminder_enabled ? "ENABLED" : "DISABLED"
+resource "aws_cloudwatch_event_rule" "intake_reminder" {
+  name                = "${local.prefix}-intake-reminder"
+  description         = "Scheduled patient intake reminder (disabled unless intake_reminder_enabled)."
+  schedule_expression = var.intake_reminder_schedule
+  state               = var.intake_reminder_enabled ? "ENABLED" : "DISABLED"
 
   tags = local.common_tags
 }
 
-resource "aws_cloudwatch_event_target" "insurance_reminder" {
-  rule      = aws_cloudwatch_event_rule.insurance_reminder.name
-  target_id = "insurance-reminder"
-  arn       = aws_lambda_function.insurance_reminder.arn
+resource "aws_cloudwatch_event_target" "intake_reminder" {
+  rule      = aws_cloudwatch_event_rule.intake_reminder.name
+  target_id = "intake-reminder"
+  arn       = aws_lambda_function.intake_reminder.arn
 }
 
-resource "aws_lambda_permission" "insurance_reminder_events" {
-  statement_id  = "AllowInvokeFromEventBridge-insurance-reminder"
+resource "aws_lambda_permission" "intake_reminder_events" {
+  statement_id  = "AllowInvokeFromEventBridge-intake-reminder"
   action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.insurance_reminder.function_name
+  function_name = aws_lambda_function.intake_reminder.function_name
   principal     = "events.amazonaws.com"
-  source_arn    = aws_cloudwatch_event_rule.insurance_reminder.arn
+  source_arn    = aws_cloudwatch_event_rule.intake_reminder.arn
 }

@@ -1,7 +1,7 @@
 'use strict';
 
-// Tests — the scheduled patient insurance-details reminder
-// (backend/handlers/insurance_reminder.js + the email builder in lib/email.js).
+// Tests — the scheduled patient intake reminder
+// (backend/handlers/intake_reminder.js + the email builder in lib/email.js).
 //
 // WHAT THIS PROTECTS. This is the only thing in the codebase that sends
 // unattended mail to PATIENTS. A wrong send cannot be recalled, and a patient who
@@ -10,7 +10,7 @@
 // happening:
 //
 //   1. DRY BY DEFAULT — anything other than the exact string "false" is dry.
-//   2. ONE EMAIL — a successful send stamps insurance_reminder_sent_at, and the
+//   2. ONE EMAIL — a successful send stamps intake_reminder_sent_at, and the
 //      stamp is conditional so two overlapping runs cannot both send.
 //   3. A FAILED SEND IS NOT STAMPED — a reminder that never left must not burn
 //      the single send this patient gets.
@@ -20,7 +20,7 @@
 // The handler's db / email / audit dependencies are replaced in the require cache
 // so the loop runs for real without a database or SES.
 //
-//   node backend/tests/insurance_reminder.test.js
+//   node backend/tests/intake_reminder.test.js
 
 const assert = require('node:assert');
 const path = require('node:path');
@@ -31,14 +31,14 @@ const BACKEND = path.join(__dirname, '..');
 const DB_PATH = path.join(BACKEND, 'lib', 'db.js');
 const EMAIL_PATH = path.join(BACKEND, 'lib', 'email.js');
 const AUDIT_PATH = path.join(BACKEND, 'lib', 'audit.js');
-const HANDLER_PATH = path.join(BACKEND, 'handlers', 'insurance_reminder.js');
+const HANDLER_PATH = path.join(BACKEND, 'handlers', 'intake_reminder.js');
 
 // --- the email builder (loaded before the stub replaces the module) ----------
 
 const realEmail = require(EMAIL_PATH);
 
 {
-  const m = realEmail.buildInsuranceReminderEmail({
+  const m = realEmail.buildIntakeReminderEmail({
     practiceName: 'Steady Hand Counseling',
     firstName: 'Ryan',
     setupUrl: 'https://claims.sessionably.com/card-setup?token=TOKEN',
@@ -60,25 +60,25 @@ const realEmail = require(EMAIL_PATH);
     'the body carries no clinical or policy detail');
 
   // Graceful without a name.
-  const anon = realEmail.buildInsuranceReminderEmail({ setupUrl: 'https://x.test/y' });
+  const anon = realEmail.buildIntakeReminderEmail({ setupUrl: 'https://x.test/y' });
   assert.ok(anon.text.startsWith('Hi,'), 'no name -> a plain greeting, never "Hi undefined,"');
   assert.match(anon.subject, /your provider/, 'no practice name -> a generic, non-empty subject');
 
   // The link is HTML-escaped into the anchor.
-  const quoted = realEmail.buildInsuranceReminderEmail({
+  const quoted = realEmail.buildIntakeReminderEmail({
     firstName: '<script>', setupUrl: 'https://x.test/?a=1&b=2',
   });
   assert.doesNotMatch(quoted.html, /<script>/, 'a hostile name cannot inject markup');
   assert.match(quoted.html, /a=1&amp;b=2/, 'the URL is escaped in the anchor');
 }
 
-// sendInsuranceReminderEmail must NEVER throw — one bad address must not end a
+// sendIntakeReminderEmail must NEVER throw — one bad address must not end a
 // run that is working through many patients.
 (async () => {
-  const bad = await realEmail.sendInsuranceReminderEmail({ to: 'not-an-email', setupUrl: 'x' });
+  const bad = await realEmail.sendIntakeReminderEmail({ to: 'not-an-email', setupUrl: 'x' });
   assert.deepStrictEqual(bad, { sent: false, error: 'invalid recipient' });
 
-  const thrown = await realEmail.sendInsuranceReminderEmail(
+  const thrown = await realEmail.sendIntakeReminderEmail(
     { to: 'ok@example.test', setupUrl: 'x' },
     { client: { send: async () => { throw new Error('SES is not verified'); } }, SendEmailCommand: class {} }
   );
@@ -86,7 +86,7 @@ const realEmail = require(EMAIL_PATH);
   assert.match(thrown.error, /not verified/);
 
   let captured = null;
-  const ok = await realEmail.sendInsuranceReminderEmail(
+  const ok = await realEmail.sendIntakeReminderEmail(
     { to: 'ok@example.test', firstName: 'Ryan', practiceName: 'P', setupUrl: 'https://x.test/y' },
     { client: { send: async (cmd) => { captured = cmd.input; return {}; } },
       SendEmailCommand: class { constructor(input) { this.input = input; } } }
@@ -114,7 +114,7 @@ async function runHandlerTests() {
 
   stub(DB_PATH, {
     async query(sql, params) {
-      if (/from clients c/i.test(sql) && /insurance_reminder_sent_at is null/i.test(sql)) {
+      if (/from clients c/i.test(sql) && /intake_reminder_sent_at is null/i.test(sql)) {
         return { rows: state.candidates, rowCount: state.candidates.length };
       }
       if (/update clients/i.test(sql)) {
@@ -125,7 +125,7 @@ async function runHandlerTests() {
     },
   });
   stub(EMAIL_PATH, {
-    async sendInsuranceReminderEmail(opts) {
+    async sendIntakeReminderEmail(opts) {
       state.sends.push(opts);
       return state.sendResult || { sent: true };
     },
@@ -135,7 +135,7 @@ async function runHandlerTests() {
     sanitizeFields: () => [],
   });
 
-  process.env.JWT_SECRET = 'insurance-reminder-test-secret';
+  process.env.JWT_SECRET = 'intake-reminder-test-secret';
   process.env.DATABASE_URL = 'postgres://stub';
   delete process.env.DATABASE_URL_SSM_PARAM;
   delete process.env.JWT_SECRET_SSM_PARAM;
@@ -143,18 +143,18 @@ async function runHandlerTests() {
   const handler = require(HANDLER_PATH);
 
   // --- 1. dry by default -----------------------------------------------------
-  delete process.env.INSURANCE_REMINDER_DRY_RUN;
+  delete process.env.INTAKE_REMINDER_DRY_RUN;
   assert.strictEqual(handler.isDryRun(), true, 'unset -> dry');
   // Everything that is not "false" stays dry, including the near-misses somebody
   // actually types.
   for (const v of ['', 'true', 'TRUE', 'no', 'fals', 'falsey', '0', '1', 'off', 'disabled']) {
-    process.env.INSURANCE_REMINDER_DRY_RUN = v;
+    process.env.INTAKE_REMINDER_DRY_RUN = v;
     assert.strictEqual(handler.isDryRun(), true, `${JSON.stringify(v)} -> dry`);
   }
   // Only "false" arms it — trimmed and case-folded first, matching
   // handlers/claim_status_poll.js so the two safety switches behave identically.
   for (const v of ['false', 'FALSE', 'False ', ' false']) {
-    process.env.INSURANCE_REMINDER_DRY_RUN = v;
+    process.env.INTAKE_REMINDER_DRY_RUN = v;
     assert.strictEqual(handler.isDryRun(), false, `${JSON.stringify(v)} -> armed`);
   }
 
@@ -177,7 +177,7 @@ async function runHandlerTests() {
   // --- 2. a DRY run sends nothing and writes nothing -------------------------
   state.candidates = [CANDIDATE];
   state.updates = []; state.audits = []; state.sends = [];
-  process.env.INSURANCE_REMINDER_DRY_RUN = 'true';
+  process.env.INTAKE_REMINDER_DRY_RUN = 'true';
 
   let out = await handler.handler();
   assert.strictEqual(out.ok, true);
@@ -193,7 +193,7 @@ async function runHandlerTests() {
   state.candidates = [CANDIDATE];
   state.updates = []; state.audits = []; state.sends = [];
   state.sendResult = { sent: true };
-  process.env.INSURANCE_REMINDER_DRY_RUN = 'false';
+  process.env.INTAKE_REMINDER_DRY_RUN = 'false';
 
   out = await handler.handler();
   assert.strictEqual(out.summary.sent, 1);
@@ -211,7 +211,7 @@ async function runHandlerTests() {
 
   assert.deepStrictEqual(state.updates, [CANDIDATE.id], 'exactly one stamp, for this client');
   assert.strictEqual(state.audits.length, 1);
-  assert.strictEqual(state.audits[0].action, 'client.insurance_reminder_sent');
+  assert.strictEqual(state.audits[0].action, 'client.intake_reminder_sent');
   assert.strictEqual(state.audits[0].actorType, 'system', 'no user did this');
   assert.strictEqual(state.audits[0].resourceId, CANDIDATE.id);
   assert.strictEqual(state.audits[0].metadata, undefined, 'no metadata — nothing to say beyond who');
@@ -247,7 +247,7 @@ async function runHandlerTests() {
   dbStub.query = realQuery;
 
   runStaticChecks();
-  console.log('insurance_reminder: ok');
+  console.log('intake_reminder: ok');
 }
 
 // --- static guarantees about the candidate query -----------------------------
@@ -255,26 +255,36 @@ async function runHandlerTests() {
 function runStaticChecks() {
   const src = fs.readFileSync(HANDLER_PATH, 'utf8');
 
-  // The "not done yet" test must stay identical to card_setup.js's
-  // intakeCompleteness insurance_ok, or a patient gets chased for something they
-  // already did.
+  // The "not done yet" test must stay the exact negation of card_setup.js's
+  // intakeCompleteness — BOTH halves — or a patient gets chased for something
+  // they already did, or is left unchased while their claim is blocked.
+  //
+  // insurance_ok's three fields:
   for (const field of ['carrier_name', 'member_id', 'payer_id']) {
     assert.ok(
       src.includes(`nullif(btrim(i.${field}), '') is not null`),
-      `the completeness test checks ${field}, like intakeCompleteness does`
+      `the completeness test checks insurance ${field}, like intakeCompleteness does`
+    );
+  }
+  // demographics_ok's five:
+  assert.match(src, /c\.date_of_birth is null/, 'a missing DOB counts as incomplete');
+  for (const field of ['address_line1', 'city', 'state', 'postal_code']) {
+    assert.ok(
+      src.includes(`nullif(btrim(c.${field}), '') is null`),
+      `the completeness test checks demographic ${field}, like intakeCompleteness does`
     );
   }
   assert.match(src, /i\.is_primary = true/, 'only the PRIMARY record counts');
   assert.match(src, /i\.is_hidden = false/, 'a soft-deleted policy does not count as complete');
   assert.match(src, /c\.is_hidden = false/, 'a soft-deleted client is never chased');
   assert.match(src, /p\.is_active = true/, 'a closed practice never mails its patients');
-  assert.match(src, /c\.insurance_reminder_sent_at is null/, 'one email, then silence');
+  assert.match(src, /c\.intake_reminder_sent_at is null/, 'one email, then silence');
   assert.match(src, /c\.payment_link_sent_at is not null/, 'never chase someone who was never asked');
 
   // The conditional stamp is what makes two overlapping runs safe.
   assert.match(
     src,
-    /set insurance_reminder_sent_at = now\(\)\s*\n\s*where id = \$1 and insurance_reminder_sent_at is null/,
+    /set intake_reminder_sent_at = now\(\)\s*\n\s*where id = \$1 and intake_reminder_sent_at is null/,
     'the stamp is conditional, so overlapping runs cannot both send'
   );
 

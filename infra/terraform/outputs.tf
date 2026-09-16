@@ -302,17 +302,17 @@ output "nat_gateway_public_ip" {
   value       = var.enable_nat_gateway ? aws_eip.nat[0].public_ip : null
 }
 
-output "insurance_reminder_function_name" {
-  description = "Name of the scheduled insurance-reminder Lambda. Invoke by hand to exercise it; the EventBridge schedule is disabled unless insurance_reminder_enabled = true."
-  value       = aws_lambda_function.insurance_reminder.function_name
+output "intake_reminder_function_name" {
+  description = "Name of the scheduled intake-reminder Lambda. Invoke by hand to exercise it; the EventBridge schedule is disabled unless intake_reminder_enabled = true."
+  value       = aws_lambda_function.intake_reminder.function_name
 }
 
-output "insurance_reminder_schedule_state" {
-  description = "ENABLED / DISABLED state of the insurance-reminder EventBridge rule."
-  value       = aws_cloudwatch_event_rule.insurance_reminder.state
+output "intake_reminder_schedule_state" {
+  description = "ENABLED / DISABLED state of the intake-reminder EventBridge rule."
+  value       = aws_cloudwatch_event_rule.intake_reminder.state
 }
 
-output "insurance_reminder_dry_run" {
-  description = "Whether the insurance reminder is in dry-run mode (resolves and logs recipients, sends nothing)."
-  value       = var.insurance_reminder_dry_run
+output "intake_reminder_dry_run" {
+  description = "Whether the intake reminder is in dry-run mode (resolves and logs recipients, sends nothing)."
+  value       = var.intake_reminder_dry_run
 }

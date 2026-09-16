@@ -318,23 +318,23 @@ variable "claim_status_poll_recheck_hours" {
 }
 
 # ─────────────────────────────────────────────────────────────
-# Insurance reminder (infra/terraform/insurance-reminder.tf)
+# Insurance reminder (infra/terraform/intake-reminder.tf)
 # ─────────────────────────────────────────────────────────────
 
-variable "insurance_reminder_enabled" {
+variable "intake_reminder_enabled" {
   description = <<-EOT
-    Turn the scheduled patient insurance-details reminder ON. Default false,
+    Turn the scheduled patient intake reminder ON. Default false,
     which creates the EventBridge rule DISABLED so nothing runs.
 
     Enabling it sends unattended email to PATIENTS across every practice on the
-    platform. Enable with insurance_reminder_dry_run still true first, read one
+    platform. Enable with intake_reminder_dry_run still true first, read one
     run's output, and only then consider disabling dry run.
   EOT
   type        = bool
   default     = false
 }
 
-variable "insurance_reminder_dry_run" {
+variable "intake_reminder_dry_run" {
   description = <<-EOT
     When true (the default), the job resolves who WOULD be emailed and logs the
     client ids and a count, but mints no token, sends no mail, and writes
@@ -348,19 +348,19 @@ variable "insurance_reminder_dry_run" {
   default     = true
 }
 
-variable "insurance_reminder_schedule" {
-  description = "EventBridge schedule for the insurance reminder. Only meaningful when insurance_reminder_enabled = true. Daily is deliberate: the reminder fires a fixed delay after the link was sent, so a finer schedule buys nothing."
+variable "intake_reminder_schedule" {
+  description = "EventBridge schedule for the intake reminder. Only meaningful when intake_reminder_enabled = true. Daily is deliberate: the reminder fires a fixed delay after the link was sent, so a finer schedule buys nothing."
   type        = string
   default     = "rate(1 day)"
 }
 
-variable "insurance_reminder_max_clients" {
+variable "intake_reminder_max_clients" {
   description = "Upper bound on how many patients one run may email. Bounds the blast radius of a misconfiguration more than it bounds runtime."
   type        = number
   default     = 200
 }
 
-variable "insurance_reminder_min_age_hours" {
+variable "intake_reminder_min_age_hours" {
   description = "How long after the intake link was sent (clients.payment_link_sent_at) a patient becomes eligible for the one reminder. The feature as specified is 24 hours."
   type        = number
   default     = 24

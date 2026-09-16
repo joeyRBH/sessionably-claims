@@ -1,6 +1,6 @@
 'use strict';
 
-// Scheduled insurance-details reminder (reddably-<env>-insurance-reminder).
+// Scheduled patient intake reminder (reddably-<env>-intake-reminder).
 //
 // WHAT IT IS FOR. Staff text a patient an intake link and we record the moment on
 // clients.payment_link_sent_at. Nothing then watches whether the patient actually
@@ -8,10 +8,9 @@
 // anyone notices is a claim that will not submit ("Attach an insurance record
 // before submitting") — which surfaces days later, on the biller's screen rather
 // than the patient's. This closes that loop: 24 hours after the link went out, a
-// patient whose insurance details are still missing gets ONE email with a fresh
-// link.
+// patient whose intake is still incomplete gets ONE email with a fresh link.
 //
-// ONE EMAIL, THEN IT STOPS. clients.insurance_reminder_sent_at is stamped on a
+// ONE EMAIL, THEN IT STOPS. clients.intake_reminder_sent_at is stamped on a
 // successful send and the query excludes anyone who has one. A daily job with no
 // such guard would mail the same person every day for as long as the form stays
 // blank, and a patient who marks that as spam damages the SES domain reputation
@@ -22,16 +21,16 @@
 // outbound mail to PATIENTS across every practice on the platform — the least
 // reversible thing in this codebase short of moving money. A dry run resolves who
 // WOULD be emailed and logs the count, mints no token, sends nothing, and writes
-// nothing. Read one run's output, then set INSURANCE_REMINDER_DRY_RUN=false. The
-// EventBridge rule is separately disabled (infra/terraform/insurance-reminder.tf)
+// nothing. Read one run's output, then set INTAKE_REMINDER_DRY_RUN=false. The
+// EventBridge rule is separately disabled (infra/terraform/intake-reminder.tf)
 // so this does not run at all until somebody turns it on.
 //
 // WHAT COUNTS AS "NOT DONE" is not redefined here. It is read live from the chart
-// with the same rule handlers/card_setup.js applies (intakeCompleteness): a
-// primary, non-hidden insurance record carrying carrier_name, member_id AND
-// payer_id. A second, subtly different definition of "complete" would eventually
-// disagree with the chart, and the patient would be chased for something they had
-// already done.
+// as the exact negation of the rule handlers/card_setup.js already applies
+// (intakeCompleteness) — BOTH of its halves, demographics and insurance. A
+// second, subtly different definition of "complete" would eventually disagree
+// with the chart, and the patient would be chased for something they had already
+// done. See selectCandidates for the two halves spelled out.
 //
 // PHI: this job touches many practices' patients. It logs COUNTS and client ids,
 // never names, email addresses, member ids, or the token in the link.
@@ -56,7 +55,7 @@ function intEnv(name, fallback) {
 // identically — arms it. Anything unset, misspelled or empty means DRY: the safe
 // reading of an ambiguous configuration is the one that sends no mail.
 function isDryRun() {
-  return String(process.env.INSURANCE_REMINDER_DRY_RUN || 'true').trim().toLowerCase() !== 'false';
+  return String(process.env.INTAKE_REMINDER_DRY_RUN || 'true').trim().toLowerCase() !== 'false';
 }
 
 // Secrets at runtime from SSM, like handlers/claim_status_poll.js — this Lambda is
@@ -83,13 +82,13 @@ async function hydrateFromSsm() {
         if (value) process.env[envName] = value;
       } catch (err) {
         // Name the PARAMETER, never the value, and never the error's own text.
-        console.error(`insurance reminder: could not read SSM parameter ${envName}`);
+        console.error(`intake reminder: could not read SSM parameter ${envName}`);
       }
     }
   }
 
   if (!process.env.DATABASE_URL) {
-    throw new Error('insurance reminder: DATABASE_URL is not available');
+    throw new Error('intake reminder: DATABASE_URL is not available');
   }
 }
 
@@ -103,13 +102,22 @@ async function hydrateFromSsm() {
 //   * never reminded before                 — one email, then silence
 //   * has an email address                  — nothing to send to otherwise
 //   * client not hidden, practice active    — a deleted client is not chased
-//   * insurance still incomplete            — the live chart rule, below
+//   * intake still incomplete               — the live chart rule, below
 //
-// The insurance test mirrors card_setup.js intakeCompleteness's insurance_ok
-// exactly: a PRIMARY, non-hidden record carrying carrier_name, member_id and
-// payer_id. Demographics (DOB, address) are deliberately NOT part of it — this
-// reminder is about insurance details, and chasing someone for a missing ZIP
-// under a subject line about insurance would be the wrong message.
+// "Incomplete" is NOT (demographics_ok AND insurance_ok) — the exact negation of
+// card_setup.js's intakeCompleteness, both halves:
+//
+//   demographics_ok — date_of_birth, plus a non-blank address line 1, city,
+//                     state and postal code.
+//   insurance_ok    — a PRIMARY, non-hidden record carrying carrier_name,
+//                     member_id and payer_id.
+//
+// BOTH halves, because a claim needs both: a patient with perfect insurance and
+// no ZIP code is just as unbillable as one with no policy at all, and leaving
+// them unchased would mean the first person to notice is still the biller, days
+// later — which is the whole failure this job exists to end. The email's wording
+// stays deliberately generic ("a few details are still missing") so it is honest
+// whichever half is short.
 async function selectCandidates({ maxClients, minAgeHours }) {
   const res = await db.query(
     `select c.id,
@@ -126,16 +134,25 @@ async function selectCandidates({ maxClients, minAgeHours }) {
         and btrim(c.email) <> ''
         and c.payment_link_sent_at is not null
         and c.payment_link_sent_at < now() - ($1 || ' hours')::interval
-        and c.insurance_reminder_sent_at is null
-        and not exists (
-              select 1
-                from insurance_records i
-               where i.client_id = c.id
-                 and i.is_primary = true
-                 and i.is_hidden = false
-                 and nullif(btrim(i.carrier_name), '') is not null
-                 and nullif(btrim(i.member_id), '') is not null
-                 and nullif(btrim(i.payer_id), '') is not null
+        and c.intake_reminder_sent_at is null
+        and (
+              -- demographics_ok is false ...
+              c.date_of_birth is null
+              or nullif(btrim(c.address_line1), '') is null
+              or nullif(btrim(c.city), '') is null
+              or nullif(btrim(c.state), '') is null
+              or nullif(btrim(c.postal_code), '') is null
+              -- ... OR insurance_ok is false.
+              or not exists (
+                    select 1
+                      from insurance_records i
+                     where i.client_id = c.id
+                       and i.is_primary = true
+                       and i.is_hidden = false
+                       and nullif(btrim(i.carrier_name), '') is not null
+                       and nullif(btrim(i.member_id), '') is not null
+                       and nullif(btrim(i.payer_id), '') is not null
+                  )
             )
       order by c.payment_link_sent_at asc
       limit $2`,
@@ -150,8 +167,8 @@ async function selectCandidates({ maxClients, minAgeHours }) {
 async function markReminded(clientId) {
   const res = await db.query(
     `update clients
-        set insurance_reminder_sent_at = now()
-      where id = $1 and insurance_reminder_sent_at is null`,
+        set intake_reminder_sent_at = now()
+      where id = $1 and intake_reminder_sent_at is null`,
     [clientId]
   );
   return res.rowCount > 0;
@@ -159,8 +176,8 @@ async function markReminded(clientId) {
 
 exports.handler = async () => {
   const dryRun = isDryRun();
-  const maxClients = intEnv('INSURANCE_REMINDER_MAX_CLIENTS', 200);
-  const minAgeHours = intEnv('INSURANCE_REMINDER_MIN_AGE_HOURS', 24);
+  const maxClients = intEnv('INTAKE_REMINDER_MAX_CLIENTS', 200);
+  const minAgeHours = intEnv('INTAKE_REMINDER_MIN_AGE_HOURS', 24);
 
   await hydrateFromSsm();
 
@@ -177,7 +194,7 @@ exports.handler = async () => {
   try {
     clients = await selectCandidates({ maxClients, minAgeHours });
   } catch (err) {
-    console.error('insurance reminder: candidate query failed');
+    console.error('intake reminder: candidate query failed');
     return { ok: false, message: 'candidate query failed', summary };
   }
   summary.candidates = clients.length;
@@ -188,7 +205,7 @@ exports.handler = async () => {
       // without mailing them — an id is enough to look one up on the chart, and
       // a name or address in a CloudWatch log is PHI in a place it must not be.
       summary.would_send += 1;
-      console.log(`insurance reminder [DRY]: would email client=${client.id}`);
+      console.log(`intake reminder [DRY]: would email client=${client.id}`);
       continue;
     }
 
@@ -203,11 +220,11 @@ exports.handler = async () => {
       // JWT_SECRET missing — every client will fail the same way, so stop rather
       // than looping. Never log the error's text; it can echo configuration.
       summary.skipped_no_token += 1;
-      console.error('insurance reminder: could not mint a card-setup token — aborting run');
+      console.error('intake reminder: could not mint a card-setup token — aborting run');
       break;
     }
 
-    const result = await email.sendInsuranceReminderEmail({
+    const result = await email.sendIntakeReminderEmail({
       to: client.email,
       firstName: client.preferred_name || client.first_name,
       practiceName: client.practice_name,
@@ -218,7 +235,7 @@ exports.handler = async () => {
       // Deliberately NOT stamped: a reminder that never left must not burn the
       // single send this patient gets. The next run will try again.
       summary.failed += 1;
-      console.warn(`insurance reminder: send failed for client=${client.id}`);
+      console.warn(`intake reminder: send failed for client=${client.id}`);
       continue;
     }
 
@@ -231,7 +248,7 @@ exports.handler = async () => {
       // and email this patient a second time, which is exactly what this job
       // promises not to do.
       console.error(
-        `insurance reminder: SENT but could not record for client=${client.id} — ` +
+        `intake reminder: SENT but could not record for client=${client.id} — ` +
         'this patient may be emailed again on the next run'
       );
     }
@@ -241,13 +258,13 @@ exports.handler = async () => {
     // No user did this. audit_log models that as a system actor. Ids only — the
     // action name already says what kind of message it was.
     await audit(null, { actorType: 'system', practiceId: client.practice_id }, {
-      action: 'client.insurance_reminder_sent',
+      action: 'client.intake_reminder_sent',
       resourceType: 'client',
       resourceId: client.id,
     });
   }
 
-  console.log(`insurance reminder: ${JSON.stringify(summary)}`);
+  console.log(`intake reminder: ${JSON.stringify(summary)}`);
   return { ok: true, summary };
 };
 
