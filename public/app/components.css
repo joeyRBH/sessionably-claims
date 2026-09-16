@@ -110,6 +110,49 @@
   outline-offset: var(--focus-ring-offset);
 }
 
+/* A button running a request. It is also `disabled` (so it cannot be pressed
+ * twice), but a busy button must not read as an unavailable one: this deliberately
+ * follows the .btn:disabled rule above so its lighter fade wins on equal
+ * specificity. The work IS happening — the control should look alive. */
+.btn.is-busy,
+.btn.is-busy[disabled] {
+  opacity: 0.8;
+}
+
+/* ============================== Spinner =================================== */
+/* An in-progress mark for an action whose result has not arrived. Sized in `em`
+ * so it matches whatever text it sits beside, and drawn in `currentColor` so it
+ * inherits the button's own treatment — no colour of its own, and therefore no
+ * claim-state meaning. Stone in a ghost button, paper on a primary one. */
+.spinner {
+  display: inline-block;
+  flex: none;
+  width: 1em;
+  height: 1em;
+  border-radius: var(--radius-pill);
+  border: var(--border-width-2) solid currentColor;
+  border-top-color: transparent;
+  animation: reddably-spin 700ms linear infinite;
+}
+
+@keyframes reddably-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Reduced motion: the rotation stops entirely. Note this CANNOT be expressed by
+ * reading --motion-*, the way every transition in this file does — the
+ * accessibility block in tokens.css collapses that scale to 1ms, which would turn
+ * a 700ms rotation into a strobe, the exact opposite of the request. So the ring
+ * is closed, quietened, and left still; the button's own "Submitting…" label is
+ * what carries the progress. */
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: none;
+    border-top-color: currentColor;
+    opacity: 0.45;
+  }
+}
+
 /* ============================= Page header =============================== */
 .page-header {
   display: flex;
