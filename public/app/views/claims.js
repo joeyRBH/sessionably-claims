@@ -1331,6 +1331,31 @@
     }
 
     // --- Compose the detail view --------------------------------------------
+    // A payer that has refused an automated status check. STONE, not urgent: the
+    // claim is fine, the payer simply cannot be asked, and dressing that as a
+    // failure would teach billers to ignore the colour that means a real problem.
+    //
+    // Advisory only — Refresh stays enabled. The flag is an observation that can
+    // be wrong or go stale, and a click is exactly what re-probes and clears it;
+    // a note that disabled the button would strand a biller with no way back.
+    function payerUnpollableNote(claim) {
+      if (!claim || !claim.payer_status_unsupported) return null;
+      return h('div', {
+        style: 'display:flex;gap:var(--space-3);align-items:flex-start;'
+          + 'padding:var(--space-4);border-radius:var(--radius-2);'
+          + 'background:var(--color-surface-sunken);'
+          + 'border:var(--border-width-1) solid var(--color-border)',
+      }, [
+        h('span', { class: 'badge badge--neutral' }, 'No automated status'),
+        h('p', {
+          style: 'margin:0;color:var(--color-text-muted);font-size:var(--font-size-3)',
+        }, 'This payer does not answer automated status checks, so Refresh will '
+         + 'not learn anything new. Check the claim with the payer directly, or '
+         + 'wait for the remittance. You can still press Refresh — if the payer '
+         + 'has since started answering, that clears this note.'),
+      ]);
+    }
+
     function render(claim, events) {
       R.clear(root);
 
@@ -1342,6 +1367,9 @@
       var view = h('div', { class: 'view stack' }, [
         backLink(),
         headerCard(claim, contextEl),
+        // Above the detail, because it changes what the buttons in the header
+        // are worth pressing.
+        payerUnpollableNote(claim),
         // What this claim actually bills, before who it bills for.
         serviceLinesCard(claim),
         patientCard(claim),

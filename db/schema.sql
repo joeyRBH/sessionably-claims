@@ -1222,6 +1222,52 @@ create trigger trg_calendar_events_updated_at
   for each row execute function set_updated_at();
 
 -- =============================================================================
+-- 20. payer_status_capability — which payers answer a 276 status inquiry.
+-- =============================================================================
+-- A CACHE OF AN OBSERVATION, not a configuration switch: one row per (practice,
+-- payer) recording whether that payer answered an automated claim-status check,
+-- when we last found out, and the clearinghouse's own non-PHI error code. No
+-- human sets it; the next successful probe corrects it.
+--
+-- lib/clearinghouse/stedi.js already tells the two 4xx kinds apart
+-- (INVALID_REQUEST_BODY = our bug, BAD_REQUEST = the payer refusing on the
+-- merits), but nothing remembered the answer — so the scheduled poller re-asked
+-- the same hopeless payer every 6 hours forever, filling its error count with
+-- permanent non-events, and billers kept clicking Refresh on claims that can
+-- never answer.
+--
+-- Scoped per practice on purpose: refusal can depend on the practice's own
+-- trading-partner setup, and a global flag would let one practice's data problem
+-- silently stop denial detection — and therefore fee refunds — for everyone else
+-- on that payer. Refusals expire (lib/payer_capability.js REPROBE_AFTER_DAYS) so
+-- a clearinghouse adding a payer heals itself instead of going stale in silence.
+--
+-- No PHI: practice, payer id, a boolean, timestamps, a vendor error code.
+-- See db/migrations/028_add_payer_status_capability.sql.
+create table if not exists payer_status_capability (
+  id                    uuid primary key default gen_random_uuid(),
+  practice_id           uuid not null references practices (id) on delete restrict,
+  payer_id              text not null,
+  supports_claim_status boolean not null,
+  last_probed_at        timestamptz not null default now(),
+  last_error_code       text,
+  consecutive_refusals  integer not null default 0,
+  created_at            timestamptz not null default now(),
+  updated_at            timestamptz not null default now(),
+  unique (practice_id, payer_id)
+);
+comment on table payer_status_capability is 'Cache of an observation: whether a payer answered a 276 claim-status inquiry for this practice. Written only by a real probe result, never by a human. No PHI.';
+
+create index if not exists idx_payer_status_capability_unsupported
+  on payer_status_capability (practice_id, payer_id, last_probed_at)
+  where supports_claim_status = false;
+
+drop trigger if exists trg_payer_status_capability_updated_at on payer_status_capability;
+create trigger trg_payer_status_capability_updated_at
+  before update on payer_status_capability
+  for each row execute function set_updated_at();
+
+-- =============================================================================
 -- partner_credentials — machine-to-machine access, scoped to ONE practice.
 -- =============================================================================
 -- A credential that belongs to an INTEGRATION rather than to a person: bound to

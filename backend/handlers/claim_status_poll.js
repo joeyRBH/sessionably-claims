@@ -42,6 +42,7 @@ const { buildClaimContext, eventTypeForStatus } = require('../lib/claim_context'
 const { logClaimEvent, logClaimAcknowledgment } = require('../lib/claims');
 const { applyStatusResult, refundOutcomeCode } = require('../lib/claim_status_apply');
 const { audit } = require('../lib/audit');
+const payerCapability = require('../lib/payer_capability');
 
 // Claims still waiting on an answer. Terminal states (paid, void) and drafts are
 // never polled — there is nothing left for the payer to tell us.
@@ -104,8 +105,11 @@ async function hydrateFromSsm() {
 // One less column, and one less thing that can disagree with reality.
 async function selectCandidates({ maxClaims, minAgeHours, recheckHours }) {
   const res = await db.query(
-    `select c.*
+    `select c.*,
+            coalesce(c.clearinghouse_payload->>'tradingPartnerServiceId', i.payer_id)
+              as status_payer_id
        from claims c
+       left join insurance_records i on i.id = c.insurance_record_id
       where c.is_hidden = false
         and c.control_number is not null
         and c.status = any($1)
@@ -157,6 +161,12 @@ exports.handler = async () => {
     refund_requests_created: 0,
     would_update: 0,
     would_create_refund_request: 0,
+    // Payers that cannot answer a 276 are counted SEPARATELY from errors. They
+    // are not failures of this system and no amount of retrying changes them;
+    // leaving them in `errors` would bury the real faults under permanent
+    // non-events, in exactly the dry run that exists to be read.
+    payer_unsupported: 0,
+    skipped_unsupported_payer: 0,
     errors: 0,
   };
 
@@ -169,19 +179,70 @@ exports.handler = async () => {
   }
   summary.candidates = claims.length;
 
+  // One capability read per practice in this batch, not one per claim. A payer
+  // that refused recently is skipped without a clearinghouse call at all.
+  const unsupportedByPractice = new Map();
+  async function isSkippablePayer(claim) {
+    const payerId = claim.status_payer_id;
+    if (!payerId) return false;
+    if (!unsupportedByPractice.has(claim.practice_id)) {
+      unsupportedByPractice.set(
+        claim.practice_id,
+        await payerCapability.unsupportedPayerIds(claim.practice_id)
+      );
+    }
+    return unsupportedByPractice.get(claim.practice_id).has(String(payerId));
+  }
+
   for (const claim of claims) {
+    // Skipped BEFORE `checked` is incremented: this claim was never asked about,
+    // and counting it as checked would overstate what the run actually covered.
+    if (await isSkippablePayer(claim)) {
+      summary.skipped_unsupported_payer += 1;
+      continue;
+    }
+
     summary.checked += 1;
     let status;
     try {
       const ctx = await buildClaimContext(claim.practice_id, claim);
       status = await adapter.getStatus({ control_number: claim.control_number, claim, ctx });
     } catch (err) {
+      // A payer that does not support status inquiries is NOT a failure of this
+      // system, and must not be counted as one. Remember it so neither this job
+      // nor a biller asks again for a while.
+      //
+      // RECORDED EVEN IN A DRY RUN, deliberately. The dry-run promise is that
+      // nothing about a CLAIM or about MONEY changes — no status, no claim_event,
+      // no refund request — and that still holds exactly. This is bookkeeping
+      // about our own outreach. A dry run that cannot learn would re-ask every
+      // hopeless payer on every run for as long as it is left dry, which is the
+      // waste this whole change exists to stop.
+      if (err && err.isStatusUnsupported) {
+        summary.payer_unsupported += 1;
+        await payerCapability.recordProbe({
+          practiceId: claim.practice_id,
+          payerId: claim.status_payer_id,
+          supported: false,
+          errorCode: 'BAD_REQUEST',
+        });
+        console.log(`claim status poll: payer cannot be polled, claim=${claim.id}`);
+        continue;
+      }
       // One claim's failure must not end the run — the next claim is unrelated.
       // Generic: an adapter error can carry submitted PHI.
       summary.errors += 1;
       console.error(`claim status poll: status check failed for claim ${claim.id}`);
       continue;
     }
+
+    // It answered. Clear any stale refusal so a payer that gained support is not
+    // skipped for the rest of the re-probe window.
+    await payerCapability.recordProbe({
+      practiceId: claim.practice_id,
+      payerId: claim.status_payer_id,
+      supported: true,
+    });
 
     if (!status || status.no_update) {
       summary.no_update += 1;
