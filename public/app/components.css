@@ -208,6 +208,14 @@
   color: var(--color-text);
 }
 
+/* A section a Dashboard deep link (#calendar/focus/<key>) pointed the clinician
+ * at. Reuses the same ring the interactive kit already puts on a focused
+ * control (.btn:focus-visible) — attention, not a new color meaning. */
+.card--focus {
+  outline: var(--focus-ring-width) solid var(--color-focus-ring);
+  outline-offset: var(--focus-ring-offset);
+}
+
 /* Stat tile (a card variant for a single metric). */
 .stat {
   display: flex;
@@ -469,6 +477,47 @@ textarea.field__control {
   background: var(--color-bg);
   color: var(--color-danger);
   border-color: var(--color-danger);
+}
+
+/* =============================== Filter tabs =============================== */
+/* A small segmented control for narrowing a list client-side (e.g. the Claims
+ * workspace's draft queue). Stone-led like everything else that is not an
+ * earned resolved state — the active tab is ink/primary, never sage, matching
+ * "stone/ink carries default action" for the rest of the app. */
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.tab {
+  font: var(--font-weight-medium) var(--font-size-2)/1 var(--font-body);
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-pill);
+  border: var(--border-width-1) solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color var(--motion-fast) var(--ease-standard),
+              border-color var(--motion-fast) var(--ease-standard),
+              color var(--motion-fast) var(--ease-standard);
+}
+
+.tab:hover {
+  border-color: var(--color-border-strong);
+  color: var(--color-text-strong);
+}
+
+.tab.is-active {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: var(--color-on-primary);
+}
+
+.tab:focus-visible {
+  outline: var(--focus-ring-width) solid var(--color-focus-ring);
+  outline-offset: var(--focus-ring-offset);
 }
 
 /* =============================== Modal ================================== */

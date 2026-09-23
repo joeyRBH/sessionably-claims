@@ -41,6 +41,32 @@
     ready_to_review:  { label: 'Ready to review',  tone: 'neutral' },
   };
 
+  // Dashboard deep-links (#claims/focus/<key>) narrow this workspace to one
+  // queue. Draft-side keys are client-only filters over the SAME unfiltered
+  // response the page always loads — never a second request — so the counts
+  // here can never drift from what "Claims to verify" / "Claims needing
+  // correction" on the Dashboard just counted (public/app/views/dashboard.js).
+  // 'follow_up' narrows the HISTORY section instead, to the same two statuses
+  // Dashboard calls follow-up work.
+  var DRAFT_FOCUS_TABS = [
+    { key: '', label: 'All' },
+    { key: 'needs_correction', label: 'Needs correction' },
+    { key: 'to_verify', label: 'To verify' },
+  ];
+  var FOLLOW_UP_HISTORY_STATUSES = { info_requested: true, denied: true };
+
+  function isNeedsCorrection(c) {
+    return !!(c && c.readiness && c.readiness.state === 'needs_correction');
+  }
+
+  // Mirrors dashboard.js's attentionCounts: every draft that is not blocked is
+  // "to verify" — including one the server projected no readiness for at all.
+  function filterDraftsByFocus(drafts, focusKey) {
+    if (focusKey === 'needs_correction') return drafts.filter(isNeedsCorrection);
+    if (focusKey === 'to_verify') return drafts.filter(function (c) { return !isNeedsCorrection(c); });
+    return drafts;
+  }
+
   // ---------------------------------------------------------------------------
   // Small shared helpers
   // ---------------------------------------------------------------------------
@@ -168,12 +194,14 @@
   // ===========================================================================
   // Screen 1 — Claims workspace (#claims): verify drafts on top, history below
   // ===========================================================================
-  function renderClaimList(root) {
+  function renderClaimList(root, focusKey) {
     // The draft queue is ALWAYS loaded unfiltered — the status filter belongs to
     // the submitted section alone, and no filter choice may hide verification
     // work. With no filter one request covers both sections (partitioning a
     // result set is not client-side filtering); choosing a history status adds a
-    // second, server-filtered request rather than narrowing the drafts.
+    // second, server-filtered request rather than narrowing the drafts. A
+    // focusKey (from #claims/focus/<key>) never adds a request either — it is
+    // applied client-side in render(), over this same unfiltered response.
     function load(historyStatus) {
       R.renderLoading(root);
       var pending = historyStatus
@@ -190,7 +218,7 @@
         // explicit status:'draft'), so its suggestions are computed over exactly
         // the drafts being rendered. The history request never carries any.
         var suggestions = (results[0] && results[0].suggestions) || [];
-        render(drafts, history, historyStatus || '', suggestions);
+        render(drafts, history, historyStatus || '', suggestions, focusKey);
       }).catch(function (err) {
         R.renderError(root, err, function () { load(historyStatus); });
       });
@@ -549,7 +577,7 @@
 
     // Section 2 — history. The status filter lives HERE and nowhere else, so it
     // can only ever narrow what has already been sent.
-    function submittedCard(history, status) {
+    function submittedCard(history, status, filtered) {
       var filterSelect = h('select', {
         class: 'field__control',
         'aria-label': 'Filter submitted claims by status',
@@ -565,7 +593,8 @@
 
       var body;
       if (!history.length) {
-        body = inlineEmpty(status ? 'No submitted claims match this filter.' : 'No submitted claims yet.');
+        body = inlineEmpty((status || filtered)
+          ? 'No submitted claims match this filter.' : 'No submitted claims yet.');
       } else {
         var rows = history.slice().sort(bySubmittedAt).map(function (c) {
           return claimRow([
@@ -599,7 +628,48 @@
       ]);
     }
 
-    function render(drafts, history, status, suggestions) {
+    // The draft-side filter tabs. Counts are always over the FULL unfiltered
+    // draft list — a tab never reports how many rows it itself is hiding.
+    function draftTabs(drafts, activeFocus) {
+      var needsCorrection = drafts.filter(isNeedsCorrection).length;
+      var counts = {
+        '': drafts.length,
+        needs_correction: needsCorrection,
+        to_verify: drafts.length - needsCorrection,
+      };
+      return h('div', { class: 'tabs', role: 'tablist', 'aria-label': 'Filter claims to verify' },
+        DRAFT_FOCUS_TABS.map(function (t) {
+          var isActive = (activeFocus || '') === t.key;
+          return h('button', {
+            type: 'button',
+            role: 'tab',
+            'aria-selected': isActive ? 'true' : 'false',
+            class: 'tab' + (isActive ? ' is-active' : ''),
+            onClick: function () { R.navigate(t.key ? 'claims/focus/' + t.key : 'claims'); },
+          }, t.label + ' (' + counts[t.key] + ')');
+        })
+      );
+    }
+
+    // The history-side counterpart of a focus filter. Not a tab (the dropdown
+    // already owns that section's filtering) — a dismissible banner instead,
+    // since "follow-up" merges two statuses the dropdown can only pick one of.
+    function followUpBanner(active) {
+      if (!active) return null;
+      return h('div', {
+        style: 'display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap;' +
+          'padding:var(--space-3) var(--space-4);border-radius:var(--radius-2);' +
+          'background:var(--color-surface-sunken);font-size:var(--font-size-3)',
+      }, [
+        h('span', null, 'Showing submitted claims needing follow-up — info requested or denied.'),
+        h('button', {
+          class: 'btn btn--ghost btn--sm', type: 'button',
+          onClick: function () { R.navigate('claims'); },
+        }, 'Clear filter'),
+      ]);
+    }
+
+    function render(drafts, history, status, suggestions, focusKey) {
       R.clear(root);
 
       // Nothing at all, and nothing filtered away: the one case that still gets
@@ -615,6 +685,12 @@
         return;
       }
 
+      var followUpActive = !status && focusKey === 'follow_up';
+      var visibleDrafts = filterDraftsByFocus(drafts, focusKey);
+      var visibleHistory = followUpActive
+        ? history.filter(function (c) { return FOLLOW_UP_HISTORY_STATUSES[c.status] === true; })
+        : history;
+
       var view = h('div', { class: 'view stack' }, [
         h('div', { class: 'page-header' }, [
           h('h1', { class: 'page-header__title' }, 'Claims'),
@@ -626,8 +702,10 @@
               'New claim'),
           ]),
         ]),
-        draftsCard(drafts, suggestions),
-        submittedCard(history, status),
+        drafts.length ? draftTabs(drafts, focusKey) : null,
+        draftsCard(visibleDrafts, suggestions),
+        followUpBanner(followUpActive),
+        submittedCard(visibleHistory, status, followUpActive),
       ]);
 
       root.appendChild(view);
@@ -1384,10 +1462,16 @@
   }
 
   // ===========================================================================
-  // Route registration — params[0] is the claim id when present.
+  // Route registration — params[0] is the claim id when present, EXCEPT the
+  // reserved segment 'focus': #claims/focus/<key> narrows the list to one
+  // queue (see DRAFT_FOCUS_TABS / FOLLOW_UP_HISTORY_STATUSES above) rather than
+  // opening a claim named "focus". A real claim id is a server-minted UUID and
+  // can never collide with that keyword.
   // ===========================================================================
   R.registerView('claims', function (root, params) {
-    if (params && params[0]) return renderClaimDetail(root, params[0]);
+    var seg0 = params && params[0];
+    if (seg0 === 'focus') return renderClaimList(root, params[1]);
+    if (seg0) return renderClaimDetail(root, seg0);
     return renderClaimList(root);
   });
 })(window, document);

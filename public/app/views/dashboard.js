@@ -215,7 +215,7 @@
           count: n.toMatch,
           body: 'Synced appointments that still need a client before a session exists.',
           actionLabel: 'Review Calendar',
-          route: 'calendar',
+          route: 'calendar/focus/match',
         }));
       }
       if (n.toConfirm) {
@@ -224,7 +224,7 @@
           count: n.toConfirm,
           body: 'Matched appointments that have ended. Confirming creates the draft claim.',
           actionLabel: 'Confirm sessions',
-          route: 'calendar',
+          route: 'calendar/focus/awaiting',
         }));
       }
       if (n.needsCorrection) {
@@ -234,7 +234,7 @@
           qualifier: 'Blocked',
           body: 'Draft claims with something that would block submission today.',
           actionLabel: 'Correct claims',
-          route: 'claims',
+          route: 'claims/focus/needs_correction',
         }));
       }
       if (n.toVerify) {
@@ -243,7 +243,7 @@
           count: n.toVerify,
           body: 'Draft claims a clinician still has to check before they are submitted.',
           actionLabel: 'Verify claims',
-          route: 'claims',
+          route: 'claims/focus/to_verify',
         }));
       }
       if (n.followUp) {
@@ -253,7 +253,7 @@
           qualifier: 'Payer response',
           body: 'Submitted claims the payer sent back needing information or denied.',
           actionLabel: 'Review claims',
-          route: 'claims',
+          route: 'claims/focus/follow_up',
         }));
       }
 

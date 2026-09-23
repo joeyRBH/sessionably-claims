@@ -394,9 +394,13 @@ assert.ok(iViews !== -1 && iViews < iWorkflow,
 assert.ok(iWorkflow < iDashboard && iWorkflow < iCalendar,
   'workflow.js loads before both the Dashboard and Calendar views');
 
-// This change edits workflow.js and nothing else, so exactly ONE asset moves.
-// The views are untouched source and keep the cache-buster they shipped with —
-// re-bumping them would evict warm caches for no reason.
+// workflow.js itself has been untouched since it carried this pin (the
+// classifier-extraction change this file otherwise documents). That original
+// "exactly ONE asset moves" invariant belonged to that PR alone; it does not
+// re-apply to every later PR that legitimately touches these views for other
+// reasons (as the dashboard/calendar/claims deep-link work below does). What
+// stays load-bearing here is simply: workflow.js still carries the
+// cache-buster it was bumped to then.
 const VERSION = '20260810a';
 const bustOf = (asset) => {
   const m = appHtml.match(new RegExp(asset.replace(/[.\/]/g, '\\$&') + '\\?v=([^"\']+)'));
@@ -405,19 +409,15 @@ const bustOf = (asset) => {
 };
 assert.strictEqual(bustOf('./workflow.js'), VERSION,
   'the edited classifier carries the new cache-buster');
-assert.strictEqual(
-  (appHtml.match(new RegExp('\\?v=' + VERSION, 'g')) || []).length, 1,
-  'exactly one asset carries the new cache-buster'
-);
-assert.strictEqual(bustOf('./views/dashboard.js'), '20260728c',
-  'the Dashboard cache-buster is untouched — its source did not change');
-assert.strictEqual(bustOf('./views/calendar.js'), '20260728c',
-  'the Calendar cache-buster is untouched — its source did not change');
-// claims.js has since been re-bumped twice: by the per-client billing defaults
-// change (the Edit-claim form gained the "save as defaults" control), and by the
-// grouping-suggestion callout on the draft queue. Still pinned, so that an
-// UNINTENDED bump is still caught — just at its current value.
-assert.strictEqual(bustOf('./views/claims.js'), '20260912a',
+// dashboard.js, calendar.js and claims.js have since been re-bumped for the
+// Dashboard deep-link work (#claims/focus/<key>, #calendar/focus/<key>) —
+// still pinned, so an UNINTENDED further bump is still caught, just at their
+// current value.
+assert.strictEqual(bustOf('./views/dashboard.js'), '20260923a',
+  'the Dashboard cache-buster is at its current value');
+assert.strictEqual(bustOf('./views/calendar.js'), '20260923a',
+  'the Calendar cache-buster is at its current value');
+assert.strictEqual(bustOf('./views/claims.js'), '20260923a',
   'the Claims cache-buster is at its current value');
 
 console.log('PASS calendar_workflow.test.js');
