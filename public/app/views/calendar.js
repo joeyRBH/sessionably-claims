@@ -96,7 +96,11 @@
   function renderCalendar(root, focusKey) {
     R.renderLoading(root);
 
-    function load() {
+    // preselectSessionIds: session ids to re-tick in "Sessions to confirm"
+    // once this reload's render is up — used only by a bulk confirm that had
+    // partial failures, so the rows a biller still needs to retry don't have
+    // to be found and re-ticked by hand.
+    function load(preselectSessionIds) {
       R.renderLoading(root);
       Promise.all([
         // Default list = the review queue (unmatched + matched).
@@ -120,13 +124,13 @@
           confirmed: eventsOf(results[1]),
           ignored: eventsOf(results[2]),
           sessions: (results[3] && results[3].sessions) || [],
-        }, clients, results[5]);
+        }, clients, results[5], preselectSessionIds);
       }).catch(function (err) {
         R.renderError(root, err, load);
       });
     }
 
-    function render(data, clients, calInfo) {
+    function render(data, clients, calInfo, preselectSessionIds) {
       R.clear(root);
 
       var workflow = buildWorkflow(data, Date.now());
@@ -184,6 +188,72 @@
           buttons.forEach(function (b) { b.disabled = false; });
           R.toast((err && err.message) || 'Could not confirm this session.', 'error');
         });
+      }
+
+      // Bulk confirm — there is no batch-confirm endpoint (backend/handlers/
+      // sessions.js takes one session id per PATCH), so this is exactly
+      // confirmSession's own PATCH /sessions/{id} { status: 'completed' } sent
+      // once per selected row, IN SEQUENCE, with the button's own label
+      // tracking progress. Each PATCH still independently creates its own draft
+      // claim, transactionally, server-side — nothing here creates one. A
+      // failure on one row does not stop the rest; it is reported alongside
+      // whatever did succeed, and onDone(failed) hands the failed rows back to
+      // the caller, which reloads WITH them preselected — "still selected" has
+      // to survive the reload that follows, not just the moment before it,
+      // since the whole section is torn down and rebuilt from the server's
+      // response like every other action in this view.
+      function confirmSelected(items, button, onDone) {
+        var total = items.length;
+        var originalLabel = button.textContent;
+        button.disabled = true;
+        var claimsCreated = 0;
+        var failed = [];
+        var i = 0;
+
+        function paintProgress() {
+          R.clear(button);
+          button.appendChild(h('span', { class: 'spinner', 'aria-hidden': 'true' }));
+          button.appendChild(document.createTextNode('Confirming ' + i + ' of ' + total + '…'));
+        }
+
+        function finish() {
+          button.disabled = false;
+          R.clear(button);
+          button.appendChild(document.createTextNode(originalLabel));
+
+          var confirmedCount = total - failed.length;
+          var parts = [];
+          if (confirmedCount) {
+            parts.push(confirmedCount + ' session' + (confirmedCount === 1 ? '' : 's') + ' confirmed');
+          }
+          if (claimsCreated) {
+            parts.push(claimsCreated + ' new claim draft'
+              + (claimsCreated === 1 ? '' : 's') + ' ready in Claims');
+          }
+          if (parts.length) R.toast(parts.join(' — ') + '.', failed.length ? 'warn' : 'success');
+          if (failed.length) {
+            R.toast(failed.length + ' session' + (failed.length === 1 ? '' : 's')
+              + ' could not be confirmed. Still selected — try again.', 'error');
+          }
+          onDone(failed);
+        }
+
+        function next() {
+          if (i >= total) { finish(); return; }
+          var item = items[i];
+          i += 1;
+          paintProgress();
+          api.sessions.update(item.session.id, { status: 'completed' })
+            .then(function (res) {
+              if (res && res.claim_created === true) claimsCreated += 1;
+            })
+            .catch(function () {
+              failed.push(item);
+            })
+            .then(next);
+        }
+
+        next();
       }
 
       function ignore(ev, buttons) {
@@ -314,8 +384,10 @@
         ]).forEach(function (cell) { row.appendChild(cell); });
       }
 
-      // The one dominant action of the whole view.
-      function paintConfirmRow(item, row) {
+      // The one dominant action of the whole view. `checkbox`, when present
+      // (bulk mode — 2+ awaiting sessions), is an extra leading cell and rides
+      // along with the row's own Confirm button when it disables in flight.
+      function paintConfirmRow(item, row, checkbox) {
         R.clear(row);
         var buttons = [];
         var confirmBtn = h('button', {
@@ -323,10 +395,122 @@
           onClick: function () { confirmSession(item, buttons); },
         }, 'Confirm session');
         buttons.push(confirmBtn);
-        contextCells(item.event).concat([
+        if (checkbox) buttons.push(checkbox);
+        var cells = checkbox ? [h('td', null, checkbox)] : [];
+        cells.concat(contextCells(item.event), [
           h('td', null, item.event.matched_client_name || '—'),
           h('td', { class: 'data-table__num' }, confirmBtn),
         ]).forEach(function (cell) { row.appendChild(cell); });
+      }
+
+      // The "Sessions to confirm" table, built directly rather than through the
+      // shared sectionTable() below: at 2+ rows it grows a selection column and
+      // a bulk "Confirm selected" action; sectionTable's 6-column layout (used
+      // by the other three sections, which never need bulk selection) is left
+      // untouched. Returns { table, bulkBtn } — bulkBtn is null below 2 rows,
+      // so the single-session case renders byte-for-byte as it always has.
+      // `preselectIds` re-ticks the rows named in it (see load() above) — the
+      // survival mechanism for "still selected" across the reload that follows
+      // a bulk confirm with partial failures.
+      function awaitingTable(items, preselectIds) {
+        var bulkEnabled = items.length >= 2;
+        var selected = {};   // session id -> item, per render like claims.js's grouping
+        var boxes = {};
+        var preselect = {};
+        (preselectIds || []).forEach(function (id) { preselect[id] = true; });
+
+        var bulkBtn = h('button', {
+          class: 'btn btn--primary btn--sm', type: 'button',
+          onClick: function () {
+            var rows = Object.keys(selected).map(function (id) { return selected[id]; });
+            if (!rows.length) return;
+            confirmSelected(rows, bulkBtn, function (failed) {
+              load(failed.map(function (item) { return item.session.id; }));
+            });
+          },
+        }, 'Confirm selected');
+        bulkBtn.disabled = true;
+
+        function refreshBulkBtn() {
+          var n = Object.keys(selected).length;
+          bulkBtn.disabled = n < 1;
+          bulkBtn.textContent = n
+            ? 'Confirm ' + n + ' session' + (n === 1 ? '' : 's')
+            : 'Confirm selected';
+        }
+
+        var selectAll = null;
+        if (bulkEnabled) {
+          selectAll = h('input', {
+            type: 'checkbox', class: 'field__checkbox',
+            'aria-label': 'Select all sessions to confirm',
+          });
+          selectAll.addEventListener('change', function () {
+            items.forEach(function (item) {
+              var box = boxes[item.session.id];
+              if (!box) return;
+              box.checked = selectAll.checked;
+              if (selectAll.checked) selected[item.session.id] = item;
+              else delete selected[item.session.id];
+            });
+            refreshBulkBtn();
+          });
+        }
+
+        var tbody = h('tbody');
+        if (!items.length) {
+          tbody.appendChild(h('tr', null,
+            h('td', { colspan: '6' }, inlineEmpty('No sessions waiting to be confirmed.'))));
+        } else {
+          items.forEach(function (item) {
+            var row = h('tr');
+            var box = null;
+            if (bulkEnabled) {
+              box = h('input', {
+                type: 'checkbox', class: 'field__checkbox',
+                'aria-label': 'Select the session for '
+                  + (item.event.matched_client_name || 'this client'),
+              });
+              boxes[item.session.id] = box;
+              if (preselect[item.session.id]) {
+                box.checked = true;
+                selected[item.session.id] = item;
+              }
+              box.addEventListener('change', function () {
+                if (box.checked) selected[item.session.id] = item;
+                else delete selected[item.session.id];
+                selectAll.checked = Object.keys(selected).length === items.length;
+                refreshBulkBtn();
+              });
+            }
+            paintConfirmRow(item, row, box);
+            tbody.appendChild(row);
+          });
+          // Reflect the preselection minted above in the header controls —
+          // both start from a fresh, all-unchecked state otherwise.
+          if (bulkEnabled) {
+            refreshBulkBtn();
+            selectAll.checked = Object.keys(selected).length === items.length;
+          }
+        }
+
+        var headCells = bulkEnabled ? [h('th', { 'aria-label': 'Select all' }, selectAll)] : [];
+        headCells = headCells.concat([
+          h('th', null, 'Date'),
+          h('th', null, 'Time'),
+          h('th', null, 'Duration'),
+          h('th', null, 'Appointment'),
+          h('th', null, 'Client'),
+          h('th', { class: 'data-table__num' }, ''),
+        ]);
+
+        return {
+          table: h('table', { class: 'data-table' }, [
+            h('thead', null, h('tr', null, headCells)),
+            tbody,
+          ]),
+          bulkBtn: bulkEnabled ? bulkBtn : null,
+        };
       }
 
       // --- sections ----------------------------------------------------------
@@ -356,14 +540,22 @@
         ]);
       }
 
-      var awaitingCard = sectionCard(
-        'Sessions to confirm',
-        'Appointments that have ended. Confirming creates the draft claim.',
-        sectionTable('Client', workflow.awaiting.map(function (item) {
-          return function (row) { paintConfirmRow(item, row); };
-        }), 'No sessions waiting to be confirmed.'),
-        focusKey === 'awaiting'
-      );
+      // Built directly (not through sectionCard()) because it needs the bulk
+      // "Confirm selected" action in its header — see awaitingTable() above.
+      // Still carries the SAME focus-highlight class sectionCard applies to
+      // the other sections, so a #calendar/focus/awaiting deep link works
+      // identically here.
+      var awaitingBuilt = awaitingTable(workflow.awaiting, preselectSessionIds);
+      var awaitingCard = h('div', { class: 'card' + (focusKey === 'awaiting' ? ' card--focus' : '') }, [
+        h('div', { class: 'card__header' }, [
+          h('h2', { class: 'card__title' }, 'Sessions to confirm'),
+          awaitingBuilt.bulkBtn,
+        ]),
+        h('p', {
+          style: 'margin:0 0 var(--space-3);color:var(--color-text-muted);font-size:var(--font-size-2)',
+        }, 'Appointments that have ended. Confirming creates the draft claim.'),
+        awaitingBuilt.table,
+      ]);
 
       var matchingCard = sectionCard(
         'Appointments needing a client',
