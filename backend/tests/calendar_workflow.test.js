@@ -411,13 +411,14 @@ assert.strictEqual(bustOf('./workflow.js'), VERSION,
   'the edited classifier carries the new cache-buster');
 // dashboard.js and claims.js were bumped once, for the Dashboard deep-link
 // work (#claims/focus/<key>, #calendar/focus/<key>); calendar.js has been
-// bumped AGAIN on top of that, by the later bulk-confirm change (a selection
-// column + "Confirm selected" action on 2+ awaiting sessions). All three stay
-// pinned, so an UNINTENDED further bump is still caught — just at their
-// current value.
+// bumped TWICE more on top of that — once for the bulk-confirm change (a
+// selection column + "Confirm selected" action on 2+ awaiting sessions), and
+// again for the fix that makes a bulk-confirm failure's "still selected"
+// promise survive the reload that follows it. All three stay pinned, so an
+// UNINTENDED further bump is still caught — just at their current value.
 assert.strictEqual(bustOf('./views/dashboard.js'), '20260923a',
   'the Dashboard cache-buster is at its current value');
-assert.strictEqual(bustOf('./views/calendar.js'), '20260923b',
+assert.strictEqual(bustOf('./views/calendar.js'), '20260923c',
   'the Calendar cache-buster is at its current value');
 assert.strictEqual(bustOf('./views/claims.js'), '20260923a',
   'the Claims cache-buster is at its current value');

@@ -614,6 +614,30 @@ function flush() {
 
     assert.ok(bulkCalls.some((c) => c.name === 'calendarEvents.list' && c.args[0] && c.args[0].state === 'confirmed'),
       'the view reloads once the batch settles, exactly like a single confirm');
+
+    // The toast says the failed row is "still selected" — that claim has to
+    // survive the very reload that just tore the whole section down and
+    // rebuilt it, or it is just a comforting lie. Client Two is s-b2, the one
+    // that failed; it should come back ticked, and the two that succeeded
+    // should come back unticked (they are freshly reloaded rows, not the ones
+    // that were clicked).
+    const afterReload = section(bulkRoot, 'Sessions to confirm');
+    function checkedFor(clientName) {
+      const row = bodyRowsOf(afterReload).find((r) => r.textContent.includes(clientName));
+      assert.ok(row, 'a row for ' + clientName + ' is still rendered after the reload');
+      return inputs(row)[0].checked;
+    }
+    assert.strictEqual(checkedFor('Client Two'), true,
+      'the row that failed (s-b2) comes back preselected, exactly as the toast promised');
+    assert.ok(!checkedFor('Client One'),
+      'a row that succeeded (s-b1) does not come back selected');
+    assert.ok(!checkedFor('Client Three'),
+      'a row that was never ticked (s-b3) stays unselected');
+
+    const bulkBtnAfterReload = buttons(afterReload)
+      .find((b) => /^Confirm( \d+ sessions?)?$|^Confirm selected$/.test(b.textContent));
+    assert.strictEqual(bulkBtnAfterReload.textContent, 'Confirm 1 session',
+      'the bulk button reflects the one preselected row without any click');
   }
 
   console.log('PASS calendar_workflow_ui.test.js');

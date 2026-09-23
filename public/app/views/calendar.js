@@ -96,7 +96,11 @@
   function renderCalendar(root, focusKey) {
     R.renderLoading(root);
 
-    function load() {
+    // preselectSessionIds: session ids to re-tick in "Sessions to confirm"
+    // once this reload's render is up — used only by a bulk confirm that had
+    // partial failures, so the rows a biller still needs to retry don't have
+    // to be found and re-ticked by hand.
+    function load(preselectSessionIds) {
       R.renderLoading(root);
       Promise.all([
         // Default list = the review queue (unmatched + matched).
@@ -120,13 +124,13 @@
           confirmed: eventsOf(results[1]),
           ignored: eventsOf(results[2]),
           sessions: (results[3] && results[3].sessions) || [],
-        }, clients, results[5]);
+        }, clients, results[5], preselectSessionIds);
       }).catch(function (err) {
         R.renderError(root, err, load);
       });
     }
 
-    function render(data, clients, calInfo) {
+    function render(data, clients, calInfo, preselectSessionIds) {
       R.clear(root);
 
       var workflow = buildWorkflow(data, Date.now());
@@ -193,9 +197,11 @@
       // tracking progress. Each PATCH still independently creates its own draft
       // claim, transactionally, server-side — nothing here creates one. A
       // failure on one row does not stop the rest; it is reported alongside
-      // whatever did succeed, and the failed rows are left selected so they can
-      // be retried (individually or as a smaller batch) without redoing the
-      // ones that already went through.
+      // whatever did succeed, and onDone(failed) hands the failed rows back to
+      // the caller, which reloads WITH them preselected — "still selected" has
+      // to survive the reload that follows, not just the moment before it,
+      // since the whole section is torn down and rebuilt from the server's
+      // response like every other action in this view.
       function confirmSelected(items, button, onDone) {
         var total = items.length;
         var originalLabel = button.textContent;
@@ -403,17 +409,24 @@
       // by the other three sections, which never need bulk selection) is left
       // untouched. Returns { table, bulkBtn } — bulkBtn is null below 2 rows,
       // so the single-session case renders byte-for-byte as it always has.
-      function awaitingTable(items) {
+      // `preselectIds` re-ticks the rows named in it (see load() above) — the
+      // survival mechanism for "still selected" across the reload that follows
+      // a bulk confirm with partial failures.
+      function awaitingTable(items, preselectIds) {
         var bulkEnabled = items.length >= 2;
         var selected = {};   // session id -> item, per render like claims.js's grouping
         var boxes = {};
+        var preselect = {};
+        (preselectIds || []).forEach(function (id) { preselect[id] = true; });
 
         var bulkBtn = h('button', {
           class: 'btn btn--primary btn--sm', type: 'button',
           onClick: function () {
             var rows = Object.keys(selected).map(function (id) { return selected[id]; });
             if (!rows.length) return;
-            confirmSelected(rows, bulkBtn, function () { load(); });
+            confirmSelected(rows, bulkBtn, function (failed) {
+              load(failed.map(function (item) { return item.session.id; }));
+            });
           },
         }, 'Confirm selected');
         bulkBtn.disabled = true;
@@ -459,6 +472,10 @@
                   + (item.event.matched_client_name || 'this client'),
               });
               boxes[item.session.id] = box;
+              if (preselect[item.session.id]) {
+                box.checked = true;
+                selected[item.session.id] = item;
+              }
               box.addEventListener('change', function () {
                 if (box.checked) selected[item.session.id] = item;
                 else delete selected[item.session.id];
@@ -469,6 +486,12 @@
             paintConfirmRow(item, row, box);
             tbody.appendChild(row);
           });
+          // Reflect the preselection minted above in the header controls —
+          // both start from a fresh, all-unchecked state otherwise.
+          if (bulkEnabled) {
+            refreshBulkBtn();
+            selectAll.checked = Object.keys(selected).length === items.length;
+          }
         }
 
         var headCells = bulkEnabled ? [h('th', { 'aria-label': 'Select all' }, selectAll)] : [];
@@ -522,7 +545,7 @@
       // Still carries the SAME focus-highlight class sectionCard applies to
       // the other sections, so a #calendar/focus/awaiting deep link works
       // identically here.
-      var awaitingBuilt = awaitingTable(workflow.awaiting);
+      var awaitingBuilt = awaitingTable(workflow.awaiting, preselectSessionIds);
       var awaitingCard = h('div', { class: 'card' + (focusKey === 'awaiting' ? ' card--focus' : '') }, [
         h('div', { class: 'card__header' }, [
           h('h2', { class: 'card__title' }, 'Sessions to confirm'),
