@@ -466,13 +466,16 @@ async function mount(data, opts) {
       label + ' offers exactly one action: ' + ATTENTION_ACTIONS[label]);
   });
 
-  // ...and each action reaches the right view.
+  // ...and each action reaches the right view — and the right QUEUE within it.
+  // These are deep links (#claims/focus/<key>, #calendar/focus/<key>) so the
+  // destination view opens already narrowed to the queue the card named,
+  // instead of a generic list the clinician has to re-filter by hand.
   const ROUTES = {
-    'Appointments to match': 'calendar',
-    'Sessions to confirm': 'calendar',
-    'Claims needing correction': 'claims',
-    'Claims to verify': 'claims',
-    'Claims needing follow-up': 'claims',
+    'Appointments to match': 'calendar/focus/match',
+    'Sessions to confirm': 'calendar/focus/awaiting',
+    'Claims needing correction': 'claims/focus/needs_correction',
+    'Claims to verify': 'claims/focus/to_verify',
+    'Claims needing follow-up': 'claims/focus/follow_up',
   };
   Object.keys(ROUTES).forEach((label) => {
     navigations.length = 0;

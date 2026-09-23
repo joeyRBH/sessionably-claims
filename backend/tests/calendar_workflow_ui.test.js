@@ -134,10 +134,15 @@ function rows(node) {
   return walk(node).filter((el) => el.tagName === 'TR');
 }
 
-// The card whose .card__title reads `title`.
+// The card whose .card__title reads `title`. Matched by the base 'card' class
+// so a card carrying an additional modifier (e.g. 'card card--focus', a
+// Dashboard deep link's highlight) is still found.
+function isCard(el) {
+  return typeof el.className === 'string' && el.className.split(/\s+/).indexOf('card') !== -1;
+}
 function section(root, title) {
   const card = walk(root).find(
-    (el) => el.className === 'card' &&
+    (el) => isCard(el) &&
       walk(el).some((c) => c.className === 'card__title' && c.textContent === title)
   );
   assert.ok(card, 'section "' + title + '" is rendered');
@@ -422,6 +427,39 @@ function flush() {
   confirmAgain.dispatch('click');
   assert.strictEqual(calls.filter((c) => c.name === 'sessions.update').length, 1,
     'one click after a re-render sends exactly one update');
+
+  // 12. A Dashboard deep link (#calendar/focus/<key>) highlights ONE section —
+  // it changes nothing about which appointments are shown or how confirming
+  // works, only which card carries the visual nudge.
+  calls.length = 0;
+  const awaitingFocusRoot = createElement('div');
+  viewFn(awaitingFocusRoot, ['focus', 'awaiting']);
+  await flush();
+  assert.strictEqual(
+    section(awaitingFocusRoot, 'Sessions to confirm').className, 'card card--focus',
+    '#calendar/focus/awaiting highlights the Sessions to confirm card');
+  assert.strictEqual(
+    section(awaitingFocusRoot, 'Appointments needing a client').className, 'card',
+    'no other section is marked when awaiting is the focus');
+  assert.deepStrictEqual(buttonLabels(section(awaitingFocusRoot, 'Sessions to confirm')),
+    ['Confirm session'], 'the highlighted section still behaves exactly as before');
+
+  const matchFocusRoot = createElement('div');
+  viewFn(matchFocusRoot, ['focus', 'match']);
+  await flush();
+  assert.strictEqual(
+    section(matchFocusRoot, 'Appointments needing a client').className, 'card card--focus',
+    '#calendar/focus/match highlights the matching card instead');
+  assert.strictEqual(
+    section(matchFocusRoot, 'Sessions to confirm').className, 'card',
+    'awaiting is not also highlighted when match is the focus');
+
+  // No focus segment (the ordinary #calendar route) highlights nothing.
+  const plainRoot = createElement('div');
+  viewFn(plainRoot, []);
+  await flush();
+  assert.strictEqual(section(plainRoot, 'Sessions to confirm').className, 'card');
+  assert.strictEqual(section(plainRoot, 'Appointments needing a client').className, 'card');
 
   console.log('PASS calendar_workflow_ui.test.js');
 })().catch((err) => {

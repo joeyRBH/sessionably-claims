@@ -72,8 +72,12 @@
     }, text);
   }
 
-  function sectionCard(title, note, body) {
-    return h('div', { class: 'card' }, [
+  // `focused` marks the ONE section a #calendar/focus/<key> deep link (from the
+  // Dashboard) pointed at — see renderCalendar's caller below. A visual nudge
+  // only: the section is still exactly where it always is, nothing here decides
+  // what belongs in it (that stays workflow.js's job).
+  function sectionCard(title, note, body, focused) {
+    return h('div', { class: 'card' + (focused ? ' card--focus' : '') }, [
       h('div', { class: 'card__header' }, [
         h('h2', { class: 'card__title' }, title),
         note
@@ -86,7 +90,10 @@
     ]);
   }
 
-  function renderCalendar(root) {
+  // focusKey: 'awaiting' | 'match' | null — the section a Dashboard deep link
+  // (#calendar/focus/<key>) asked to be brought to attention. Purely a scroll +
+  // highlight; it changes nothing about which appointments are shown.
+  function renderCalendar(root, focusKey) {
     R.renderLoading(root);
 
     function load() {
@@ -354,7 +361,8 @@
         'Appointments that have ended. Confirming creates the draft claim.',
         sectionTable('Client', workflow.awaiting.map(function (item) {
           return function (row) { paintConfirmRow(item, row); };
-        }), 'No sessions waiting to be confirmed.')
+        }), 'No sessions waiting to be confirmed.'),
+        focusKey === 'awaiting'
       );
 
       var matchingCard = sectionCard(
@@ -367,7 +375,8 @@
               ev.match_state === 'matched' && ev.matched_client_id ? 'suggested' : 'picker',
               true);
           };
-        }), 'No past appointments waiting for a client.')
+        }), 'No past appointments waiting for a client.'),
+        focusKey === 'match'
       );
 
       var upcomingCard = sectionCard(
@@ -484,12 +493,25 @@
         upcomingCard,
         ignoredCard,
       ]));
+
+      // Bring the requested section into view. Real elements only — the
+      // hand-rolled fake DOM the unit tests run against carries no
+      // scrollIntoView, so this silently no-ops there rather than throwing.
+      var focusEl = focusKey === 'awaiting' ? awaitingCard
+        : focusKey === 'match' ? matchingCard
+        : null;
+      if (focusEl && typeof focusEl.scrollIntoView === 'function') {
+        focusEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
     }
 
     load();
   }
 
-  R.registerView('calendar', function (root) {
-    return renderCalendar(root);
+  // params: ['focus', <key>] for a Dashboard deep link (#calendar/focus/<key>);
+  // anything else is ignored — Calendar has no other route parameters.
+  R.registerView('calendar', function (root, params) {
+    var focusKey = (params && params[0] === 'focus') ? params[1] : null;
+    return renderCalendar(root, focusKey);
   });
 })(window, document);

@@ -590,12 +590,75 @@ function plain(v) {
   listResult = DRAFTS.concat(HISTORY);
   listSuggestions = [];
 
-  // 20. The cache-buster for this view was bumped.
+  // 20. Dashboard deep-links (#claims/focus/<key>) narrow this SAME workspace
+  // client-side, over the one unfiltered response the page already loads —
+  // never a second request, and never a divergent count from what the
+  // Dashboard itself just showed (backend/tests/dashboard_workflow_ui.test.js).
+  {
+    calls.length = 0;
+    const blockedRoot = createElement('div');
+    viewFn(blockedRoot, ['focus', 'needs_correction']);
+    await flush();
+    assert.deepStrictEqual(
+      calls.filter((c) => c.name === 'claims.list').map((c) => plain(c.args[0])),
+      [null], 'a focus filter is applied client-side — still one unfiltered request');
+    const blockedDrafts = section(blockedRoot, 'Ready to verify and submit');
+    assert.strictEqual(bodyRows(blockedDrafts).length, 1,
+      'needs_correction narrows to exactly the one blocked draft');
+    assert.strictEqual(cellTexts(bodyRows(blockedDrafts)[0])[1], 'Client X');
+
+    const verifyRoot = createElement('div');
+    viewFn(verifyRoot, ['focus', 'to_verify']);
+    await flush();
+    assert.strictEqual(bodyRows(section(verifyRoot, 'Ready to verify and submit')).length,
+      DRAFTS.length - 1,
+      'to_verify is every OTHER draft, including one the server projected no readiness for');
+
+    // The active tab is marked; every tab still reports the FULL unfiltered
+    // count, not how many rows the current focus is hiding.
+    const tabs = tagged(verifyRoot, 'BUTTON')
+      .filter((b) => /^(All|Needs correction|To verify) \(\d+\)$/.test(b.textContent));
+    assert.strictEqual(tabs.length, 3, 'three draft filter tabs render');
+    const activeTab = tabs.find((b) => b.attributes['aria-selected'] === 'true');
+    assert.ok(activeTab && activeTab.textContent.indexOf('To verify') === 0,
+      'the tab matching the current focus is marked active');
+    assert.ok(tabs.some((b) => b.textContent === 'Needs correction (1)'),
+      'a tab reports its own full count even while another tab is active');
+    assert.ok(tabs.some((b) => b.textContent === 'All (' + DRAFTS.length + ')'));
+
+    // Clicking a tab NAVIGATES — it never re-derives the filter by re-rendering
+    // itself, so the URL always agrees with what is on screen.
+    calls.length = 0;
+    const allTab = tabs.find((b) => b.textContent.indexOf('All') === 0);
+    allTab.dispatch('click');
+    assert.deepStrictEqual(calls, [{ name: 'navigate', args: ['claims'] }],
+      'the All tab clears the focus by navigating to the unfiltered workspace');
+
+    // follow_up narrows HISTORY instead, to exactly the two post-submission
+    // statuses Dashboard calls follow-up work — also with no extra request.
+    calls.length = 0;
+    const followRoot = createElement('div');
+    viewFn(followRoot, ['focus', 'follow_up']);
+    await flush();
+    assert.deepStrictEqual(
+      calls.filter((c) => c.name === 'claims.list').map((c) => plain(c.args[0])),
+      [null], 'follow_up is also applied client-side — one unfiltered request');
+    const followHistory = section(followRoot, 'Submitted claims');
+    assert.deepStrictEqual(
+      bodyRows(followHistory).map((r) => tagged(r, 'TD')[3].textContent),
+      ['denied'], 'follow_up shows only info_requested + denied — not submitted, paid or void');
+    assert.ok(bodyRows(section(followRoot, 'Ready to verify and submit')).length === DRAFTS.length,
+      'follow_up narrows history only — the draft queue stays whole');
+    assert.ok(followRoot.textContent.includes('Clear filter'),
+      'a dismissible banner explains the narrowed history section');
+  }
+
+  // 21. The cache-buster for this view was bumped.
   const appHtml = fs.readFileSync(path.join(__dirname, '..', '..', 'public', 'app', 'app.html'), 'utf8');
-  assert.match(appHtml, /\.\/views\/claims\.js\?v=20260912a/,
-    'app.html serves claims.js?v=20260912a');
-  assert.match(appHtml, /\.\/components\.css\?v=20260912a/,
-    'app.html serves components.css?v=20260912a — the suggestion callout is styled there');
+  assert.match(appHtml, /\.\/views\/claims\.js\?v=20260923a/,
+    'app.html serves claims.js?v=20260923a');
+  assert.match(appHtml, /\.\/components\.css\?v=20260923a/,
+    'app.html serves components.css?v=20260923a — the filter tabs are styled there');
 
   console.log('PASS claims_workspace_ui.test.js');
 })().catch((err) => {
