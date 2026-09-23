@@ -208,6 +208,10 @@
       // endpoint 403s non-admins — UX, not the boundary).
       var refundsNav = document.getElementById('nav-refunds-item');
       if (refundsNav && role === 'practice_admin') refundsNav.hidden = false;
+      // The "Admin" heading above those three items — same gate, so it never
+      // shows on its own with nothing grouped underneath it.
+      var adminGroupLabel = document.getElementById('nav-admin-group-label');
+      if (adminGroupLabel && role === 'practice_admin') adminGroupLabel.hidden = false;
 
       // First-run onboarding: open the Quick Start walkthrough once identity is
       // known. views.js owns the localStorage "seen" gate and the modal itself,

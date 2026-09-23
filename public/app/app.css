@@ -287,6 +287,20 @@ body {
   background: var(--nav-active-indicator);
 }
 
+/* A small heading above the admin-only nav items (Enrollments / Refunds /
+ * Audit log — app.html), so they read as their own group instead of three
+ * more top-level items competing with Dashboard/Claims/Clients/etc. Purely
+ * visual: routes and the practice_admin gate in app.js are unchanged. */
+.nav-group-label {
+  margin-top: var(--space-3);
+  padding: var(--space-2) var(--space-3) var(--space-1);
+  font-size: var(--font-size-1);
+  font-weight: var(--font-weight-medium);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  color: var(--color-text-muted);
+}
+
 /* =============================== Main ==================================== */
 .content {
   grid-area: main;

@@ -11,7 +11,7 @@
 
   <!-- Tokens first (authoritative F0 design system), then shell layout, then UI kit. -->
   <link rel="stylesheet" href="../app-foundation/styles/tokens.css?v=20260717a">
-  <link rel="stylesheet" href="./app.css?v=20260716a">
+  <link rel="stylesheet" href="./app.css?v=20260923c">
   <link rel="stylesheet" href="./components.css?v=20260923a">
 </head>
 <body>
@@ -167,6 +167,10 @@
             <span class="nav-link__label">Settings</span>
           </a>
         </li>
+        <!-- Admin-only group heading: revealed together with the three items
+             below it, for a practice_admin, in app.js after /me loads. Purely
+             a visual grouping — the routes themselves are unchanged. -->
+        <li class="nav-group-label" id="nav-admin-group-label" hidden>Admin</li>
         <!-- Admin-only: revealed for practice_admin in app.js after /me loads. -->
         <li id="nav-enrollments-item" hidden>
           <a class="nav-link" href="#enrollments">
@@ -226,7 +230,7 @@
   <!-- Curated billable ICD-10 diagnosis codes (window.ReddablyDiagnoses). -->
   <script src="./diagnosis-codes.js?v=20260715a"></script>
   <!-- Shell behavior: auth guard, drawer, user menu, logout. -->
-  <script src="./app.js?v=20260717a"></script>
+  <script src="./app.js?v=20260923c"></script>
   <!-- Hash router + shared view toolkit (window.Reddably). -->
   <script src="./views.js?v=20260824a"></script>
   <!-- Plan state + topbar plan badge (window.ReddablyPlan). -->
