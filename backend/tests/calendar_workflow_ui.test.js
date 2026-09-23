@@ -134,6 +134,15 @@ function rows(node) {
   return walk(node).filter((el) => el.tagName === 'TR');
 }
 
+function inputs(node) {
+  return walk(node).filter((el) => el.tagName === 'INPUT');
+}
+
+// Body rows only — excludes the header row, which is also a <TR>.
+function bodyRowsOf(node) {
+  return rows(node).filter((r) => r.parentNode && r.parentNode.tagName === 'TBODY');
+}
+
 // The card whose .card__title reads `title`. Matched by the base 'card' class
 // so a card carrying an additional modifier (e.g. 'card card--focus', a
 // Dashboard deep link's highlight) is still found.
@@ -460,6 +469,152 @@ function flush() {
   await flush();
   assert.strictEqual(section(plainRoot, 'Sessions to confirm').className, 'card');
   assert.strictEqual(section(plainRoot, 'Appointments needing a client').className, 'card');
+
+  // 13. Bulk confirm — at 2+ awaiting sessions the section grows a selection
+  // column and a "Confirm selected" action. There is no batch-confirm
+  // endpoint (backend/handlers/sessions.js takes one session id per PATCH), so
+  // this must still be exactly sessions.update(id, { status: 'completed' }),
+  // sent once per selected row, sequentially. Isolated fixtures/api/viewFn (a
+  // fresh vm context) so this never perturbs the single-row scenario above,
+  // which stays pinned to offer no bulk UI at all.
+  {
+    const HOUR2 = 3600 * 1000;
+    const now2 = Date.now();
+    const iso2 = (ms) => new Date(ms).toISOString();
+    function ev2(id, overrides) {
+      return Object.assign({
+        id, summary_raw: 'Appointment ' + id,
+        starts_at: iso2(now2 - 2 * HOUR2), ends_at: iso2(now2 - HOUR2),
+        duration_minutes: 50, event_status: 'confirmed', match_state: 'confirmed',
+        matched_client_id: null, matched_client_name: null, match_confidence: null,
+        session_id: null,
+      }, overrides);
+    }
+    const B1 = ev2('b-1', { session_id: 's-b1', matched_client_name: 'Client One' });
+    const B2 = ev2('b-2', { session_id: 's-b2', matched_client_name: 'Client Two' });
+    const B3 = ev2('b-3', { session_id: 's-b3', matched_client_name: 'Client Three' });
+    const BSESSIONS = [
+      { id: 's-b1', status: 'scheduled' },
+      { id: 's-b2', status: 'scheduled' },
+      { id: 's-b3', status: 'scheduled' },
+    ];
+    // s-b2 fails to confirm — a mid-batch failure must not stop s-b1/s-b3 and
+    // must be reported, not swallowed.
+    const OUTCOMES = {
+      's-b1': { claim_created: true },
+      's-b2': null,
+      's-b3': { claim_created: false },
+    };
+
+    const bulkCalls = [];
+    const bulkToasts = [];
+    const bulkApi = {
+      calendarEvents: {
+        list(filters) {
+          bulkCalls.push({ name: 'calendarEvents.list', args: [filters] });
+          const state = (filters && filters.state) || null;
+          const byState = { null: [], confirmed: [B1, B2, B3], ignored: [] };
+          return Promise.resolve({ calendar_events: byState[state === null ? 'null' : state] });
+        },
+        promote() { return Promise.resolve({}); },
+        ignore() { return Promise.resolve({}); },
+        sync() { return Promise.resolve({}); },
+      },
+      sessions: {
+        list(filters) {
+          bulkCalls.push({ name: 'sessions.list', args: [filters] });
+          return Promise.resolve({ sessions: BSESSIONS });
+        },
+        update(id, payload) {
+          bulkCalls.push({ name: 'sessions.update', args: [id, payload] });
+          const outcome = OUTCOMES[id];
+          if (!outcome) return Promise.reject(new Error('confirm failed'));
+          return Promise.resolve({
+            session: { id, status: 'claim_ready' }, claim_created: outcome.claim_created,
+          });
+        },
+      },
+      clients: { list() { return Promise.resolve({ clients: [] }); } },
+      calendarConnections: { calendars() { return Promise.reject(new Error('no connection')); } },
+    };
+
+    let bulkViewFn = null;
+    const BulkReddably = {
+      h, api: bulkApi, clear,
+      renderLoading(r) { clear(r); r.appendChild(h('div', { class: 'skeleton' })); },
+      renderError(r, err) { clear(r); r.appendChild(h('div', { class: 'inline-error' }, String(err && err.message))); },
+      fmtDate: (s) => String(s),
+      toast(message, kind) { bulkToasts.push({ message, kind }); },
+      registerView(name, fn) { if (name === 'calendar') bulkViewFn = fn; },
+    };
+    const bulkSandbox = {
+      window: { Reddably: BulkReddably, confirm: () => false, setTimeout },
+      document: fakeDocument, console, Promise, Date,
+    };
+    vm.runInNewContext(
+      fs.readFileSync(path.join(__dirname, '..', '..', 'public', 'app', 'workflow.js'), 'utf8'),
+      bulkSandbox);
+    vm.runInNewContext(
+      fs.readFileSync(path.join(__dirname, '..', '..', 'public', 'app', 'views', 'calendar.js'), 'utf8'),
+      bulkSandbox);
+    assert.ok(typeof bulkViewFn === 'function', 'calendar.js registers in the isolated bulk sandbox');
+
+    const bulkRoot = createElement('div');
+    bulkViewFn(bulkRoot);
+    await flush();
+
+    const bulkAwaiting = section(bulkRoot, 'Sessions to confirm');
+    const bulkRows = bodyRowsOf(bulkAwaiting);
+    assert.strictEqual(bulkRows.length, 3, 'all three awaiting sessions render');
+    assert.deepStrictEqual(buttonLabels(bulkAwaiting).filter((l) => l === 'Confirm session'),
+      ['Confirm session', 'Confirm session', 'Confirm session'],
+      'each row keeps its OWN one-click confirm action — bulk is additive, not a replacement');
+
+    const selectAll = inputs(bulkAwaiting)[0];
+    const rowBoxes = bulkRows.map((r) => inputs(r)[0]);
+    assert.strictEqual(rowBoxes.length, 3, 'a selection checkbox grows on every row once there are 2+');
+
+    const bulkBtn = buttons(bulkAwaiting).find((b) => /^Confirm( \d+ sessions?)?$|^Confirm selected$/.test(b.textContent));
+    assert.ok(bulkBtn, 'a bulk confirm action is offered');
+    assert.strictEqual(bulkBtn.disabled, true, 'disabled until at least one row is selected');
+
+    // Select two of the three, leave the third alone.
+    rowBoxes[0].checked = true;
+    rowBoxes[0].dispatch('change');
+    rowBoxes[1].checked = true;
+    rowBoxes[1].dispatch('change');
+    assert.strictEqual(bulkBtn.disabled, false, 'enabled once at least one row is selected');
+    assert.strictEqual(bulkBtn.textContent, 'Confirm 2 sessions',
+      'the button states how many it is about to confirm');
+    assert.strictEqual(selectAll.checked, false, '"select all" is not implicitly checked by picking some rows');
+
+    bulkCalls.length = 0;
+    bulkToasts.length = 0;
+    bulkBtn.dispatch('click');
+    assert.strictEqual(bulkBtn.disabled, true, 'the bulk action disables itself while in flight');
+    await flush();
+
+    const updates = bulkCalls.filter((c) => c.name === 'sessions.update');
+    assert.deepStrictEqual(updates.map((c) => plain(c.args)),
+      [['s-b1', { status: 'completed' }], ['s-b2', { status: 'completed' }]],
+      'bulk confirm sends the SAME per-session PATCH as a single confirm, once per selected row, in order — no batch endpoint');
+    assert.ok(!bulkCalls.some((c) => c.name === 's-b3'),
+      'the row that was never ticked is never confirmed');
+
+    assert.strictEqual(bulkBtn.disabled, false, 're-enabled once the batch settles');
+    assert.strictEqual(bulkBtn.textContent, 'Confirm 2 sessions',
+      'the button label is restored to what it said before the click (the reload that follows rebuilds it)');
+
+    assert.deepStrictEqual(bulkToasts[0],
+      { message: '1 session confirmed — 1 new claim draft ready in Claims.', kind: 'warn' },
+      'a mid-batch failure still reports what DID succeed, at a warn (not success) level');
+    assert.deepStrictEqual(bulkToasts[1],
+      { message: '1 session could not be confirmed. Still selected — try again.', kind: 'error' },
+      'the failed row is called out on its own, separately');
+
+    assert.ok(bulkCalls.some((c) => c.name === 'calendarEvents.list' && c.args[0] && c.args[0].state === 'confirmed'),
+      'the view reloads once the batch settles, exactly like a single confirm');
+  }
 
   console.log('PASS calendar_workflow_ui.test.js');
 })().catch((err) => {
