@@ -266,8 +266,15 @@ aws lambda invoke --function-name "$(terraform output -raw migrate_function_name
 ```
 
 Terraform warns that `-target` is for exceptional use; this is that exception.
-NOTE: the `-target` split is reasoned from the terraform source, not yet proven
-against a real apply — correct this section after the first live run.
+PROVEN on a real apply (2026-09-30, migration 029): phase 1 is
+`./deploy.sh -target=aws_lambda_function.migrate -target=aws_lambda_function.apply_migration`
+(include `apply_migration` so the read-only `{"verify":true}` check runs the new code —
+the two Lambdas are separate resources sharing one zip), then verify, then a plain
+`./deploy.sh`. `deploy.sh` now sets its own AWS profile/region, loads the DB password
+from SSM, refuses to run while the S3 state lock is held (never auto-unlocks), and
+applies a saved plan only after `plan_gate.jq` passes (no delete/replace ever; infra
+changes need `ALLOW_INFRA_CHANGE=1`). It aborts on an untracked/dirty working tree
+when run through the handed-over script.
 
 The Vercel project is **git-linked** to this repo and serves the production domains,
 so **merging to `main` IS the frontend deploy**. It belongs last in any sequence,
