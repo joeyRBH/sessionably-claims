@@ -5,10 +5,81 @@ set -euo pipefail
 # JWT_SECRET from SSM (SecureString, decrypted) WITHOUT writing them to tfstate.
 # Secrets live only in SSM and each function's env config. Run from infra/terraform
 # on a machine with the claimsub-prod profile (or set AWS_PROFILE/AWS_REGION).
+# The script sets up everything else itself: exported profile/region, live-credential
+# check, stale state-lock check, DB master password from SSM, and a gated plan.
 
 cd "$(dirname "$0")"
 
 command -v jq >/dev/null 2>&1 || { echo "jq is required (brew install jq)"; exit 2; }
+command -v terraform >/dev/null 2>&1 || { echo "terraform is required"; exit 2; }
+command -v aws >/dev/null 2>&1 || { echo "aws CLI is required"; exit 2; }
+
+# ---------------------------------------------------------------------------
+# Preflight — everything this script needs, set by the script itself.
+#
+# 1. AWS profile/region, EXPORTED so terraform and the aws CLI agree. (This used
+#    to be a shell variable used only by the aws CLI, so terraform ran under
+#    whatever ambient credentials happened to be set.)
+# 2. Live credentials, proven before any work starts.
+# 3. No stale terraform state lock.
+# 4. TF_VAR_db_master_password, read from SSM (never echoed, never written).
+# ---------------------------------------------------------------------------
+export AWS_PROFILE="${AWS_PROFILE:-claimsub-prod}"
+export AWS_REGION="${AWS_REGION:-us-west-2}"
+export AWS_DEFAULT_REGION="$AWS_REGION"
+PROFILE="$AWS_PROFILE"
+REGION="$AWS_REGION"
+AWS=(aws --profile "$PROFILE" --region "$REGION")
+
+IDENT=$("${AWS[@]}" sts get-caller-identity --output json 2>/dev/null) || {
+  echo "ERROR: no valid AWS credentials for profile '$PROFILE'."
+  echo "       If it is an SSO profile, run: aws sso login --profile $PROFILE"
+  exit 1
+}
+echo ">> AWS profile=$PROFILE region=$REGION account=$(printf '%s' "$IDENT" | jq -r .Account)"
+
+# Stale-lock check. The backend uses S3 native locking (use_lockfile): a
+# <key>.tflock object next to the state. Read bucket/key from backend.tf so this
+# can never drift from the real backend. We only REPORT — a lock may belong to a
+# live apply, so this script never force-unlocks.
+BACKEND_BUCKET=$(sed -n 's/^[[:space:]]*bucket[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' backend.tf | head -1)
+BACKEND_KEY=$(sed -n 's/^[[:space:]]*key[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' backend.tf | head -1)
+[ -n "$BACKEND_BUCKET" ] && [ -n "$BACKEND_KEY" ] || { echo "ERROR: could not read bucket/key from backend.tf"; exit 1; }
+LOCK_KEY="${BACKEND_KEY}.tflock"
+LOCK_TMP=$(mktemp)
+if LOCK_ERR=$("${AWS[@]}" s3api get-object --bucket "$BACKEND_BUCKET" --key "$LOCK_KEY" "$LOCK_TMP" 2>&1 >/dev/null); then
+  echo "ERROR: terraform state is LOCKED (s3://$BACKEND_BUCKET/$LOCK_KEY)."
+  jq '{ID, Who, Operation, Created}' "$LOCK_TMP" 2>/dev/null || echo "(lock file unreadable)"
+  LOCK_ID=$(jq -r '.ID // empty' "$LOCK_TMP" 2>/dev/null || printf '')
+  rm -f "$LOCK_TMP"
+  echo "       If another apply is running, wait for it. If the lock is old and you are"
+  echo "       certain nothing is running, release it yourself:"
+  echo "         terraform force-unlock ${LOCK_ID:-<ID>}"
+  echo "       deploy.sh never unlocks for you."
+  exit 1
+fi
+rm -f "$LOCK_TMP"
+case "$LOCK_ERR" in
+  *NoSuchKey*|*"Not Found"*|*404*) echo ">> no state lock held" ;;
+  *) echo "ERROR: could not check the state lock: $LOCK_ERR"; exit 1 ;;
+esac
+
+if [ -z "${TF_VAR_db_master_password:-}" ]; then
+  DB_MASTER_PARAM="${SSM_PREFIX_OVERRIDE:-/claimsub/prod}/DB_MASTER_PASSWORD"
+  TF_VAR_db_master_password=$("${AWS[@]}" ssm get-parameter --name "$DB_MASTER_PARAM" --with-decryption \
+    --query 'Parameter.Value' --output text 2>/dev/null || printf '')
+  case "$TF_VAR_db_master_password" in
+    ""|"None"|"set-out-of-band-see-README") echo "ERROR: DB master password not available at SSM $DB_MASTER_PARAM (see README §Secrets)."; exit 1;;
+  esac
+  export TF_VAR_db_master_password
+  echo ">> TF_VAR_db_master_password loaded from SSM ($DB_MASTER_PARAM)"
+else
+  echo ">> TF_VAR_db_master_password already set in the environment"
+fi
+
+for ARG in "$@"; do
+  [ "$ARG" = "-auto-approve" ] && { echo "ERROR: deploy.sh reviews and confirms the plan itself; -auto-approve is not accepted."; exit 2; }
+done
 
 # Install backend runtime deps from the committed lockfile. archive_file zips
 # backend/ verbatim, so whatever node_modules holds right now IS the prod
@@ -27,12 +98,46 @@ echo ">> installing backend deps (npm ci --omit=dev)"
 echo ">> bundling schema (db/schema.sql -> backend/sql/schema.sql)"
 ( cd ../../backend && npm run --silent bundle:schema )
 
-PROFILE="${AWS_PROFILE:-claimsub-prod}"
-REGION="${AWS_REGION:-us-west-2}"
-AWS=(aws --profile "$PROFILE" --region "$REGION")
+# ---------------------------------------------------------------------------
+# Plan -> gate -> confirm -> apply THE SAME PLAN FILE.
+#
+# The plan is saved and applied verbatim, so what the operator approved is
+# exactly what runs. The gate (plan_gate.jq) refuses any delete/replace and any
+# infrastructure change not explicitly allowed. The plan artifacts can contain
+# sensitive values, so they live in a private temp dir removed on exit.
+# ---------------------------------------------------------------------------
+PLAN_DIR=$(mktemp -d)
+chmod 700 "$PLAN_DIR"
+trap 'rm -rf "$PLAN_DIR"' EXIT
+PLAN_FILE="$PLAN_DIR/tfplan"
 
-echo ">> terraform apply"
-terraform apply "$@"
+PARTIAL=0
+for ARG in "$@"; do case "$ARG" in -target*) PARTIAL=1;; esac; done
+[ "$PARTIAL" = 1 ] && echo ">> PARTIAL apply (-target): only the named resources change; the rest of the stack is untouched"
+
+echo ">> terraform plan"
+terraform plan -input=false -out="$PLAN_FILE" "$@"
+terraform show -json "$PLAN_FILE" > "$PLAN_DIR/plan.json"
+
+ALLOW_INFRA=false
+[ "${ALLOW_INFRA_CHANGE:-}" = "1" ] && ALLOW_INFRA=true
+GATE=$(jq -f plan_gate.jq --argjson allow_infra "$ALLOW_INFRA" "$PLAN_DIR/plan.json")
+echo ">> plan summary: $(printf '%s' "$GATE" | jq -c .counts)"
+printf '%s' "$GATE" | jq -r '.changes[] | "   \(.action)\t\(.address)"'
+if ! printf '%s' "$GATE" | jq -e '.ok == true' >/dev/null; then
+  echo "!! PLAN REFUSED:"
+  printf '%s' "$GATE" | jq -r '.violations[] | "!!   " + .'
+  exit 1
+fi
+echo ">> plan gate passed (no deletes/replacements, no unapproved infrastructure changes)"
+
+[ -r /dev/tty ] || { echo "ERROR: no terminal to confirm on."; exit 1; }
+printf 'Apply this plan? Type "yes" to continue: '
+read -r ANSWER </dev/tty
+[ "$ANSWER" = "yes" ] || { echo "aborted; nothing applied."; exit 1; }
+
+echo ">> terraform apply (saved plan)"
+terraform apply -input=false "$PLAN_FILE"
 
 echo ">> reading terraform outputs"
 FUNCS=$(terraform output -json lambda_function_names | jq -r '.[]')

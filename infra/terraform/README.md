@@ -30,7 +30,8 @@ an API Gateway HTTP API, and the ACM cert + custom domain.
 | `api.tf`          | HTTP API, routes, CORS, access logs, invoke permissions          |
 | `api-domain.tf`   | ACM cert request + (phase 2) custom domain + base-path mapping    |
 | `outputs.tf`      | IDs, endpoints, ACM validation records, custom-domain target      |
-| `deploy.sh`       | `terraform apply` + automatic Lambda secret hydration from SSM     |
+| `deploy.sh`       | preflight (profile, creds, lock, DB password) + gated plan/apply + Lambda secret hydration + migrate |
+| `plan_gate.jq`    | refuses any delete/replace and unapproved infra change in a plan (used by `deploy.sh`) |
 
 ---
 
