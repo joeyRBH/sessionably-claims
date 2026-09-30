@@ -242,6 +242,17 @@ const EXPECTED = {
         foreign_keys: [['partner_credentials', 'practices'], ['audit_log', 'partner_credentials']],
         checks: [['audit_log_actor_type_check', 'partner']],
     },
+    // Folded into schema.sql and applied by the migrate Lambda on an ordinary
+    // deploy — NOT by this runner, so it has no ledger row. This entry exists so
+    // the operator can prove the column landed before shipping the handler that
+    // names it (the handler swallows a missing-column error, so a miss is silent).
+    '029_add_clinician_notified_to_clients': {
+        tables: [],
+        columns: [['clients', 'clinician_intake_notified_at']],
+        indexes: [],
+        foreign_keys: [],
+        checks: [],
+    },
     // The EXPAND half, which arrives via schema.sql on an ordinary deploy.
     // Columns only — nullable, unconstrained. This is what makes the
     // partner-aware writer safe to ship.
@@ -454,10 +465,24 @@ async function verify(client) {
         migrations['024_partner_claim_event_attribution'].objects
     );
 
+    // 029: the count is only meaningful (and only queryable) once the column
+    // exists. Aggregate only — nothing row-level.
+    let clinicianNotified = null;
+    if (migrations['029_add_clinician_notified_to_clients'].structurally_present) {
+        const r = await client.query(
+            'select count(*)::int as n from clients where clinician_intake_notified_at is not null');
+        clinicianNotified = r.rows[0].n;
+    }
+
     return {
         ok: true,
         mode: 'verify',
         phase,
+        // 029 evidence, flat so a deploy script can gate on it with jq -e.
+        clinician_intake_notified: {
+            column_present: migrations['029_add_clinician_notified_to_clients'].structurally_present,
+            notified_count: clinicianNotified,
+        },
         // The rollout-safety question, stated directly rather than left for the
         // reader to infer from the object lists.
         writers: {

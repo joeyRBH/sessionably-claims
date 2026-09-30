@@ -339,6 +339,35 @@ async function check(name, fn) {
         assert.equal(out.writers.legacy_system_event_supported, true);
     });
 
+    // 029 evidence: absent column -> reported absent with no count query (which
+    // would error on a database without the column); present -> count reported.
+    await check('verify reports 029 column absent and does not query the column', async () => {
+        const out = await handler({ verify: true });
+        assert.equal(out.clinician_intake_notified.column_present, false);
+        assert.equal(out.clinician_intake_notified.notified_count, null);
+        assert.deepEqual(issued.filter((s) => /clinician_intake_notified_at is not null/i.test(s)), [],
+            'verify counted a column that is not there');
+    });
+
+    await check('verify reports 029 column present with its notified count, read-only', async () => {
+        const orig = client.query;
+        client.query = async (sql, params) => {
+            if (/information_schema\.columns/i.test(sql) && params && params[1] === 'clinician_intake_notified_at') {
+                issued.push(String(sql).trim());
+                return { rows: [{ n: 1 }] };
+            }
+            return orig(sql, params);
+        };
+        try {
+            const out = await handler({ verify: true });
+            assert.equal(out.clinician_intake_notified.column_present, true);
+            assert.equal(out.clinician_intake_notified.notified_count, 0);
+            assert.deepEqual(writes(), [], `verify issued writes: ${writes().join(' | ')}`);
+        } finally {
+            client.query = orig;
+        }
+    });
+
     fs.rmSync(bundle, { recursive: true, force: true });
 
     if (failures > 0) {
