@@ -149,7 +149,11 @@ function buildClinicianIntakeCompleteEmail(opts) {
   const o = opts || {};
   const clientName = String(o.clientName || 'A client').trim() || 'A client';
   const clinicianName = o.clinicianName ? String(o.clinicianName).trim() : '';
-  const greeting = clinicianName ? `Hi ${clinicianName},` : 'Hi,';
+  // onBehalfOf: the clinician has no personal email on file (their login is a
+  // username), so this went to the practice notification address. Name the clinician
+  // rather than greeting them, since the reader is not necessarily that person.
+  const onBehalfOf = o.onBehalfOf ? String(o.onBehalfOf).trim() : '';
+  const greeting = onBehalfOf ? 'Hi,' : (clinicianName ? `Hi ${clinicianName},` : 'Hi,');
   const completedAt = o.completedAt || new Date().toISOString();
   const chartUrl = o.chartUrl
     || (o.clientId ? `${APP_BASE_URL}/app/app.html#clients/${encodeURIComponent(o.clientId)}` : APP_BASE_URL);
@@ -160,6 +164,9 @@ function buildClinicianIntakeCompleteEmail(opts) {
     '',
     `${clientName} has added their insurance information and a payment method.`,
     `Time: ${completedAt}`,
+    ...(onBehalfOf
+      ? [`Primary clinician: ${onBehalfOf} (no personal email on file, so this came to your practice notification address).`]
+      : []),
     '',
     'Open their chart to review the details and confirm them for claims:',
     chartUrl,
@@ -168,7 +175,11 @@ function buildClinicianIntakeCompleteEmail(opts) {
   const html =
     `<p>${escapeHtml(greeting)}</p>` +
     `<p><strong>${escapeHtml(clientName)}</strong> has added their insurance ` +
-    `information and a payment method.<br>Time: ${escapeHtml(completedAt)}</p>` +
+    `information and a payment method.<br>Time: ${escapeHtml(completedAt)}` +
+    (onBehalfOf
+      ? `<br>Primary clinician: ${escapeHtml(onBehalfOf)} (no personal email on file, so this came to your practice notification address).`
+      : '') +
+    `</p>` +
     `<p><a href="${escapeHtml(chartUrl)}">Review their chart</a> and confirm them for claims.</p>`;
   return { subject, text, html };
 }

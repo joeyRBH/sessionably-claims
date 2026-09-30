@@ -120,11 +120,22 @@ async function notifyIntakeComplete(client) {
 // patient can finish them in either order, so this runs after each step and only the
 // call that completes the pair sends.
 //
+// Recipient: the clinician's own login email when it is a real address. A login can
+// be a plain username (e.g. "BigRedd"), which is not deliverable; in that case the
+// practice's notification email (Settings > Notifications) receives it instead, and
+// the message says whose client it is. If neither is a real address, nothing is
+// claimed and nothing is sent.
+//
 // "Once" is enforced by the database, not by this code: the guard column is claimed
 // with a single UPDATE ... WHERE clinician_intake_notified_at IS NULL, so concurrent
 // requests and a patient re-opening the link cannot double-send. If the send does not
 // go out, the claim is released so a later step can retry. Best-effort and fully
 // non-blocking, like notifyIntakeComplete; PHI-minimal (name + chart link only).
+
+// Same shape lib/email.js isValidEmail accepts, expressed as a PostgreSQL POSIX
+// regex so the recipient is decided BEFORE the once-only claim is taken.
+const EMAIL_SQL_RE = '^[^[:space:]@]+@[^[:space:]@]+\\.[^[:space:]@]{2,}$';
+
 async function notifyClinicianIfComplete(clientId) {
   let claimed = false;
   try {
@@ -132,6 +143,8 @@ async function notifyClinicianIfComplete(clientId) {
       `with ready as (
          select c.id
            from clients c
+           join users u on u.id = c.primary_clinician_id and u.is_active = true
+           join practices p on p.id = c.practice_id
           where c.id = $1
             and c.is_hidden = false
             and c.clinician_intake_notified_at is null
@@ -141,29 +154,37 @@ async function notifyClinicianIfComplete(clientId) {
                where i.client_id = c.id and i.is_primary = true and i.is_hidden = false
                  and nullif(btrim(i.carrier_name), '') is not null
                  and nullif(btrim(i.member_id), '') is not null)
-            and exists (
-              select 1 from users u
-               where u.id = c.primary_clinician_id and u.is_active = true)
+            and (u.email ~ $2 or btrim(coalesce(p.notification_email, '')) ~ $2)
        ), claimed as (
          update clients
             set clinician_intake_notified_at = now()
           where id in (select id from ready) and clinician_intake_notified_at is null
-        returning id, first_name, last_name, primary_clinician_id
+        returning id, first_name, last_name, primary_clinician_id, practice_id
        )
        select cl.id, cl.first_name, cl.last_name,
-              u.email as clinician_email, u.first_name as clinician_first_name
+              case when u.email ~ $2 then u.email
+                   else btrim(p.notification_email) end as recipient,
+              (u.email ~ $2) as to_clinician,
+              u.first_name as clinician_first_name,
+              u.last_name as clinician_last_name
          from claimed cl
-         join users u on u.id = cl.primary_clinician_id`,
-      [clientId]
+         join users u on u.id = cl.primary_clinician_id
+         join practices p on p.id = cl.practice_id`,
+      [clientId, EMAIL_SQL_RE]
     );
     const row = r.rows[0];
     if (!row) return;
     claimed = true;
     const result = await email.sendClinicianIntakeCompleteEmail({
-      to: row.clinician_email,
+      to: row.recipient,
       clientId: row.id,
       clientName: [row.first_name, row.last_name].filter(Boolean).join(' ').trim(),
       clinicianName: row.clinician_first_name,
+      // Set only when the practice address is standing in for the clinician, so the
+      // message can name the clinician instead of greeting them.
+      onBehalfOf: row.to_clinician
+        ? null
+        : [row.clinician_first_name, row.clinician_last_name].filter(Boolean).join(' ').trim(),
       completedAt: new Date().toISOString(),
     });
     if (!result || result.sent !== true) {
