@@ -34,7 +34,7 @@ const dbLib = require(path.join(__dirname, '..', 'lib', 'db.js'));
 const emailLib = require(path.join(__dirname, '..', 'lib', 'email.js'));
 const handler = require(path.join(__dirname, '..', 'handlers', 'card_setup.js')).handler;
 
-const state = { client: null, insurance: null, clinician: null, sent: [], sendResult: { sent: true } };
+const state = { client: null, insurance: null, clinician: null, practiceEmail: null, sent: [], sendResult: { sent: true } };
 
 function reset(overrides) {
   state.client = Object.assign(
@@ -53,6 +53,7 @@ function reset(overrides) {
   );
   state.insurance = null;
   state.clinician = { id: 'clin-1', email: 'clinician@practice.test', first_name: 'Casey', is_active: true };
+  state.practiceEmail = null;
   state.sent = [];
   state.sendResult = { sent: true };
 }
@@ -84,20 +85,29 @@ dbLib.query = async (text, params) => {
   }
 
   // notifyClinicianIfComplete: claim-once + recipient lookup, mirroring the SQL.
+  // Recipient rule: the clinician's own email when it is a real address, else the
+  // practice notification email when THAT is a real address, else nobody.
   if (/with ready as/.test(t)) {
+    // The handler passes a PostgreSQL POSIX pattern; translate [:space:] for JS.
+    const RE = new RegExp(String(params[1]).replace(/\[:space:\]/g, '\\s'));
     const i = state.insurance;
     const u = state.clinician;
+    const clinEmailOk = !!u && RE.test(u.email);
+    const practiceOk = state.practiceEmail != null && RE.test(String(state.practiceEmail).trim());
     const ready =
       c && !c.is_hidden && c.clinician_intake_notified_at == null &&
       notBlank(c.payment_method_id) &&
       !!i && notBlank(i.carrier_name) && notBlank(i.member_id) &&
-      !!u && u.is_active && u.id === c.primary_clinician_id;
+      !!u && u.is_active && u.id === c.primary_clinician_id &&
+      (clinEmailOk || practiceOk);
     if (!ready) return { rows: [], rowCount: 0 };
     c.clinician_intake_notified_at = 'now';
     return {
       rows: [{
         id: c.id, first_name: c.first_name, last_name: c.last_name,
-        clinician_email: u.email, clinician_first_name: u.first_name,
+        recipient: clinEmailOk ? u.email : String(state.practiceEmail).trim(),
+        to_clinician: clinEmailOk,
+        clinician_first_name: u.first_name, clinician_last_name: 'Zed',
       }],
       rowCount: 1,
     };
@@ -167,6 +177,38 @@ const saveInsurance = () =>
   await saveCard();
   await saveInsurance();
   assert.strictEqual(state.sent.length, 0, 'inactive clinician is not emailed');
+
+  // clinician login is a username -> the practice notification email stands in
+  reset();
+  state.clinician.email = 'BigRedd';
+  state.practiceEmail = 'owner@practice.test';
+  await saveInsurance();
+  await saveCard();
+  assert.strictEqual(state.sent.length, 1, 'username clinician falls back to the practice address');
+  assert.strictEqual(state.sent[0].to, 'owner@practice.test');
+  assert.strictEqual(state.sent[0].onBehalfOf, 'Casey Zed', 'names the clinician instead of greeting them');
+  const viaPractice = emailLib.buildClinicianIntakeCompleteEmail(state.sent[0]);
+  assert.ok(viaPractice.text.startsWith('Hi,\n'), 'no personal greeting when the clinician is not the reader');
+  assert.ok(viaPractice.text.includes('Primary clinician: Casey Zed'));
+
+  // a real clinician email always wins over the practice address
+  reset();
+  state.practiceEmail = 'owner@practice.test';
+  await saveInsurance();
+  await saveCard();
+  assert.strictEqual(state.sent[0].to, 'clinician@practice.test', 'clinician email preferred');
+  assert.strictEqual(state.sent[0].onBehalfOf, null);
+
+  // username clinician and NO usable practice address -> nothing claimed, nothing sent
+  for (const practiceEmail of [null, '', '   ', 'BigRedd']) {
+    reset();
+    state.clinician.email = 'BigRedd';
+    state.practiceEmail = practiceEmail;
+    await saveInsurance();
+    await saveCard();
+    assert.strictEqual(state.sent.length, 0, `no deliverable address (${JSON.stringify(practiceEmail)}) -> no email`);
+    assert.strictEqual(state.client.clinician_intake_notified_at, null, 'nothing claimed');
+  }
 
   // failed send releases the claim; the next step retries
   reset();
