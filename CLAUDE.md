@@ -224,6 +224,14 @@ errors and the REST OF THE PASTE executes as loose commands, which on a deploy
 script is genuinely dangerous. A QUOTED heredoc delimiter (`<<'SCRIPT'`) suppresses
 all expansion, and `bash file` avoids zsh's parsing entirely.
 
+**The operator's machine (never make the user search for the repo).** The local clone
+lives at `/Users/joeyholub/dev/sessionably-claims` (macOS, zsh). Every handed-over command
+or script that touches the repo starts with that absolute `cd`, e.g.
+`cd /Users/joeyholub/dev/sessionably-claims && git checkout main && git pull`. Never use
+`find`/`mdfind` or a guessed `~/sessionably-claims`. `~/Downloads/reddably-scaffold` is an
+old scaffold, not the repo — ignore it. The deploy scripts need `terraform`, `aws`, `jq`
+and `node` on that machine.
+
 Rules for that script:
 
 - `set -euo pipefail`, and derive identifiers rather than hardcoding them
@@ -258,8 +266,15 @@ aws lambda invoke --function-name "$(terraform output -raw migrate_function_name
 ```
 
 Terraform warns that `-target` is for exceptional use; this is that exception.
-NOTE: the `-target` split is reasoned from the terraform source, not yet proven
-against a real apply — correct this section after the first live run.
+PROVEN on a real apply (2026-09-30, migration 029): phase 1 is
+`./deploy.sh -target=aws_lambda_function.migrate -target=aws_lambda_function.apply_migration`
+(include `apply_migration` so the read-only `{"verify":true}` check runs the new code —
+the two Lambdas are separate resources sharing one zip), then verify, then a plain
+`./deploy.sh`. `deploy.sh` now sets its own AWS profile/region, loads the DB password
+from SSM, refuses to run while the S3 state lock is held (never auto-unlocks), and
+applies a saved plan only after `plan_gate.jq` passes (no delete/replace ever; infra
+changes need `ALLOW_INFRA_CHANGE=1`). It aborts on an untracked/dirty working tree
+when run through the handed-over script.
 
 The Vercel project is **git-linked** to this repo and serves the production domains,
 so **merging to `main` IS the frontend deploy**. It belongs last in any sequence,
