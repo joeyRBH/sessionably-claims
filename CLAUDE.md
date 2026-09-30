@@ -224,6 +224,14 @@ errors and the REST OF THE PASTE executes as loose commands, which on a deploy
 script is genuinely dangerous. A QUOTED heredoc delimiter (`<<'SCRIPT'`) suppresses
 all expansion, and `bash file` avoids zsh's parsing entirely.
 
+**The operator's machine (never make the user search for the repo).** The local clone
+lives at `/Users/joeyholub/dev/sessionably-claims` (macOS, zsh). Every handed-over command
+or script that touches the repo starts with that absolute `cd`, e.g.
+`cd /Users/joeyholub/dev/sessionably-claims && git checkout main && git pull`. Never use
+`find`/`mdfind` or a guessed `~/sessionably-claims`. `~/Downloads/reddably-scaffold` is an
+old scaffold, not the repo — ignore it. The deploy scripts need `terraform`, `aws`, `jq`
+and `node` on that machine.
+
 Rules for that script:
 
 - `set -euo pipefail`, and derive identifiers rather than hardcoding them
