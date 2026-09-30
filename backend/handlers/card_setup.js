@@ -115,6 +115,77 @@ async function notifyIntakeComplete(client) {
   }
 }
 
+// Tell the client's primary clinician once BOTH halves of the patient's submission
+// are on file: an insurance record (carrier + member id) AND a saved card. The
+// patient can finish them in either order, so this runs after each step and only the
+// call that completes the pair sends.
+//
+// "Once" is enforced by the database, not by this code: the guard column is claimed
+// with a single UPDATE ... WHERE clinician_intake_notified_at IS NULL, so concurrent
+// requests and a patient re-opening the link cannot double-send. If the send does not
+// go out, the claim is released so a later step can retry. Best-effort and fully
+// non-blocking, like notifyIntakeComplete; PHI-minimal (name + chart link only).
+async function notifyClinicianIfComplete(clientId) {
+  let claimed = false;
+  try {
+    const r = await db.query(
+      `with ready as (
+         select c.id
+           from clients c
+          where c.id = $1
+            and c.is_hidden = false
+            and c.clinician_intake_notified_at is null
+            and nullif(btrim(c.payment_method_id), '') is not null
+            and exists (
+              select 1 from insurance_records i
+               where i.client_id = c.id and i.is_primary = true and i.is_hidden = false
+                 and nullif(btrim(i.carrier_name), '') is not null
+                 and nullif(btrim(i.member_id), '') is not null)
+            and exists (
+              select 1 from users u
+               where u.id = c.primary_clinician_id and u.is_active = true)
+       ), claimed as (
+         update clients
+            set clinician_intake_notified_at = now()
+          where id in (select id from ready) and clinician_intake_notified_at is null
+        returning id, first_name, last_name, primary_clinician_id
+       )
+       select cl.id, cl.first_name, cl.last_name,
+              u.email as clinician_email, u.first_name as clinician_first_name
+         from claimed cl
+         join users u on u.id = cl.primary_clinician_id`,
+      [clientId]
+    );
+    const row = r.rows[0];
+    if (!row) return;
+    claimed = true;
+    const result = await email.sendClinicianIntakeCompleteEmail({
+      to: row.clinician_email,
+      clientId: row.id,
+      clientName: [row.first_name, row.last_name].filter(Boolean).join(' ').trim(),
+      clinicianName: row.clinician_first_name,
+      completedAt: new Date().toISOString(),
+    });
+    if (!result || result.sent !== true) {
+      claimed = false;
+      await db.query(
+        `update clients set clinician_intake_notified_at = null where id = $1`,
+        [clientId]
+      );
+    }
+  } catch (err) {
+    console.warn('card_setup notifyClinicianIfComplete failed:', err && err.message);
+    if (claimed) {
+      try {
+        await db.query(
+          `update clients set clinician_intake_notified_at = null where id = $1`,
+          [clientId]
+        );
+      } catch (_) { /* best-effort release */ }
+    }
+  }
+}
+
 // Trim to a string, capping length. Returns '' for non-strings / null.
 const MAX_FIELD_LEN = 200;
 function cleanField(v) {
@@ -262,6 +333,8 @@ exports.handler = async (event) => {
         { actorType: 'patient_link', practiceId: pmRes.rows[0] ? pmRes.rows[0].practice_id : null },
         { action: 'patient_link.save_payment_method', resourceType: 'client', resourceId: clientId }
       );
+      // If insurance was already submitted, this card completes the pair.
+      await notifyClinicianIfComplete(clientId);
       return json(200, { ok: true }, event);
     }
 
@@ -512,6 +585,8 @@ exports.handler = async (event) => {
       // and waiting for review. Notify the practice admin. Non-blocking — a send
       // failure (SES not verified yet, etc.) never fails the patient's request.
       await notifyIntakeComplete(client);
+      // If a card was already saved, this insurance completes the pair.
+      await notifyClinicianIfComplete(clientId);
 
       await audit(event, { actorType: 'patient_link', practiceId: client.practice_id }, {
         action: 'patient_link.save_insurance',
