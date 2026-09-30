@@ -140,6 +140,62 @@ async function sendIntakeCompletionEmail(opts, deps) {
   }
 }
 
+// Compose the "your client finished their insurance + payment" clinician alert.
+// Goes to the client's PRIMARY CLINICIAN (staff), fired once when BOTH the insurance
+// step and the card step are on file, whichever the patient finished last.
+// PHI-minimal per this file's ceiling: the client's name and a chart link only —
+// no carrier, member id, card detail, DOB or diagnosis. Returns { subject, text, html }.
+function buildClinicianIntakeCompleteEmail(opts) {
+  const o = opts || {};
+  const clientName = String(o.clientName || 'A client').trim() || 'A client';
+  const clinicianName = o.clinicianName ? String(o.clinicianName).trim() : '';
+  const greeting = clinicianName ? `Hi ${clinicianName},` : 'Hi,';
+  const completedAt = o.completedAt || new Date().toISOString();
+  const chartUrl = o.chartUrl
+    || (o.clientId ? `${APP_BASE_URL}/app/app.html#clients/${encodeURIComponent(o.clientId)}` : APP_BASE_URL);
+
+  const subject = `${clientName} added their insurance and payment method`;
+  const lines = [
+    greeting,
+    '',
+    `${clientName} has added their insurance information and a payment method.`,
+    `Time: ${completedAt}`,
+    '',
+    'Open their chart to review the details and confirm them for claims:',
+    chartUrl,
+  ];
+  const text = lines.join('\n');
+  const html =
+    `<p>${escapeHtml(greeting)}</p>` +
+    `<p><strong>${escapeHtml(clientName)}</strong> has added their insurance ` +
+    `information and a payment method.<br>Time: ${escapeHtml(completedAt)}</p>` +
+    `<p><a href="${escapeHtml(chartUrl)}">Review their chart</a> and confirm them for claims.</p>`;
+  return { subject, text, html };
+}
+
+// Send the clinician alert. NEVER THROWS (a failed notification must not fail the
+// patient's request). Returns { sent: boolean, error?: string }; the caller records
+// "notified" only on { sent: true } so a send that never left can be retried.
+async function sendClinicianIntakeCompleteEmail(opts, deps) {
+  const o = opts || {};
+  if (!isValidEmail(o.to)) {
+    // Never log the address itself.
+    console.warn('email: clinician recipient is not a valid email');
+    return { sent: false, error: 'invalid recipient' };
+  }
+  try {
+    const content = buildClinicianIntakeCompleteEmail(o);
+    await sendEmail(
+      { to: o.to, from: o.from, subject: content.subject, text: content.text, html: content.html },
+      deps
+    );
+    return { sent: true };
+  } catch (err) {
+    console.warn('email: clinician intake-complete send failed:', err && err.message);
+    return { sent: false, error: (err && err.message) || 'send failed' };
+  }
+}
+
 // Human-readable role label for the invite copy ('clinician' -> 'Clinician').
 function humanizeRole(role) {
   var known = {
@@ -306,6 +362,8 @@ module.exports = {
   sendEmail,
   buildIntakeCompletionEmail,
   sendIntakeCompletionEmail,
+  buildClinicianIntakeCompleteEmail,
+  sendClinicianIntakeCompleteEmail,
   buildInvitationEmail,
   sendInvitationEmail,
   buildIntakeReminderEmail,

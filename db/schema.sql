@@ -363,6 +363,14 @@ create index if not exists idx_clients_awaiting_intake_reminder
     and payment_link_sent_at is not null
     and is_hidden = false;
 
+-- Migration (idempotent): record when the primary clinician was emailed that this
+-- client finished insurance + payment. Claimed atomically by
+-- backend/handlers/card_setup.js (notifyClinicianIfComplete) so the email sends
+-- once even if the patient re-submits a step. NULL = not yet. Not PHI: a
+-- timestamp about our own outreach. See
+-- db/migrations/029_add_clinician_notified_to_clients.sql.
+alter table clients add column if not exists clinician_intake_notified_at timestamptz;
+
 -- Migration (idempotent): retire the unused 'ready' client status. The allowed
 -- set is now exactly active / awaiting_info / inactive, where 'active' already
 -- means "ready for claim submission" — 'ready' was a synonym nothing ever set.
