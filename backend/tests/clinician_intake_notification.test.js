@@ -226,7 +226,9 @@ const saveInsurance = () =>
   const built = emailLib.buildClinicianIntakeCompleteEmail({
     clientName: 'Test Client', clinicianName: 'Casey', clientId: CLIENT_ID,
   });
-  assert.ok(built.subject.includes('Test Client'));
+  // The subject shows on lock screens: first name + last initial, never the full name.
+  assert.ok(built.subject.startsWith('Test C. '), `subject was: ${built.subject}`);
+  assert.ok(!built.subject.includes('Test Client'), 'full name stays out of the subject');
   assert.ok(built.text.includes(`#clients/${CLIENT_ID}`), 'links to the chart');
   assert.ok(!/member|DOB|birth|diagnos|carrier|4242/i.test(built.text), 'no PHI beyond name + link');
 

@@ -394,6 +394,14 @@ create index if not exists idx_clients_awaiting_intake_reminder
 -- db/migrations/029_add_clinician_notified_to_clients.sql.
 alter table clients add column if not exists clinician_intake_notified_at timestamptz;
 
+-- Migration (idempotent): record when the PRACTICE notification address was emailed
+-- that this client finished insurance + payment. Claimed atomically by
+-- backend/handlers/card_setup.js (notifyPracticeIfComplete) so the email sends
+-- once per client, not on every save-insurance. NULL = not yet. Not PHI: a
+-- timestamp about our own outreach. See
+-- db/migrations/031_add_practice_intake_notified_to_clients.sql.
+alter table clients add column if not exists practice_intake_notified_at timestamptz;
+
 -- Migration (idempotent): retire the unused 'ready' client status. The allowed
 -- set is now exactly active / awaiting_info / inactive, where 'active' already
 -- means "ready for claim submission" — 'ready' was a synonym nothing ever set.

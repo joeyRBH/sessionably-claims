@@ -8,6 +8,7 @@ const { hash } = require('../lib/password');
 const { sign } = require('../lib/jwt');
 const { json, preflight } = require('../lib/response');
 const { audit } = require('../lib/audit');
+const { isValidEmail } = require('../lib/email');
 const {
   normalizeEmail,
   baseSlug,
@@ -55,6 +56,12 @@ async function registerNewPractice(body, event) {
   const email = normalizeEmail(body.email);
   const passwordHash = await hash(body.password);
   const base = baseSlug(body.practice_name);
+  // Intake alerts go to the practice's notification email. A new practice starts
+  // with its founding admin's address so the alert works from day one instead of
+  // silently going nowhere until someone finds Settings > Notifications. Only a
+  // REAL address qualifies: a login can be a plain username, and handing that to SES
+  // fails ("Missing final '@domain'"). Editable (or clearable) in Settings.
+  const notificationEmail = isValidEmail(email) ? email : null;
 
   let user;
   try {
@@ -68,10 +75,10 @@ async function registerNewPractice(body, event) {
         await client.query('savepoint slug_attempt');
         try {
           const practiceRes = await client.query(
-            `insert into practices (name, slug, default_fee_payer, platform_fee_percent)
-             values ($1, $2, 'client', 5.00)
+            `insert into practices (name, slug, default_fee_payer, platform_fee_percent, notification_email)
+             values ($1, $2, 'client', 5.00, $3)
              returning id`,
-            [String(body.practice_name).trim(), slug]
+            [String(body.practice_name).trim(), slug, notificationEmail]
           );
           practiceId = practiceRes.rows[0].id;
           await client.query('release savepoint slug_attempt');

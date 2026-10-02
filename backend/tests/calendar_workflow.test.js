@@ -417,7 +417,7 @@ assert.strictEqual(bustOf('./workflow.js'), VERSION,
 // promise survive the reload that follows it, and a THIRD time for the client
 // search box. All three stay pinned, so an
 // UNINTENDED further bump is still caught — just at their current value.
-assert.strictEqual(bustOf('./views/dashboard.js'), '20260923a',
+assert.strictEqual(bustOf('./views/dashboard.js'), '20261002b',
   'the Dashboard cache-buster is at its current value');
 assert.strictEqual(bustOf('./views/calendar.js'), '20261001a',
   'the Calendar cache-buster is at its current value');

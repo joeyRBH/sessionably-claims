@@ -223,6 +223,23 @@ check('030: the duration CHECK is guarded so a re-run is a no-op', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Migrations 031 / 032 — practice intake-notified guard + notification backfill
+// ---------------------------------------------------------------------------
+
+check('031: clients gains practice_intake_notified_at', () => {
+    has(/alter table clients add column if not exists practice_intake_notified_at timestamptz/i,
+        'clients.practice_intake_notified_at');
+});
+
+// 032 is a one-off DATA backfill applied by the operator runner. Folding it into
+// schema.sql would re-run it on every deploy and re-fill an address a practice
+// deliberately cleared.
+check('032: the notification-email backfill is NOT folded into schema.sql', () => {
+    assert.ok(!/set notification_email\s*=\s*\(/i.test(sql),
+        'schema.sql contains the notification_email backfill — it would run on every deploy and undo a practice clearing its address');
+});
+
+// ---------------------------------------------------------------------------
 // schema.sql runs as ONE implicit transaction
 // ---------------------------------------------------------------------------
 

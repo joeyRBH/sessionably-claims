@@ -8,7 +8,7 @@
  *
  * Two sections, in deliberate order of weight:
  *
- *   1. What needs attention — at most five action cards, each a real queue with
+ *   1. What needs attention — at most six action cards, each a real queue with
  *      one destination. A count with no next action is not shown at all, and a
  *      queue at zero is not shown either; all five at zero renders one calm
  *      caught-up state instead of five zeros.
@@ -19,8 +19,9 @@
  * confirms, submits and deletes nothing — every card's action navigates to the
  * view that owns that decision.
  *
- * Two load groups that fail independently: a Reports outage must not hide the
- * work queues, and a workflow outage must not hide reporting. A failed request
+ * Three load groups that fail independently: a Reports outage must not hide the
+ * work queues, a workflow outage must not hide reporting, and the Clients list
+ * (intake) is separate from both. A failed request
  * NEVER becomes a zero — zero is only ever a real, successful empty response
  * (a practice with no calendar connected is a true zero, not an error).
  *
@@ -35,6 +36,13 @@
  *     submit": nothing persists a clinician's verification, so the system
  *     cannot tell "not yet reviewed" from "reviewed and ready", and readiness
  *     ready_to_review is a validation projection, not an approval.
+ *   * "New intakes to review" is the shared intake classifier's needs_review state
+ *     (public/app/intake.js): card AND insurance on file, not yet confirmed by a
+ *     clinician. It reads the Clients list — one request, no per-client calls — in
+ *     its OWN load group: a Clients failure shows a small inline error in that
+ *     card's place and never hides the calendar/claim queues (nor does a calendar
+ *     or claims failure hide a loaded intake count). Its card links to the Clients
+ *     list filtered to exactly those clients; the hash carries a key, never a name.
  *   * "Claims needing follow-up" is post-submission attention only —
  *     info_requested and denied. Ordinary submitted / processing / paid /
  *     appealed / void claims are not attention work.
@@ -108,6 +116,15 @@
       toVerify: toVerify,
       followUp: followUp,
     };
+  }
+
+  // New intakes: patients who finished card + insurance and are waiting on a
+  // clinician's confirmation. R.intake is the single shared definition. Pure, and
+  // separate from attentionCounts because it comes from a different request.
+  function intakeReviewCount(clients) {
+    return (clients || []).filter(function (c) {
+      return R.intake && R.intake.isNeedsReview(c);
+    }).length;
   }
 
   // ---------------------------------------------------------------------------
@@ -188,26 +205,52 @@
   function caughtUpCard() {
     return h('div', { class: 'card' }, [
       h('p', { class: 'empty-state__body', style: 'margin:0' },
-        'You’re caught up. No appointment matching, session confirmation, ' +
-        'or claim-review work is waiting.'),
+        'You’re caught up. No intake review, appointment matching, session ' +
+        'confirmation, or claim-review work is waiting.'),
     ]);
   }
 
   // ---------------------------------------------------------------------------
   // Sections
   // ---------------------------------------------------------------------------
-  function attentionSection(state, retry) {
+  // work: the calendar + claims group; intake: the Clients list. Independent: each has
+  // its own error and Retry, and neither can hide or zero the other.
+  function attentionSection(work, intake, retryWork, retryIntake) {
+    // The intake slot: a count card, a small inline failure, or nothing (zero / still
+    // loading). A failed request never becomes a zero.
+    var intakeNodes = [];
+    if (intake.error) {
+      intakeNodes.push(inlineFailure(
+        'Could not load new intakes. ' + ((intake.error && intake.error.message) || ''),
+        retryIntake
+      ));
+    } else if (intake.data) {
+      var count = intakeReviewCount(intake.data);
+      if (count) {
+        // First: it is the earliest step in the workflow (a patient just finished).
+        intakeNodes.push(attentionCard({
+          label: 'New intakes to review',
+          count: count,
+          body: 'Clients who added their insurance and a card. Check their chart and ' +
+            'confirm them before billing.',
+          actionLabel: 'Review clients',
+          route: 'clients/focus/intake_review',
+        }));
+      }
+    }
+
     var body;
-    if (state.error) {
-      body = inlineFailure(
-        'Could not load your workflow. ' + ((state.error && state.error.message) || ''),
-        retry
+    if (work.error) {
+      var failure = inlineFailure(
+        'Could not load your workflow. ' + ((work.error && work.error.message) || ''),
+        retryWork
       );
-    } else if (!state.data) {
+      body = intakeNodes.length ? h('div', { class: 'card-grid' }, intakeNodes.concat([failure])) : failure;
+    } else if (!work.data) {
       body = h('div', { class: 'card' }, h('div', { class: 'skeleton skeleton--line' }));
     } else {
-      var n = attentionCounts(state.data, Date.now());
-      var cards = [];
+      var n = attentionCounts(work.data, Date.now());
+      var cards = intakeNodes.slice();
 
       if (n.toMatch) {
         cards.push(attentionCard({
@@ -257,9 +300,15 @@
         }));
       }
 
-      body = cards.length
-        ? h('div', { class: 'card-grid' }, cards)
-        : caughtUpCard();
+      if (cards.length) {
+        body = h('div', { class: 'card-grid' }, cards);
+      } else if (intake.data) {
+        // Nothing waiting AND the intake count genuinely loaded as zero.
+        body = caughtUpCard();
+      } else {
+        // The intake request is still in flight: do not claim "caught up" yet.
+        body = h('div', { class: 'card' }, h('div', { class: 'skeleton skeleton--line' }));
+      }
     }
 
     return h('div', { class: 'stack' }, [
@@ -309,6 +358,7 @@
     var state = {
       firstName: '',
       work: { data: null, error: null },
+      intake: { data: null, error: null },
       report: { data: null, error: null },
     };
 
@@ -319,7 +369,7 @@
         h('div', { class: 'page-header' }, [
           h('h1', { class: 'page-header__title' }, greeting),
         ]),
-        attentionSection(state.work, loadWork),
+        attentionSection(state.work, state.intake, loadWork, loadIntake),
         overviewSection(state.report, loadReport),
       ]));
     }
@@ -351,6 +401,20 @@
       });
     }
 
+    // Intake state (card + insurance on file) rides on the Clients list response. Its
+    // own group: a failure here is contained to the "New intakes to review" slot.
+    function loadIntake() {
+      state.intake = { data: null, error: null };
+      paint();
+      api.clients.list().then(function (res) {
+        state.intake = { data: (res && res.clients) || [], error: null };
+        paint();
+      }).catch(function (err) {
+        state.intake = { data: null, error: err || new Error('Request failed.') };
+        paint();
+      });
+    }
+
     function loadReport() {
       state.report = { data: null, error: null };
       paint();
@@ -369,6 +433,7 @@
       state.firstName = name || '';
       paint();
       loadWork();
+      loadIntake();
       loadReport();
     });
   }

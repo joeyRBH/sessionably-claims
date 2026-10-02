@@ -25,7 +25,12 @@
 //     "this month", no "paid", no client-side financial arithmetic;
 //   * the workflow and reporting groups fail INDEPENDENTLY, and a failed request
 //     never renders as a zero;
-//   * no clients request, no per-row detail calls, no direct fetch().
+//   * "New intakes to review" is the shared intake classifier's needs_review state
+//     (public/app/intake.js), read from the ONE Clients list request — no per-client
+//     calls, and its deep link carries a key, never a name. That request is its OWN
+//     load group: its failure affects only this card, and calendar/claims failures
+//     never hide or zero it;
+//   * no per-row detail calls, no direct fetch().
 //
 // dashboard.js is a browser IIFE, so it is evaluated against a minimal fake DOM
 // and a fake window.Reddably kit whose api is a recording stub — no jsdom, no
@@ -42,6 +47,7 @@ const vm = require('node:vm');
 
 const DASHBOARD_JS = path.join(__dirname, '..', '..', 'public', 'app', 'views', 'dashboard.js');
 const WORKFLOW_JS = path.join(__dirname, '..', '..', 'public', 'app', 'workflow.js');
+const INTAKE_JS = path.join(__dirname, '..', '..', 'public', 'app', 'intake.js');
 
 // --- a minimal fake DOM ------------------------------------------------------
 
@@ -214,6 +220,7 @@ let calls = [];
 let fixtures = null;
 let failWork = false;
 let failReport = false;
+let failClients = false;
 
 function record(name, args, value) {
   calls.push({ name, args });
@@ -254,7 +261,11 @@ const api = {
     },
   },
   clients: {
-    list() { return record('clients.list', [], { clients: [] }); },
+    list() {
+      calls.push({ name: 'clients.list', args: [] });
+      if (failClients) return Promise.reject(new Error('clients unavailable'));
+      return Promise.resolve({ clients: fixtures.clients });
+    },
   },
 };
 
@@ -294,6 +305,11 @@ vm.runInNewContext(fs.readFileSync(WORKFLOW_JS, 'utf8'), sandbox);
 assert.ok(Reddably.workflow && typeof Reddably.workflow.buildCalendarWorkflow === 'function',
   'workflow.js attaches the shared classifier to window.Reddably');
 
+// Likewise the shared intake classifier (the Clients list reads the same one).
+vm.runInNewContext(fs.readFileSync(INTAKE_JS, 'utf8'), sandbox);
+assert.ok(Reddably.intake && typeof Reddably.intake.isNeedsReview === 'function',
+  'intake.js attaches the shared intake classifier to window.Reddably');
+
 const dashboardSrc = fs.readFileSync(DASHBOARD_JS, 'utf8');
 vm.runInNewContext(dashboardSrc, sandbox);
 assert.ok(typeof viewFn === 'function', 'dashboard.js registers the dashboard view');
@@ -309,9 +325,10 @@ function plain(v) {
 
 // Render the dashboard against a fixture set and hand back the root.
 async function mount(data, opts) {
-  fixtures = Object.assign({ pending: [], confirmed: [], sessions: [], claims: [] }, data);
+  fixtures = Object.assign({ pending: [], confirmed: [], sessions: [], claims: [], clients: [] }, data);
   failWork = !!(opts && opts.failWork);
   failReport = !!(opts && opts.failReport);
+  failClients = !!(opts && opts.failClients);
   calls = [];
   const root = createElement('div');
   viewFn(root);
@@ -538,12 +555,14 @@ async function mount(data, opts) {
 
   const names = calls.map((c) => c.name).sort();
   assert.deepStrictEqual(names, [
-    'calendarEvents.list', 'calendarEvents.list', 'claims.list',
+    'calendarEvents.list', 'calendarEvents.list', 'claims.list', 'clients.list',
     'me', 'reports.summary', 'sessions.list',
-  ].sort(), 'exactly the six read-only calls, each once');
+  ].sort(), 'exactly the seven read-only calls, each once');
 
-  assert.ok(!calls.some((c) => c.name === 'clients.list'),
-    'no clients request remains — the removed Total clients metric is not resurrected');
+  // The Clients list is requested ONCE and only to read intake state (card +
+  // insurance on file) — the removed "Total clients" metric is not resurrected.
+  assert.strictEqual(calls.filter((c) => c.name === 'clients.list').length, 1,
+    'one clients request, never one per client');
   assert.deepStrictEqual(
     calls.filter((c) => c.name === 'calendarEvents.list').map((c) => plain(c.args[0])),
     [null, { state: 'confirmed' }],
@@ -561,8 +580,8 @@ async function mount(data, opts) {
   assert.ok(!/\.get\(|\.detail\(|\.forEach\([^)]*\)\s*\{[^}]*api\./.test(code),
     'no per-row detail call');
   assert.ok(!/api\.\w+(\.\w+)*\(/.test(code.replace(
-    /api\.(me|calendarEvents\.list|sessions\.list|claims\.list|reports\.summary)\(/g, '')),
-    'the view calls only the six sanctioned read-only endpoints');
+    /api\.(me|calendarEvents\.list|sessions\.list|claims\.list|clients\.list|reports\.summary)\(/g, '')),
+    'the view calls only the seven sanctioned read-only endpoints');
 
   // Design system: tokens only.
   assert.ok(!/#[0-9a-fA-F]{3,8}\b/.test(code), 'no raw hex colors — semantic tokens only');
@@ -595,9 +614,9 @@ async function mount(data, opts) {
   });
   assert.ok(
     clear0.textContent.includes(
-      'You’re caught up. No appointment matching, session confirmation, ' +
-      'or claim-review work is waiting.'),
-    'all five at zero renders one calm caught-up state'
+      'You’re caught up. No intake review, appointment matching, session ' +
+      'confirmation, or claim-review work is waiting.'),
+    'all six at zero renders one calm caught-up state'
   );
   assert.deepStrictEqual(labels(clear0), [
     'Claims tracked', 'Total billed', 'Total reimbursed', 'Outstanding billed',
@@ -628,9 +647,46 @@ async function mount(data, opts) {
   await flush();
   assert.deepStrictEqual(calls.map((c) => c.name).sort(), [
     'calendarEvents.list', 'calendarEvents.list', 'claims.list', 'sessions.list',
-  ], 'Retry reloads only the workflow group');
+  ], 'Retry reloads only the workflow group (the intake request is its own group)');
   assert.ok(workDown.textContent.includes('Appointments to match'),
     'the recovered workflow cards render in place');
+
+  // --- the intake group fails (and recovers) independently ---------------------
+  const FULL_INTAKE = Object.assign({}, FULL, { clients: [{
+    id: 'c-1', status: 'awaiting_info', payment_link_sent_at: '2026-07-20T10:00:00Z',
+    payment_method_last4: '4242', has_insurance: true,
+  }] });
+  const intakeDown = await mount(FULL_INTAKE, { failClients: true });
+  assert.ok(intakeDown.textContent.includes('Could not load new intakes'),
+    'a Clients failure shows a small inline error in the intake slot');
+  assert.ok(!intakeDown.textContent.includes('Could not load your workflow'),
+    'and does NOT turn the whole attention group into an error');
+  assert.ok(intakeDown.textContent.includes('Appointments to match'),
+    'the calendar/claims queues are intact and still counted');
+  assert.ok(!intakeDown.textContent.includes('New intakes to review'),
+    'a failed request renders no count at all — never a zero');
+  assert.ok(!intakeDown.textContent.includes('You’re caught up'));
+  const intakeRetry = tagged(intakeDown, 'BUTTON').find((b) => b.textContent === 'Retry');
+  assert.ok(intakeRetry, 'the intake error offers Retry');
+  calls = [];
+  failClients = false;
+  intakeRetry.dispatch('click');
+  await flush();
+  assert.deepStrictEqual(calls.map((c) => c.name), ['clients.list'], 'Retry re-requests only the Clients list');
+  assert.ok(intakeDown.textContent.includes('New intakes to review'), 'the card appears in place once it loads');
+  assert.ok(!intakeDown.textContent.includes('Could not load new intakes'));
+
+  // Intake fails with nothing else waiting: an error, not "caught up".
+  const onlyIntakeDown = await mount({ clients: [] }, { failClients: true });
+  assert.ok(onlyIntakeDown.textContent.includes('Could not load new intakes'));
+  assert.ok(!onlyIntakeDown.textContent.includes('You’re caught up'),
+    'an unknown intake count is never reported as nothing waiting');
+
+  // The reverse: workflow fails, a loaded intake count still shows.
+  const workDownIntakeOk = await mount(FULL_INTAKE, { failWork: true });
+  assert.ok(workDownIntakeOk.textContent.includes('Could not load your workflow'));
+  assert.ok(workDownIntakeOk.textContent.includes('New intakes to review'),
+    'a calendar/claims outage does not hide a successfully loaded intake count');
 
   // Reporting fails, workflow survives.
   const reportDown = await mount(FULL, { failReport: true });
@@ -656,6 +712,43 @@ async function mount(data, opts) {
     'the recovered reporting cards render in place');
 
   // === 17. the shared classifier, not a copy ================================
+
+  // === 17. New intakes to review ============================================
+
+  const C = (over) => Object.assign({
+    id: 'c-x', status: 'awaiting_info', payment_link_sent_at: '2026-07-20T10:00:00Z',
+    payment_method_last4: '4242', has_insurance: true,
+    first_name: 'Synthetic', last_name: 'Person',
+  }, over || {});
+  const intakeClients = [
+    C({ id: 'c-1' }),                                          // card + insurance, unconfirmed -> counts
+    C({ id: 'c-2' }),                                          // counts
+    C({ id: 'c-confirmed', status: 'active' }),                // already confirmed -> no
+    C({ id: 'c-nocard', payment_method_last4: null }),         // insurance only -> still waiting on patient
+    C({ id: 'c-noins', has_insurance: false }),                // card only -> still waiting on patient
+    C({ id: 'c-inactive', status: 'inactive' }),               // inactive -> never
+    C({ id: 'c-nolink', payment_link_sent_at: null, payment_method_last4: null, has_insurance: false }),
+  ];
+  const intakeRoot = await mount({ clients: intakeClients });
+  assert.deepStrictEqual(labels(intakeRoot).slice(0, 1), ['New intakes to review'],
+    'the intake card renders, and first — it is the earliest step in the workflow');
+  const intakeCard = cardByLabel(intakeRoot, 'New intakes to review');
+  assert.ok(intakeCard.textContent.includes('2'), 'counts only card + insurance on file and unconfirmed');
+  navigations.length = 0;
+  tagged(intakeCard, 'BUTTON')[0].dispatch('click');
+  assert.deepStrictEqual(navigations, ['clients/focus/intake_review'],
+    'it deep-links to the Clients list filtered to those clients (#route/focus/<key>)');
+  assert.ok(!/Synthetic|Person|c-1/.test(navigations.join('')) && !/Synthetic|Person/.test(intakeCard.textContent),
+    'no PHI in the hash or on the card — a key, not a name');
+  assert.ok(!/badge--success/.test(JSON.stringify(plain(intakeCard.className))),
+    'pending work is stone, never sage');
+
+  // Zero qualifying clients: no card at all, and not an error.
+  const noIntake = await mount({ clients: [C({ status: 'active' }), C({ payment_method_last4: null })] });
+  assert.ok(!noIntake.textContent.includes('New intakes to review'), 'a zero queue is absent');
+
+  // Only the intake card present -> not the caught-up state.
+  assert.ok(!intakeRoot.textContent.includes('You’re caught up'));
 
   assert.ok(/workflow\.buildCalendarWorkflow\(/.test(dashboardSrc),
     'the Dashboard calls the shared classifier');

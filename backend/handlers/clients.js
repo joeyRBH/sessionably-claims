@@ -217,6 +217,11 @@ function shapeClient(r) {
     payment_method_exp_year: r.payment_method_exp_year,
     payment_method_set_at: r.payment_method_set_at,
     payment_link_sent_at: r.payment_link_sent_at,
+    // Present on the LIST only (computed there): whether a usable primary insurance
+    // record (carrier + member id) is on file. The Intake column and the Dashboard's
+    // "New intakes to review" read it so they never need a request per client. Left
+    // out of single-client responses rather than reported as a misleading false.
+    ...(r.has_insurance === undefined ? {} : { has_insurance: r.has_insurance === true }),
     is_hidden: r.is_hidden,
     created_at: r.created_at,
     updated_at: r.updated_at,
@@ -345,9 +350,16 @@ async function createClient(practiceId, body, event, authCtx) {
 
 async function listClients(practiceId, event, authCtx) {
   const res = await db.query(
-    `select * from clients
-      where practice_id = $1 and is_hidden = false
-      order by created_at desc`,
+    `select c.*,
+            exists (
+              select 1 from insurance_records i
+               where i.client_id = c.id and i.is_primary = true and i.is_hidden = false
+                 and nullif(btrim(coalesce(i.carrier_name, '')), '') is not null
+                 and nullif(btrim(coalesce(i.member_id, '')), '') is not null
+            ) as has_insurance
+       from clients c
+      where c.practice_id = $1 and c.is_hidden = false
+      order by c.created_at desc`,
     [practiceId]
   );
   await audit(event, authCtx, {

@@ -67,6 +67,36 @@ async function sendEmail(opts, deps) {
   return client.send(new SendEmailCommand(input));
 }
 
+// "Jordan Rivers" -> "Jordan R." For SUBJECT lines only: a subject is shown on a lock
+// screen and in notification banners, so it carries the least identifying form of
+// the name that still tells staff which client it is. A single-word name is kept
+// as-is; a middle name is ignored (first token + last token's initial).
+function abbreviateName(fullName) {
+  const parts = String(fullName || '').trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return '';
+  if (parts.length === 1) return parts[0];
+  return `${parts[0]} ${parts[parts.length - 1].charAt(0).toUpperCase()}.`;
+}
+
+// "Oct 2, 2026, 3:04 PM MDT" — a plain US date/time in the given IANA time zone, or
+// UTC (labelled "UTC") when none is known or it is not a valid zone. The old text
+// printed the raw ISO string ("2026-10-02T21:04:11.337Z"), which reads as machine
+// output and shows UTC as if it were local time.
+function formatUsDateTime(value, timeZone) {
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+  const fmt = (tz) => new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    month: 'short', day: 'numeric', year: 'numeric',
+    hour: 'numeric', minute: '2-digit', timeZoneName: 'short',
+  }).format(d);
+  try {
+    return fmt(timeZone || 'UTC');
+  } catch (e) {
+    return fmt('UTC');   // an unknown zone name must never break the email
+  }
+}
+
 // Compose the "patient submitted their information" admin notification. Intake no
 // longer makes a client billable on its own — a clinician confirms on the chart
 // ("Save as default") — so this reads as a REVIEW request, not a completion
@@ -75,11 +105,13 @@ async function sendEmail(opts, deps) {
 function buildIntakeCompletionEmail(opts) {
   const o = opts || {};
   const clientName = String(o.clientName || 'A client').trim() || 'A client';
-  const completedAt = o.completedAt || new Date().toISOString();
+  const completedAt = formatUsDateTime(o.completedAt || new Date(), o.timeZone);
   const chartUrl = o.chartUrl
     || (o.clientId ? `${APP_BASE_URL}/app/app.html#clients/${encodeURIComponent(o.clientId)}` : APP_BASE_URL);
 
-  const subject = `${clientName} submitted their information`;
+  // Subject: first name + last initial only (it shows on lock screens). The body,
+  // which is only seen once the message is opened, keeps the full name.
+  const subject = `${abbreviateName(clientName)} submitted their information`;
   const lines = [
     `${clientName} submitted their information and it's ready for your review.`,
     '',
@@ -154,11 +186,11 @@ function buildClinicianIntakeCompleteEmail(opts) {
   // rather than greeting them, since the reader is not necessarily that person.
   const onBehalfOf = o.onBehalfOf ? String(o.onBehalfOf).trim() : '';
   const greeting = onBehalfOf ? 'Hi,' : (clinicianName ? `Hi ${clinicianName},` : 'Hi,');
-  const completedAt = o.completedAt || new Date().toISOString();
+  const completedAt = formatUsDateTime(o.completedAt || new Date(), o.timeZone);
   const chartUrl = o.chartUrl
     || (o.clientId ? `${APP_BASE_URL}/app/app.html#clients/${encodeURIComponent(o.clientId)}` : APP_BASE_URL);
 
-  const subject = `${clientName} added their insurance and payment method`;
+  const subject = `${abbreviateName(clientName)} added their insurance and payment method`;
   const lines = [
     greeting,
     '',
@@ -368,6 +400,8 @@ module.exports = {
   FROM_ADDRESS,
   APP_BASE_URL,
   isValidEmail,
+  abbreviateName,
+  formatUsDateTime,
   humanizeRole,
   buildSendEmailInput,
   sendEmail,
