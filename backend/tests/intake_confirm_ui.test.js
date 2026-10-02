@@ -187,6 +187,8 @@ const api = {
     },
     list() { return Promise.resolve({ clients: [] }); },
   },
+  // The chart suggests unmatched calendar appointments inline; none here.
+  calendarEvents: { list() { return Promise.resolve({ calendar_events: [] }); } },
   insuranceRecords: {
     list() { return Promise.resolve({ insurance_records: currentInsurance }); },
   },

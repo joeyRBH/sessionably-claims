@@ -38,8 +38,11 @@
         return (r && r.ok) ? r.value : v;
       } },
     { name: 'date_of_birth',  label: 'Date of birth',  type: 'date' },
-    { name: 'gender',         label: 'Biological Sex', type: 'select', required: true,
+    // Optional on create: the patient enters it themselves on /card-setup. The Edit
+    // form keeps it required only when a value is already on file (editFieldsFor).
+    { name: 'gender',         label: 'Biological Sex', type: 'select',
       options: [
+        { value: '',        label: 'Not set' },
         { value: 'male',    label: 'M' },
         { value: 'female',  label: 'F' },
         { value: 'unknown', label: 'U' },
@@ -103,19 +106,24 @@
       transform: modifiersTransform },
   ];
 
-  // The "New client" form omits date of birth, pronouns, and the full address —
-  // the client supplies all of these themselves in the SMS intake ("Your
-  // information" step), keeping PHI entry with the client and the New-client form
-  // short. Staff can still add or correct every one of them later via the Edit
-  // client form (which uses the full CLIENT_FIELDS). These are all optional on the
-  // backend create, so omitting them never triggers a validation error.
-  var CREATE_ONLY_OMITTED = [
-    'date_of_birth', 'pronouns',
-    'address_line1', 'address_line2', 'city', 'state', 'postal_code',
+  // The "New client" form is ONE screen, in the order staff actually think about
+  // a new client: who they are, how to reach them, who treats them, what they are
+  // being treated for — then a collapsed "Session defaults" section pre-filled from
+  // the practice's defaults. It omits date of birth, pronouns, the address and the
+  // raw Status dropdown: the patient supplies the first three themselves in the SMS
+  // intake, and a new client is always 'awaiting_info' until a clinician confirms
+  // them on the chart. Staff can still add or correct all of them via Edit client.
+  // The clinician and session-default fields are built per open (they depend on the
+  // roster and the practice) in createFormFields().
+  var CREATE_FIELD_NAMES = [
+    'first_name', 'last_name', 'preferred_name', 'phone', 'email', 'gender',
   ];
-  var CREATE_CLIENT_FIELDS = CLIENT_FIELDS.filter(function (f) {
-    return CREATE_ONLY_OMITTED.indexOf(f.name) === -1;
+  var CREATE_BASE_FIELDS = CREATE_FIELD_NAMES.map(function (n) {
+    return CLIENT_FIELDS.filter(function (f) { return f.name === n; })[0];
   });
+  var CREATE_DIAGNOSIS_FIELD = CLIENT_FIELDS.filter(function (f) {
+    return f.name === 'diagnosis_codes';
+  })[0];
 
   // The Edit-client form is the base fields PLUS the billing defaults. This is
   // the one place a default can be CLEARED — every other surface that writes a
@@ -364,49 +372,84 @@
   }
 
   // ===========================================================================
-  // Client onboarding — the steps that follow "New client"
+  // Client setup helpers
   // ===========================================================================
-  // Adding a client is step one of four, and the other three used to be chores
-  // the user had to remember and go find: send the card-capture link, set the
-  // billing defaults, and attach the client to their calendar appointments.
-  //
-  // Each step is skippable and nothing is lost by skipping — every one is just
-  // an ordinary authenticated write that the chart offers again through
-  // setupChecklistCard(). The flow exists to put the steps in front of the user
-  // at the moment they are cheapest, not to gate anything.
-  //
-  // Ordering is deliberate: defaults BEFORE calendar matching, because matching
-  // an appointment promotes it to a session immediately and that session is
-  // seeded from the defaults. Matching first would produce a blank session and
-  // waste the step.
+  // "New client" is one form (see openCreate) — there is no chain of pop-ups after
+  // saving. Whatever is still outstanding for a client is listed on their chart by
+  // setupChecklistCard(), each item an ordinary authenticated write offered in
+  // place, and unmatched calendar appointments are suggested inline there too
+  // (calendarSuggestionCard).
 
-  // Step 2 — the SMS card-capture link. Offered only when a phone is on file:
-  // POST /clients/{id}/send-payment-link answers 400 without one.
-  function onboardingPaymentLink(client) {
-    if (!client || !client.phone) return Promise.resolve();
-    return R.confirmModal({
-      title: 'Send the payment link?',
-      body: h('div', { class: 'stack', style: 'gap:var(--space-2)' }, [
-        h('p', { style: 'margin:0' },
-          'Text ' + clientName(client) + ' a secure link to save a card. '
-          + 'The per-claim fee is charged to that card.'),
-        h('p', { style: 'margin:0;color:var(--color-text-muted);font-size:var(--font-size-2)' },
-          'Sending to ' + client.phone + '. You can also send it later from their chart.'),
-      ]),
-      confirmLabel: 'Send link',
-      cancelLabel: 'Skip for now',
-    }).then(function (ok) {
-      if (!ok) return;
-      return api.clients.sendPaymentLink(client.id).then(function () {
-        R.toast('Payment link sent', 'success');
-      }).catch(function (err) {
-        // A failed send must not abort onboarding — the chart will offer it again.
-        R.toast((err && err.message) || 'Could not send payment link', 'error');
-      });
-    });
+  // The signed-in user, tolerant of the shapes the kit exposes (/me response with a
+  // nested `user`, or a bare user).
+  function currentUserInfo() {
+    var cu = R.currentUser;
+    if (typeof cu === 'function') cu = cu();
+    return (cu && (cu.user || cu)) || {};
   }
 
-  // Step 3 — the billing defaults. This is the step that makes "just verify the
+  function userLabel(u) {
+    return ((u.first_name || '') + ' ' + (u.last_name || '')).trim() || u.email || ('User ' + u.id);
+  }
+
+  // Clinician <select> options from the active roster. ALL active users, not just
+  // role 'clinician': a solo-practice owner is a practice_admin and treats clients.
+  function clinicianOptions(users) {
+    return [{ value: '', label: 'Unassigned' }].concat((users || []).map(function (u) {
+      return { value: u.id, label: userLabel(u) };
+    }));
+  }
+
+  // Who a NEW client should default to: the signed-in user when they are a
+  // clinician, or the only active user in a one-person practice; else nobody.
+  function defaultClinicianId(users) {
+    var me = currentUserInfo();
+    var list = users || [];
+    var inRoster = list.some(function (u) { return u.id === me.id; });
+    if (me.id && inRoster && me.role === 'clinician') return me.id;
+    if (list.length === 1) return list[0].id;
+    return '';
+  }
+
+  // Load the roster for a form. Never blocks: a failed lookup yields null and the
+  // clinician field is simply left off (an omitted key never clears an assignment).
+  function loadRoster() {
+    return Promise.resolve(api.users.list({ active: true })).then(function (res) {
+      return (res && res.users) || [];
+    }).catch(function () { return null; });
+  }
+
+  function loadPracticeDefaults() {
+    return Promise.resolve(api.practice.get()).then(function (res) {
+      return (res && res.practice) || {};
+    }).catch(function () { return {}; });
+  }
+
+  // A client-default form field, grouped under "Session defaults", that shows the
+  // practice's value as a placeholder / blank-option label instead of filling it in.
+  function withPracticePlaceholder(field, practice) {
+    var copy = Object.assign({}, field, { group: 'Session defaults' });
+    var p = practice || {};
+    var has = function (v) { return v !== null && v !== undefined && v !== ''; };
+    if (field.name === 'default_place_of_service') {
+      var code = p.default_place_of_service;
+      var match = has(code) ? field.options.filter(function (o) { return o.value === code; })[0] : null;
+      copy.options = field.options.map(function (o, i) {
+        if (i !== 0) return o;
+        return { value: '', label: match ? 'Practice default: ' + match.label : 'Not set' };
+      });
+    } else if (field.name === 'default_cpt_code' && has(p.default_cpt_code)) {
+      copy.placeholder = 'Practice default: ' + p.default_cpt_code;
+    } else if (field.name === 'default_session_fee' && has(p.default_session_fee)) {
+      copy.placeholder = 'Practice default: ' + p.default_session_fee;
+    } else if (field.name === 'default_procedure_modifiers'
+        && Array.isArray(p.default_procedure_modifiers) && p.default_procedure_modifiers.length) {
+      copy.placeholder = 'Practice default: ' + p.default_procedure_modifiers.join(', ');
+    }
+    return copy;
+  }
+
+  // The billing-defaults editor (opened from the chart's checklist). It makes "just verify the
   // appointment" true: without it a calendar-promoted session arrives with no
   // CPT, no place of service and no fee, and has to be filled in by hand before
   // it can become a claim.
@@ -453,61 +496,6 @@
     });
   }
 
-  // Step 4 — attach this client to appointments already on the calendar.
-  //
-  // Matching PROMOTES the event to a scheduled session (seeded from the defaults
-  // just set), which is why it runs last. Only unpromoted, non-cancelled events
-  // are offered. A silent no-op when no calendar is connected or nothing is
-  // waiting — an empty step should not cost the user a click.
-  function onboardingCalendar(client) {
-    if (!client) return Promise.resolve();
-    return api.calendarEvents.list().then(function (res) {
-      var events = ((res && res.calendar_events) || []).filter(function (ev) {
-        return ev && !ev.session_id && ev.event_status !== 'cancelled';
-      });
-      if (!events.length) return;
-
-      var options = events.slice(0, 25).map(function (ev) {
-        return {
-          value: ev.id,
-          label: R.fmtDate(ev.starts_at) + ' · ' + (ev.summary_raw || 'Untitled appointment'),
-        };
-      });
-
-      return R.formModal({
-        title: 'Match an appointment to ' + clientName(client),
-        fields: [
-          { name: 'event_id', label: 'Appointment', type: 'select',
-            options: [{ value: '', label: '— none —' }].concat(options),
-            hint: 'Matching schedules the session, using the defaults you just set. '
-              + 'You can match the rest from Calendar.' },
-        ],
-        submitLabel: 'Match appointment',
-        cancelLabel: 'Skip for now',
-      }).then(function (values) {
-        if (!values || !values.event_id) return;
-        return api.calendarEvents.promote(values.event_id, client.id).then(function () {
-          R.toast('Appointment matched — session scheduled', 'success');
-        }).catch(function (err) {
-          R.toast((err && err.message) || 'Could not match this appointment.', 'error');
-        });
-      });
-    }).catch(function () {
-      // No calendar connected (404) or the list failed — never block onboarding
-      // on an integration the practice may not use.
-    });
-  }
-
-  // The whole chain. Always resolves: a step that fails or is skipped simply
-  // hands off to the next one, and the chart's checklist picks up the remainder.
-  function runOnboarding(client) {
-    if (!client) return Promise.resolve();
-    return onboardingPaymentLink(client)
-      .then(function () { return onboardingDefaults(client); })
-      .then(function (updated) { return onboardingCalendar(updated || client); })
-      .catch(function () { /* onboarding is best-effort by design */ });
-  }
-
   // ===========================================================================
   // Screen 1 — Client list (#clients)
   // ===========================================================================
@@ -523,23 +511,76 @@
       });
     }
 
+    // ONE screen. Staff fill in the client, pick who treats them, and (optionally)
+    // adjust the practice's session defaults — then either save and text the payment
+    // link in the same click, or just save. The client is created by its own request;
+    // sending the link is a second, separate request, so a failed text never loses
+    // the client (the chart's checklist offers the link again).
     function openCreate() {
-      R.formModal({
-        title: 'New client',
-        fields: CREATE_CLIENT_FIELDS,
-        submitLabel: 'Create client',
-      }).then(function (values) {
-        if (!values) return;
-        api.clients.create(buildClientPayload(values, false)).then(function (res) {
-          R.toast('Client created', 'success');
-          var created = res && res.client;
-          // Straight into the rest of setup rather than dropping the user back on
-          // a list with three more chores they have to remember. Bailing out at
-          // any step is fine and loses nothing: the chart's setup checklist shows
-          // whatever is still outstanding and reopens the flow at that point.
-          return runOnboarding(created).then(load);
-        }).catch(function (err) {
-          R.toast(err.message, 'error');
+      Promise.all([loadRoster(), loadPracticeDefaults()]).then(function (both) {
+        var roster = both[0];
+        var fields = CREATE_BASE_FIELDS.slice();
+        var values = {};
+
+        if (roster) {
+          // After email, before diagnosis: who treats this client.
+          fields = fields.concat([
+            { name: 'primary_clinician_id', label: 'Clinician', type: 'select',
+              options: clinicianOptions(roster) },
+          ]);
+          values.primary_clinician_id = defaultClinicianId(roster);
+        }
+        fields = fields.concat([CREATE_DIAGNOSIS_FIELD]);
+
+        // Collapsed "Session defaults". Left BLANK on purpose: blank means "use the
+        // practice default", resolved when each session is created, so a later change to
+        // the practice default reaches this client too. Copying the practice's values
+        // into the client here would freeze them. The practice values are shown as
+        // placeholders ("Practice default: …") so it is clear what blank means.
+        fields = fields.concat(BILLING_DEFAULT_FIELDS.map(function (f) {
+          return withPracticePlaceholder(f, both[1]);
+        }));
+
+        var created = null;
+        var linkFailed = false;
+        return R.formModal({
+          title: 'New client',
+          fields: fields,
+          values: values,
+          // The primary action sends an SMS, so it needs a phone and is NOT what
+          // pressing Enter in a field does — Enter does the quiet "Save only".
+          actions: [
+            { key: 'send', label: 'Save & send payment link', requires: ['phone'],
+              requiresMessage: { phone: 'Add a mobile phone to text the payment link.' } },
+            { key: 'save', label: 'Save only', enter: true },
+          ],
+          onSubmit: function (result) {
+            var action = result._action;
+            var payload = buildClientPayload(result, false);
+            delete payload._action;
+            return api.clients.create(payload).then(function (res) {
+              created = res && res.client;
+              if (action !== 'send' || !created) return;
+              return api.clients.sendPaymentLink(created.id).then(function () {
+                R.toast('Payment link sent', 'success');
+              }).catch(function (err) {
+                // The client IS saved; only the text failed. Say so, not "failed" —
+                // and then do NOT also announce "Client created" over the top of it.
+                linkFailed = true;
+                R.toast('Client saved, but the payment link could not be sent: ' +
+                  ((err && err.message) || 'try again from their chart') + '.', 'error');
+              });
+            }).catch(function (err) {
+              // Keep the form open with everything typed in so it can be retried.
+              R.toast((err && err.message) || 'Could not create client', 'error');
+              throw err;
+            });
+          },
+        }).then(function (result) {
+          if (!result || !created) return;
+          if (!linkFailed) R.toast('Client created', 'success');
+          // Land on the chart: it lists whatever is still outstanding.
+          R.navigate('clients/' + created.id);
         });
       });
     }
@@ -680,16 +721,40 @@
     }
 
     // --- Header card ---------------------------------------------------------
+    // Edit form fields for THIS client. A field the patient supplies themselves
+    // (sex, address) is only required when a value is already on file — otherwise
+    // staff could not save an unrelated change (like assigning a clinician) on a
+    // client still waiting on intake. Existing values still cannot be blanked.
+    var PATIENT_SUPPLIED = ['gender', 'address_line1', 'city', 'state', 'postal_code'];
+    function editFieldsFor(client, roster) {
+      var fields = EDIT_CLIENT_FIELDS.map(function (f) {
+        if (PATIENT_SUPPLIED.indexOf(f.name) === -1 || !f.required) return f;
+        var has = client[f.name] != null && String(client[f.name]).trim() !== '';
+        if (has) return f;
+        var copy = Object.assign({}, f);
+        copy.required = false;
+        return copy;
+      });
+      if (!roster) return fields;
+      // Right after the name/contact block, next to the other "who" fields.
+      var at = fields.map(function (f) { return f.name; }).indexOf('date_of_birth');
+      var clinician = { name: 'primary_clinician_id', label: 'Clinician', type: 'select',
+        options: clinicianOptions(roster) };
+      return fields.slice(0, at).concat([clinician], fields.slice(at));
+    }
+
     function openEdit(client) {
-      R.formModal({
-        title: 'Edit client',
-        fields: EDIT_CLIENT_FIELDS,
-        // An explicit-None default modifier list ([]) must read "none" in the form, or
-        // saving would silently turn None back into blank (= inherit).
-        values: Object.assign({}, client, {
-          default_procedure_modifiers: modifiersDisplay(client.default_procedure_modifiers),
-        }),
-        submitLabel: 'Save changes',
+      loadRoster().then(function (roster) {
+        return R.formModal({
+          title: 'Edit client',
+          fields: editFieldsFor(client, roster),
+          // An explicit-None default modifier list ([]) must read "none" in the form, or
+          // saving would silently turn None back into blank (= inherit).
+          values: Object.assign({}, client, {
+            default_procedure_modifiers: modifiersDisplay(client.default_procedure_modifiers),
+          }),
+          submitLabel: 'Save changes',
+        });
       }).then(function (values) {
         if (!values) return;
         api.clients.update(id, buildClientPayload(values, true)).then(function () {
@@ -1035,10 +1100,20 @@
         });
       }
 
+      if (!client.primary_clinician_id) {
+        items.push({
+          label: 'Assign a clinician',
+          note: 'Sets who treats this client, and whose sessions their claims are filed under.',
+          actionLabel: 'Assign',
+          onAction: function () { openEdit(client); },
+        });
+      }
+
       if (!hasInsurance) {
         items.push({
           label: 'Add an insurance policy',
-          note: 'A claim cannot be submitted without one.',
+          note: 'A claim cannot be submitted without one. The client can also enter it '
+            + 'themselves from the payment link.',
         });
       }
 
@@ -1085,6 +1160,119 @@
         ]),
         h('div', { class: 'stack', style: 'gap:var(--space-3)' }, rows),
       ]);
+    }
+
+    // --- Inline calendar suggestion ------------------------------------------
+    // Replaces the old post-save "Match an appointment" modal. Shown on the chart
+    // only when the calendar holds appointments nobody has matched yet, and filled in
+    // asynchronously so a slow or absent calendar never delays the chart. Matching
+    // PROMOTES the appointment to a scheduled (billable) session, seeded from this
+    // client's defaults — so it only ever happens on an explicit click here.
+    // Date AND time, because two appointments on the same day are otherwise
+    // indistinguishable in the list.
+    function fmtWhen(iso) {
+      var d = new Date(iso);
+      if (isNaN(d.getTime())) return String(iso || '');
+      return d.toLocaleString('en-US', {
+        weekday: 'short', month: 'short', day: 'numeric', year: 'numeric',
+        hour: 'numeric', minute: '2-digit',
+      });
+    }
+
+    // Does this event look like it belongs to this client? Name forms only — the title
+    // is the clinician's own calendar text, so this is a sort hint, never a match: the
+    // person still picks one and confirms it.
+    function eventLooksLike(ev, client) {
+      if (ev.matched_client_id && ev.matched_client_id === client.id) return true;
+      var title = String(ev.summary_raw || '').toLowerCase();
+      if (!title) return false;
+      var first = String(client.first_name || '').trim().toLowerCase();
+      var last = String(client.last_name || '').trim().toLowerCase();
+      var forms = [
+        String(client.calendar_display_name || '').trim().toLowerCase(),
+        String(client.preferred_name || '').trim().toLowerCase(),
+        (first + ' ' + last).trim(),
+        (last + ', ' + first).trim(),
+        (last + ' ' + first).trim(),
+      ].filter(function (f) { return f.length > 2 && f !== ',' ; });
+      if (forms.some(function (f) { return title.indexOf(f) !== -1; })) return true;
+      return !!(first && last && title.indexOf(first) !== -1 && title.indexOf(last) !== -1);
+    }
+
+    function calendarSuggestionCard(client) {
+      var holder = h('div');
+      Promise.resolve(api.calendarEvents.list()).then(function (res) {
+        var events = ((res && res.calendar_events) || []).filter(function (ev) {
+          return ev && !ev.session_id && ev.event_status !== 'cancelled'
+            && ev.match_state !== 'ignored';
+        });
+        if (!events.length) return;
+
+        // This client's likely appointments first, then by date. Sorted BEFORE the
+        // 25-row cut so a likely match can never be the one that falls off the end.
+        var ranked = events.map(function (ev, i) {
+          return { ev: ev, i: i, likely: eventLooksLike(ev, client) };
+        }).sort(function (a, b) {
+          if (a.likely !== b.likely) return a.likely ? -1 : 1;
+          var ta = new Date(a.ev.starts_at).getTime() || 0;
+          var tb = new Date(b.ev.starts_at).getTime() || 0;
+          return ta !== tb ? ta - tb : a.i - b.i;
+        });
+        var anyLikely = ranked.some(function (r) { return r.likely; });
+
+        // NOTHING is preselected: the first option is a blank "Choose an appointment",
+        // and the button stays disabled until a real one is picked.
+        var select = h('select', { class: 'field__control', 'aria-label': 'Appointment',
+          style: 'max-width:32rem' }, [
+          h('option', { value: '' }, 'Choose an appointment'),
+        ].concat(ranked.slice(0, 25).map(function (r) {
+          return h('option', { value: r.ev.id },
+            fmtWhen(r.ev.starts_at) + ' · ' + (r.ev.summary_raw || 'Untitled appointment'));
+        })));
+        var btn = h('button', { class: 'btn btn--secondary btn--sm', type: 'button',
+          disabled: 'disabled',
+          onClick: function () {
+            var ev = events.filter(function (e) { return e.id === select.value; })[0];
+            if (!ev) return;
+            // Matching creates a scheduled — and eventually billable — session, so it
+            // always asks first, naming who and when.
+            R.confirmModal({
+              title: 'Create a session?',
+              body: 'Create a session for ' + (client.first_name || clientName(client)) +
+                ' on ' + fmtWhen(ev.starts_at) + '?',
+              confirmLabel: 'Create session',
+            }).then(function (ok) {
+              if (!ok) return;
+              btn.disabled = true;
+              return api.calendarEvents.promote(ev.id, client.id).then(function () {
+                R.toast('Appointment matched — session scheduled', 'success');
+                load();
+              }).catch(function (err) {
+                btn.disabled = false;
+                R.toast((err && err.message) || 'Could not match this appointment.', 'error');
+              });
+            });
+          } }, 'Match appointment');
+        select.addEventListener('change', function () { btn.disabled = !select.value; });
+
+        holder.appendChild(h('div', { class: 'card' }, [
+          h('div', { class: 'card__header' }, [
+            h('h2', { class: 'card__title' }, 'Appointments on your calendar'),
+          ]),
+          h('p', { style: 'margin:0 0 var(--space-3);color:var(--color-text-muted);' +
+            'font-size:var(--font-size-3)' },
+            events.length + (events.length === 1 ? ' appointment isn’t' : ' appointments aren’t') +
+            ' matched to a client yet.' +
+            (anyLikely ? ' Ones whose title looks like ' + clientName(client) + ' are listed first.' : '') +
+            ' Matching one schedules the session using their defaults. You can also confirm them in bulk from Calendar.'),
+          h('div', { style: 'display:flex;gap:var(--space-3);align-items:center;flex-wrap:wrap' },
+            [select, btn]),
+        ]));
+      }).catch(function () {
+        // No calendar connected (404) or the list failed — never block the chart on
+        // an integration the practice may not use.
+      });
+      return holder;
     }
 
     // --- Panel A: Insurance --------------------------------------------------
@@ -1965,6 +2153,7 @@
         // Below the header (who this is) and above insurance/sessions (the work),
         // because it is about getting this client ready rather than about them.
         setupChecklistCard(client, insurance),
+        calendarSuggestionCard(client),
         insurancePanel(client, insurance),
         sessionsPanel(client, sessions),
       ]);

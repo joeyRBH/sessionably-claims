@@ -708,6 +708,8 @@
       var controls = {};      // name -> control element
       var fieldEls = {};      // name -> .field wrapper (for error toggling)
       var errorEls = {};      // name -> .field__error element
+      var groupEls = {};      // group title -> { details, body }
+      var fieldGroup = {};    // name -> its group, when it has one
 
       var form = h('form', { novalidate: 'novalidate' });
 
@@ -812,7 +814,29 @@
           fieldEl = h('label', { class: 'field' }, labelChildren);
         }
         fieldEls[f.name] = fieldEl;
-        form.appendChild(fieldEl);
+        // A field may name a `group`: consecutive fields sharing it live inside one
+        // collapsed <details> (opened automatically when one of them has an error,
+        // so a hidden field can never fail validation silently).
+        if (f.group) {
+          var grp = groupEls[f.group];
+          if (!grp) {
+            var grpBody = h('div', { class: 'stack', style: 'gap:var(--space-4);padding-top:var(--space-3)' });
+            var det = h('details', { class: 'form-group',
+              style: 'margin-top:var(--space-4);border-top:1px solid var(--line-200);' +
+                'padding-top:var(--space-3)' }, [
+              h('summary', { style: 'cursor:pointer;font-weight:var(--font-weight-medium);' +
+                'color:var(--color-text-strong)' }, f.group),
+              grpBody,
+            ]);
+            if (f.groupOpen) det.setAttribute('open', 'open');
+            grp = groupEls[f.group] = { details: det, body: grpBody };
+            form.appendChild(det);
+          }
+          fieldGroup[f.name] = grp;
+          grp.body.appendChild(fieldEl);
+        } else {
+          form.appendChild(fieldEl);
+        }
       });
 
       // Wire checkbox convenience toggles: a field may declare onToggle(checked,
@@ -853,6 +877,7 @@
           errEl.textContent = message;
           errEl.hidden = false;
           fieldEl.classList.add('field--invalid');
+          if (fieldGroup[name]) fieldGroup[name].details.setAttribute('open', 'open');
         } else {
           errEl.textContent = '';
           errEl.hidden = true;
@@ -918,15 +943,45 @@
       var submitBtn = h('button', { class: 'btn btn--primary', type: 'submit' },
         opts.submitLabel || 'Save');
 
-      function onSubmit(e) {
-        if (e) e.preventDefault();
+      // opts.actions: several ways to submit the same form, e.g. "Save & send
+      // payment link" / "Save only". Each is { key, label, requires?, requiresMessage?,
+      // enter? }. The resolved value carries `_action: key`. `requires` names fields
+      // that must be filled for THAT action only (an inline error is shown on the
+      // field otherwise), and `enter: true` marks the action pressing Enter in a text
+      // field triggers — the safe, non-sending one. Without opts.actions this is the
+      // single submit button it always was.
+      var actions = Array.isArray(opts.actions) && opts.actions.length ? opts.actions : null;
+      var actionBtns = actions ? actions.map(function (a, i) {
+        return h('button', { class: i === 0 ? 'btn btn--primary' : 'btn btn--secondary',
+          type: 'button' }, a.label);
+      }) : [];
+      var enterAction = actions
+        ? (actions.filter(function (a) { return a.enter; })[0] || actions[0]) : null;
+
+      function submitWith(action, btn) {
         if (busy) return;
         var result = collect();
         if (result === null) return;       // validation failed; errors are shown
+        if (action) {
+          var unmet = false;
+          (action.requires || []).forEach(function (name) {
+            var v = result[name];
+            if (v === null || v === undefined || v === '') {
+              setError(name, (action.requiresMessage && action.requiresMessage[name]) ||
+                ((fields.filter(function (f) { return f.name === name; })[0] || {}).label || name) +
+                ' is required.');
+              unmet = true;
+            }
+          });
+          if (unmet) return;
+          result._action = action.key;
+        }
         if (typeof opts.onSubmit !== 'function') { settle(result, modal); return; }
         busy = true;
-        setBusy(submitBtn, true, opts.busyLabel);
+        var pressed = btn || submitBtn;
+        setBusy(pressed, true, opts.busyLabel);
         cancelBtn.disabled = true;
+        actionBtns.forEach(function (b) { if (b !== pressed) b.disabled = true; });
         var pending;
         try {
           pending = opts.onSubmit(result);
@@ -937,9 +992,14 @@
           settle(result, modal);
         }, function () {
           busy = false;
-          setBusy(submitBtn, false);
+          setBusy(pressed, false);
           cancelBtn.disabled = false;
+          actionBtns.forEach(function (b) { b.disabled = false; });
         });
+      }
+      function onSubmit(e) {
+        if (e) e.preventDefault();
+        submitWith(enterAction, enterAction ? actionBtns[actions.indexOf(enterAction)] : null);
       }
 
       form.addEventListener('submit', onSubmit);
@@ -950,13 +1010,16 @@
       var modal = openModal({
         title: opts.title || 'Form',
         bodyNode: form,
-        footerNodes: [cancelBtn, submitBtn],
+        footerNodes: actions ? [cancelBtn].concat(actionBtns) : [cancelBtn, submitBtn],
         // Escape / backdrop are ignored while the submitted action is in flight.
         onClose: function () { if (!busy) settle(null, modal); },
       });
 
+      actionBtns.forEach(function (b, i) {
+        b.addEventListener('click', function () { submitWith(actions[i], b); });
+      });
       cancelBtn.addEventListener('click', function () { if (!busy) settle(null, modal); });
-      submitBtn.addEventListener('click', onSubmit);
+      if (!actions) submitBtn.addEventListener('click', onSubmit);
     });
   }
 
