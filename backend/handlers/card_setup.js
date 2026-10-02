@@ -70,50 +70,136 @@ async function loadClient(clientId) {
   return r.rows[0] || null;
 }
 
-// Resolve the practice's notification recipient for intake alerts: the explicit
-// practices.notification_email ONLY. There is deliberately no fallback to a staff
-// login — a practice_admin's `email` may be a username (e.g. "BigRedd"), and
-// handing that to SES fails with "Missing final '@domain'". Returns null when
-// no notification_email is set (the caller then simply skips the email); the
-// email helper independently rejects any non-email value. Best-effort; never
-// throws to the request path.
-async function resolveNotificationEmail(practiceId) {
+// The practice's local time zone, for the time shown in the alert emails. There is
+// no practices.timezone column, so this borrows the IANA zone the calendar sync
+// captured from a connected Google calendar (the clinician's own when they have one,
+// else any active connection in the practice). null when nothing is connected — the
+// email then says "UTC" explicitly rather than guessing. Best-effort; never throws.
+async function lookupTimeZone(practiceId, clinicianId) {
   try {
     const r = await db.query(
-      `select nullif(notification_email, '') as recipient
-         from practices
-        where id = $1
+      `select calendar_time_zone
+         from calendar_connections
+        where practice_id = $1 and status = 'active'
+          and nullif(btrim(calendar_time_zone), '') is not null
+        order by (user_id = $2) desc, created_at asc
         limit 1`,
-      [practiceId]
+      [practiceId, clinicianId || null]
     );
-    const recipient = r.rows[0] && r.rows[0].recipient;
-    return recipient && String(recipient).trim() !== '' ? String(recipient).trim() : null;
+    return (r.rows[0] && r.rows[0].calendar_time_zone) || null;
   } catch (err) {
-    console.warn('card_setup resolveNotificationEmail failed:', err && err.message);
     return null;
   }
 }
 
-// Fire the "patient submitted their information" admin email after the final
-// intake step (insurance saved). This is a REVIEW request — the client is not
-// billable until a clinician confirms on the chart. Best-effort and fully
-// non-blocking: any failure (SES not verified yet, no recipient, send error) is
-// logged and swallowed so the patient's request still succeeds. PHI-minimal —
-// only the client's name + a chart link are sent.
-async function notifyIntakeComplete(client) {
+// Fire the "patient submitted their information" email to the PRACTICE's
+// notification address once the patient's submission is complete (insurance record
+// AND a saved card on file — the same condition the clinician alert uses, so the
+// "payment method saved + insurance provided" line in the message is always true).
+// This is a REVIEW request: the client is not billable until a clinician confirms
+// on the chart.
+//
+// ONCE PER CLIENT, enforced by the database: practice_intake_notified_at is claimed
+// with a single UPDATE ... WHERE ... IS NULL, so concurrent requests and a patient
+// re-opening the link cannot double-send (before this it fired on every
+// save-insurance call). If the send does not go out, the claim is released so a
+// later step retries.
+//
+// ONE EMAIL PER INBOX: when the primary clinician's alert goes to the very same
+// address (a solo practice whose admin is also the clinician, or a clinician whose
+// login is a username so their alert falls back to this address), the practice copy
+// is not sent — the clinician one already tells that person everything. The column
+// is still claimed so it is not re-evaluated on every later step.
+//
+// RECIPIENT: practices.notification_email ONLY. There is deliberately no fallback to
+// a staff login — a practice_admin's `email` may be a username (e.g. "BigRedd"), and
+// handing that to SES fails with "Missing final '@domain'". register now defaults the
+// column to the founding admin's address when it is a real one.
+//
+// Best-effort and fully non-blocking: any failure (SES not verified yet, no
+// recipient, send error) is logged and swallowed so the patient's request still
+// succeeds. PHI-minimal — only the client's name + a chart link are sent.
+async function notifyPracticeIfComplete(clientId) {
+  let claimed = false;
   try {
-    const to = await resolveNotificationEmail(client.practice_id);
-    if (!to) return;
-    const clientName = [client.first_name, client.last_name].filter(Boolean).join(' ').trim();
-    await email.sendIntakeCompletionEmail({
+    const r = await db.query(
+      `select c.id, c.practice_id, c.first_name, c.last_name, c.primary_clinician_id,
+              (c.practice_intake_notified_at is not null) as already_notified,
+              nullif(btrim(coalesce(p.notification_email, '')), '') as practice_to,
+              (u.id is not null and u.is_active = true) as clinician_active,
+              nullif(btrim(coalesce(u.email, '')), '') as clinician_email
+         from clients c
+         join practices p on p.id = c.practice_id
+         left join users u on u.id = c.primary_clinician_id
+        where c.id = $1
+          and c.is_hidden = false
+          and nullif(btrim(coalesce(c.payment_method_id, '')), '') is not null
+          and exists (
+            select 1 from insurance_records i
+             where i.client_id = c.id and i.is_primary = true and i.is_hidden = false
+               and nullif(btrim(coalesce(i.carrier_name, '')), '') is not null
+               and nullif(btrim(coalesce(i.member_id, '')), '') is not null)
+        limit 1`,
+      [clientId]
+    );
+    const row = r.rows[0];
+    if (!row || row.already_notified) return;
+    const to = row.practice_to && email.isValidEmail(row.practice_to) ? row.practice_to : null;
+    if (!to) return;   // nowhere to send; claim nothing so a later-added address still works
+
+    // Where the clinician's alert goes: their own address when it is real, else the
+    // practice address (the same rule notifyClinicianIfComplete applies in SQL). No
+    // active primary clinician means no clinician alert, so nothing to dedupe against.
+    const clinicianTo = row.clinician_active
+      ? (row.clinician_email && email.isValidEmail(row.clinician_email) ? row.clinician_email : to)
+      : null;
+    const sameInbox = !!clinicianTo && clinicianTo.toLowerCase() === to.toLowerCase();
+
+    const claim = await db.query(
+      `update clients
+          set practice_intake_notified_at = now()
+        where id = $1 and practice_intake_notified_at is null
+        returning id`,
+      [clientId]
+    );
+    if (claim.rowCount === 0) return;   // a concurrent request got there first
+    claimed = true;
+    if (sameInbox) return;              // covered by the clinician alert; stay claimed
+
+    const timeZone = await lookupTimeZone(row.practice_id, row.primary_clinician_id);
+    const result = await email.sendIntakeCompletionEmail({
       to,
-      clientId: client.id,
-      clientName,
+      clientId: row.id,
+      clientName: [row.first_name, row.last_name].filter(Boolean).join(' ').trim(),
       completedAt: new Date().toISOString(),
+      timeZone,
     });
+    if (!result || result.sent !== true) {
+      claimed = false;
+      await db.query(
+        `update clients set practice_intake_notified_at = null where id = $1`,
+        [clientId]
+      );
+    }
   } catch (err) {
-    console.warn('card_setup notifyIntakeComplete failed:', err && err.message);
+    console.warn('card_setup notifyPracticeIfComplete failed:', err && err.message);
+    if (claimed) {
+      try {
+        await db.query(
+          `update clients set practice_intake_notified_at = null where id = $1`,
+          [clientId]
+        );
+      } catch (e) { /* the claim stays; better silent than a duplicate */ }
+    }
   }
+}
+
+// Run after EITHER intake step (card saved, insurance saved): whichever completes the
+// pair sends, the other is a no-op. Clinician first, then the practice copy, which
+// skips itself when it would land in the same inbox.
+async function notifyIntakeComplete(clientId) {
+  await notifyClinicianIfComplete(clientId);
+  await notifyPracticeIfComplete(clientId);
 }
 
 // Tell the client's primary clinician once BOTH halves of the patient's submission
@@ -162,7 +248,7 @@ async function notifyClinicianIfComplete(clientId) {
           where id in (select id from ready) and clinician_intake_notified_at is null
         returning id, first_name, last_name, primary_clinician_id, practice_id
        )
-       select cl.id, cl.first_name, cl.last_name,
+       select cl.id, cl.first_name, cl.last_name, cl.practice_id, cl.primary_clinician_id,
               case when u.email ~ $2 then u.email
                    else btrim(p.notification_email) end as recipient,
               (u.email ~ $2) as to_clinician,
@@ -187,6 +273,7 @@ async function notifyClinicianIfComplete(clientId) {
         ? null
         : [row.clinician_first_name, row.clinician_last_name].filter(Boolean).join(' ').trim(),
       completedAt: new Date().toISOString(),
+      timeZone: await lookupTimeZone(row.practice_id, row.primary_clinician_id),
     });
     if (!result || result.sent !== true) {
       claimed = false;
@@ -356,7 +443,7 @@ exports.handler = async (event) => {
         { action: 'patient_link.save_payment_method', resourceType: 'client', resourceId: clientId }
       );
       // If insurance was already submitted, this card completes the pair.
-      await notifyClinicianIfComplete(clientId);
+      await notifyIntakeComplete(clientId);
       return json(200, { ok: true }, event);
     }
 
@@ -621,12 +708,11 @@ exports.handler = async (event) => {
         });
       }
 
-      // Insurance is the final intake step: demographics + insurance are now on file
-      // and waiting for review. Notify the practice admin. Non-blocking — a send
-      // failure (SES not verified yet, etc.) never fails the patient's request.
-      await notifyIntakeComplete(client);
-      // If a card was already saved, this insurance completes the pair.
-      await notifyClinicianIfComplete(clientId);
+      // If a card was already saved, this insurance completes the pair: the clinician
+      // and the practice are each told ONCE (a re-submit sends nothing more), and not
+      // twice at the same address. Non-blocking — a send failure (SES not verified
+      // yet, etc.) never fails the patient's request.
+      await notifyIntakeComplete(clientId);
 
       await audit(event, { actorType: 'patient_link', practiceId: client.practice_id }, {
         action: 'patient_link.save_insurance',

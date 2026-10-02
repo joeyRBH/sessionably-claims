@@ -8,7 +8,7 @@
  *
  * Two sections, in deliberate order of weight:
  *
- *   1. What needs attention — at most five action cards, each a real queue with
+ *   1. What needs attention — at most six action cards, each a real queue with
  *      one destination. A count with no next action is not shown at all, and a
  *      queue at zero is not shown either; all five at zero renders one calm
  *      caught-up state instead of five zeros.
@@ -35,6 +35,11 @@
  *     submit": nothing persists a clinician's verification, so the system
  *     cannot tell "not yet reviewed" from "reviewed and ready", and readiness
  *     ready_to_review is a validation projection, not an approval.
+ *   * "New intakes to review" is the shared intake classifier's needs_review state
+ *     (public/app/intake.js): card AND insurance on file, not yet confirmed by a
+ *     clinician. It reads the Clients list the page already needs for no other
+ *     purpose — one request, no per-client calls. Its card links to the Clients
+ *     list filtered to exactly those clients; the hash carries a key, never a name.
  *   * "Claims needing follow-up" is post-submission attention only —
  *     info_requested and denied. Ordinary submitted / processing / paid /
  *     appealed / void claims are not attention work.
@@ -71,7 +76,7 @@
   // ---------------------------------------------------------------------------
   // Counting (pure — the same inputs always give the same five numbers)
   // ---------------------------------------------------------------------------
-  // data: { pending, confirmed, sessions, claims }, nowMs: epoch ms.
+  // data: { pending, confirmed, sessions, claims, clients }, nowMs: epoch ms.
   function attentionCounts(data, nowMs) {
     var pending = (data && data.pending) || [];
     var claims = (data && data.claims) || [];
@@ -101,7 +106,14 @@
       return c && c.status !== 'draft' && FOLLOW_UP_STATUSES[c.status] === true;
     }).length;
 
+    // New intakes: patients who finished card + insurance and are waiting on a
+    // clinician's confirmation. R.intake is the single shared definition.
+    var intakeReview = ((data && data.clients) || []).filter(function (c) {
+      return R.intake && R.intake.isNeedsReview(c);
+    }).length;
+
     return {
+      intakeReview: intakeReview,
       toMatch: toMatch,
       toConfirm: wf.awaiting.length,
       needsCorrection: needsCorrection,
@@ -188,8 +200,8 @@
   function caughtUpCard() {
     return h('div', { class: 'card' }, [
       h('p', { class: 'empty-state__body', style: 'margin:0' },
-        'You’re caught up. No appointment matching, session confirmation, ' +
-        'or claim-review work is waiting.'),
+        'You’re caught up. No intake review, appointment matching, session ' +
+        'confirmation, or claim-review work is waiting.'),
     ]);
   }
 
@@ -209,6 +221,17 @@
       var n = attentionCounts(state.data, Date.now());
       var cards = [];
 
+      // First: it is the earliest step in the workflow (a patient just finished).
+      if (n.intakeReview) {
+        cards.push(attentionCard({
+          label: 'New intakes to review',
+          count: n.intakeReview,
+          body: 'Clients who added their insurance and a card. Check their chart and ' +
+            'confirm them before billing.',
+          actionLabel: 'Review clients',
+          route: 'clients/focus/intake_review',
+        }));
+      }
       if (n.toMatch) {
         cards.push(attentionCard({
           label: 'Appointments to match',
@@ -334,6 +357,8 @@
         api.calendarEvents.list({ state: 'confirmed' }),
         api.sessions.list({ status: 'scheduled' }),
         api.claims.list(),
+        // Intake state (card + insurance on file) rides on the list response itself.
+        api.clients.list(),
       ]).then(function (res) {
         state.work = {
           data: {
@@ -341,6 +366,7 @@
             confirmed: (res[1] && res[1].calendar_events) || [],
             sessions: (res[2] && res[2].sessions) || [],
             claims: (res[3] && res[3].claims) || [],
+            clients: (res[4] && res[4].clients) || [],
           },
           error: null,
         };

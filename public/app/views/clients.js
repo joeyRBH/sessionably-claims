@@ -499,7 +499,21 @@
   // ===========================================================================
   // Screen 1 — Client list (#clients)
   // ===========================================================================
-  function renderClientList(root) {
+  // The Intake column cell: where the patient is in the SMS intake flow. Empty for
+  // a client with no link sent. One shared definition (intake.js).
+  function intakeBadge(c) {
+    var st = R.intake && R.intake.state(c);
+    if (!st) return h('span', { style: 'color:var(--color-text-muted)' }, '—');
+    return h('span', { class: 'badge badge--' + R.intake.TONES[st] }, R.intake.LABELS[st]);
+  }
+
+  // focusKey: 'intake_review' narrows the list to clients whose patient intake is
+  // finished but not yet confirmed — the Dashboard's "New intakes to review" deep
+  // link (#clients/focus/intake_review). A client-side filter over the SAME list
+  // response, never a second request, so the count there and the rows here agree.
+  var INTAKE_FOCUS_KEY = 'intake_review';
+
+  function renderClientList(root, focusKey) {
     R.renderLoading(root);
 
     function load() {
@@ -599,11 +613,13 @@
       }
 
       var tbody = h('tbody');
+      var focused = focusKey === INTAKE_FOCUS_KEY;
 
       function paint(filter) {
         R.clear(tbody);
         var needle = (filter || '').trim().toLowerCase();
         var rows = clients.filter(function (c) {
+          if (focused && !(R.intake && R.intake.isNeedsReview(c))) return false;
           if (!needle) return true;
           var hay = (clientName(c) + ' ' + (c.email || '')).toLowerCase();
           return hay.indexOf(needle) !== -1;
@@ -611,7 +627,9 @@
 
         if (!rows.length) {
           tbody.appendChild(h('tr', null,
-            h('td', { colspan: '3' }, inlineEmpty('No clients match your filter.'))));
+            h('td', { colspan: '4' }, inlineEmpty(focused && !needle
+              ? 'No new intakes are waiting for review.'
+              : 'No clients match your filter.'))));
           return;
         }
 
@@ -623,6 +641,7 @@
           }, [
             h('td', null, clientName(c)),
             h('td', null, R.statusBadge(c.status)),
+            h('td', null, intakeBadge(c)),
             h('td', null, R.fmtDate(c.created_at)),
           ]);
           function go() { R.navigate('clients/' + c.id); }
@@ -647,6 +666,7 @@
         h('thead', null, h('tr', null, [
           h('th', null, 'Name'),
           h('th', null, 'Status'),
+          h('th', null, 'Intake'),
           h('th', null, 'Created'),
         ])),
         tbody,
@@ -662,6 +682,13 @@
               'New client'),
           ]),
         ]),
+        focused
+          ? h('div', { class: 'card', style: 'display:flex;align-items:center;' +
+              'justify-content:space-between;gap:var(--space-3);flex-wrap:wrap' }, [
+            h('span', null, 'Showing new intakes waiting for your review.'),
+            h('a', { href: '#clients', class: 'btn btn--ghost btn--sm' }, 'Show all clients'),
+          ])
+          : null,
         filterInput,
         h('div', { class: 'card' }, table),
       ]);
@@ -2168,6 +2195,9 @@
   // Route registration — params[0] is the client id when present.
   // ===========================================================================
   R.registerView('clients', function (root, params) {
+    // #clients/focus/<key> — a Dashboard deep link. 'focus' can never collide with a
+    // client id (those are UUIDs).
+    if (params && params[0] === 'focus') return renderClientList(root, params[1]);
     if (params && params[0]) return renderClientDetail(root, params[0]);
     return renderClientList(root);
   });

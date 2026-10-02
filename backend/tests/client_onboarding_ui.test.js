@@ -165,6 +165,7 @@ const toasts = [];
 let currentClient = legacyClient();
 let currentInsurance = [policy()];
 let createdClient = null;
+let currentClientsList = null;
 // Queue of values each successive formModal call resolves with. `null` = the
 // user dismissed that step.
 let formQueue = [];
@@ -181,7 +182,7 @@ const navigations = [];
 const api = {
   clients: {
     get(id) { calls.push({ name: 'clients.get', id }); return Promise.resolve({ client: currentClient }); },
-    list() { calls.push({ name: 'clients.list' }); return Promise.resolve({ clients: [currentClient] }); },
+    list() { calls.push({ name: 'clients.list' }); return Promise.resolve({ clients: currentClientsList || [currentClient] }); },
     create(payload) {
       calls.push({ name: 'clients.create', payload });
       createdClient = legacyClient({ id: 'c-new', first_name: 'Brand', last_name: 'New' });
@@ -260,6 +261,7 @@ const context = vm.createContext({
   Date,
 });
 vm.runInContext(fs.readFileSync(path.join(APP, 'client-defaults.js'), 'utf8'), context);
+vm.runInContext(fs.readFileSync(path.join(APP, 'intake.js'), 'utf8'), context);
 vm.runInContext(fs.readFileSync(path.join(APP, 'views', 'clients.js'), 'utf8'), context);
 assert.ok(typeof viewFn === 'function', 'clients.js registers the clients view');
 
@@ -277,6 +279,7 @@ function reset() {
   formQueue = [];
   confirmQueue = [];
   navigations.length = 0;
+  currentClientsList = null;
   signedInUser = { id: 'u-1', role: 'clinician' };
   roster = [
     { id: 'u-1', first_name: 'Pat', last_name: 'Lee', role: 'clinician' },
@@ -293,9 +296,9 @@ async function chart(clientOver, insurance) {
   return root;
 }
 
-async function clientList() {
+async function clientList(params) {
   const root = createElement('div');
-  viewFn(root, []);
+  viewFn(root, params || []);
   await flush();
   return root;
 }
@@ -672,6 +675,71 @@ test('the checklist offers no payment-link button without a phone', async () => 
   assert.ok(/Add a phone number first/.test(root.textContent), 'the prerequisite is named');
   assert.strictEqual(byLabel(root, 'Send payment link'), null,
     'no dead-end button: the endpoint 400s without a phone');
+});
+
+// --- 4. Intake column + #clients/focus/intake_review --------------------------
+
+function listClients(rows) { currentClientsList = rows; }
+const row = (over) => legacyClient(Object.assign({ payment_method_last4: null, has_insurance: false }, over));
+const INTAKE_ROWS = () => [
+  row({ id: 'c-none', first_name: 'None', last_name: 'Sent' }),
+  row({ id: 'c-link', first_name: 'Link', last_name: 'Sent', payment_link_sent_at: '2026-10-01T00:00:00Z' }),
+  row({ id: 'c-half', first_name: 'Half', last_name: 'Done', payment_link_sent_at: '2026-10-01T00:00:00Z', payment_method_last4: '4242' }),
+  row({ id: 'c-review', first_name: 'Needs', last_name: 'Review', status: 'awaiting_info',
+    payment_link_sent_at: '2026-10-01T00:00:00Z', payment_method_last4: '4242', has_insurance: true }),
+  row({ id: 'c-done', first_name: 'All', last_name: 'Done', status: 'active',
+    payment_link_sent_at: '2026-10-01T00:00:00Z', payment_method_last4: '4242', has_insurance: true }),
+  row({ id: 'c-off', first_name: 'In', last_name: 'Active', status: 'inactive',
+    payment_link_sent_at: '2026-10-01T00:00:00Z', payment_method_last4: '4242', has_insurance: true }),
+];
+function rowText(root, name) {
+  return walk(root).filter((e) => e.tagName === 'TR').find((r) => r.textContent.indexOf(name) !== -1);
+}
+
+test('the Clients list has an Intake column: Link sent / Needs review / Completed', async () => {
+  listClients(INTAKE_ROWS());
+  const root = await clientList();
+  assert.ok(walk(root).some((e) => e.tagName === 'TH' && e.textContent === 'Intake'), 'Intake column header');
+  const intakeCell = (name) => walk(rowText(root, name)).filter((e) => e.tagName === 'TD')[2].textContent;
+  assert.strictEqual(intakeCell('None Sent'), '—', 'no link sent: nothing to show');
+  assert.strictEqual(intakeCell('Link Sent'), 'Link sent');
+  assert.strictEqual(intakeCell('Half Done'), 'Link sent', 'card without insurance is still waiting on the patient');
+  assert.strictEqual(intakeCell('Needs Review'), 'Needs review');
+  assert.strictEqual(intakeCell('All Done'), 'Completed');
+  assert.strictEqual(intakeCell('In Active'), '—', 'inactive clients show nothing');
+});
+
+test('badge tones: waiting is stone, needs-review warning (stone), sage only for Completed', async () => {
+  listClients(INTAKE_ROWS());
+  const root = await clientList();
+  const cls = (name) => walk(rowText(root, name)).filter((e) => e.tagName === 'TD')[2].childNodes[0].className;
+  assert.ok(/badge--neutral/.test(cls('Link Sent')));
+  assert.ok(/badge--warning/.test(cls('Needs Review')));
+  assert.ok(/badge--success/.test(cls('All Done')));
+});
+
+test('#clients/focus/intake_review shows ONLY clients whose intake needs review, with a way back', async () => {
+  listClients(INTAKE_ROWS());
+  const root = await clientList(['focus', 'intake_review']);
+  const bodyRows = walk(root).filter((e) => e.tagName === 'TR' && e.className.indexOf('clickable') !== -1);
+  assert.strictEqual(bodyRows.length, 1);
+  assert.ok(bodyRows[0].textContent.indexOf('Needs Review') !== -1);
+  assert.ok(/waiting for your review/.test(root.textContent), 'says what the list is narrowed to');
+  assert.ok(walk(root).some((e) => e.tagName === 'A' && e.textContent === 'Show all clients' && e.attributes.href === '#clients'), 'and offers the full list');
+  assert.ok(!calls.some((c) => c.name === 'clients.get'), 'a client-side filter, no extra request');
+  assert.strictEqual(calls.filter((c) => c.name === 'clients.list').length, 1);
+});
+
+test('the focused list with nobody waiting says so (it is not blank)', async () => {
+  listClients([row({ id: 'c-none' })]);
+  const root = await clientList(['focus', 'intake_review']);
+  assert.ok(/No new intakes are waiting for review/.test(root.textContent));
+});
+
+test('"focus" never collides with a client id', async () => {
+  const root = await clientList(['focus', 'intake_review']);
+  assert.ok(!calls.some((c) => c.name === 'clients.get'), 'it is the list, not a chart for id "focus"');
+  void root;
 });
 
 // --- runner -------------------------------------------------------------------
