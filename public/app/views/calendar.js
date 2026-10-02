@@ -90,6 +90,33 @@
     ]);
   }
 
+  // --- Auto-sync on open ----------------------------------------------------
+  // Opening Calendar pulls fresh appointments in, so nobody has to remember to press
+  // "Sync now" — but at most once per AUTO_SYNC_MIN_MS, so flipping between views
+  // does not hammer the calendar provider. The last-sync time is held at module
+  // scope (it survives the SPA route changes) and mirrored to sessionStorage (it
+  // survives a refresh of the same tab); either failing is harmless. Matching and
+  // promoting are NEVER automatic — sync only stages appointments for review.
+  var AUTO_SYNC_MIN_MS = 5 * 60 * 1000;
+  var AUTO_SYNC_KEY = 'reddably_calendar_auto_sync_at';
+  var lastAutoSyncAt = 0;
+
+  function readLastSync() {
+    var fromStore = 0;
+    try { fromStore = Number(window.sessionStorage.getItem(AUTO_SYNC_KEY)) || 0; } catch (e) { /* unavailable */ }
+    return Math.max(lastAutoSyncAt, fromStore);
+  }
+  function writeLastSync(ms) {
+    lastAutoSyncAt = ms;
+    try { window.sessionStorage.setItem(AUTO_SYNC_KEY, String(ms)); } catch (e) { /* unavailable */ }
+  }
+  function autoSyncDue(nowMs) {
+    return nowMs - readLastSync() >= AUTO_SYNC_MIN_MS;
+  }
+  function activeConnection(connections) {
+    return (connections || []).filter(function (c) { return c && c.status === 'active'; })[0] || null;
+  }
+
   // focusKey: 'awaiting' | 'match' | null — the section a Dashboard deep link
   // (#calendar/focus/<key>) asked to be brought to attention. Purely a scroll +
   // highlight; it changes nothing about which appointments are shown.
@@ -100,6 +127,41 @@
     // survives the reload that follows every action — confirming one session
     // must not clear the filter in the middle of working through a client.
     var searchTerm = '';
+
+    // The auto-sync runs once per OPEN of this screen, not on every reload that
+    // follows an action. syncMessage is the small status line beside the header
+    // ("Syncing…" / a quiet failure note); it lives out here so a reload mid-sync
+    // does not lose it.
+    var opened = false;
+    var syncMessage = '';
+    var syncNoteEl = null;
+    function setSyncMessage(text) {
+      syncMessage = text || '';
+      if (syncNoteEl) syncNoteEl.textContent = syncMessage;
+    }
+
+    function autoSync(connections) {
+      if (!activeConnection(connections) || !autoSyncDue(Date.now())) return;
+      writeLastSync(Date.now());   // set BEFORE the request: a second open must not double-fire
+      setSyncMessage('Syncing your calendar…');
+      Promise.resolve().then(function () {
+        return api.calendarEvents.sync();
+      }).then(function (res) {
+        var failed = ((res && res.connections) || []).some(function (c) { return c && c.error; });
+        if (failed) {
+          writeLastSync(0);
+          setSyncMessage('Couldn’t refresh from your calendar just now. Use Sync now to retry.');
+          return;
+        }
+        var t = (res && res.totals) || {};
+        setSyncMessage('');
+        // Repaint only when something actually changed, so an idle sync is invisible.
+        if ((t.inserted || 0) + (t.updated || 0) + (t.cancelled || 0) > 0) load();
+      }).catch(function () {
+        writeLastSync(0);   // not a real sync: let the next open try again
+        setSyncMessage('Couldn’t refresh from your calendar just now. Use Sync now to retry.');
+      });
+    }
 
     // preselectSessionIds: session ids to re-tick in "Sessions to confirm"
     // once this reload's render is up — used only by a bulk confirm that had
@@ -117,6 +179,12 @@
         // No active connection (404) or a provider hiccup must not take the
         // review list down — the picker just doesn't render.
         api.calendarConnections.calendars().catch(function () { return null; }),
+        // The caller's connections (any status), to know whether to offer Connect
+        // and whether to auto-sync. A failure here is "unknown", never "not connected".
+        Promise.resolve().then(function () {
+          return api.calendarConnections.status();
+        }).then(function (res) { return (res && res.connections) || []; })
+          .catch(function () { return null; }),
       ]).then(function (results) {
         function eventsOf(res) { return (res && res.calendar_events) || []; }
         // Pickable clients: not soft-deleted (the API already excludes those)
@@ -129,13 +197,17 @@
           confirmed: eventsOf(results[1]),
           ignored: eventsOf(results[2]),
           sessions: (results[3] && results[3].sessions) || [],
-        }, clients, results[5], preselectSessionIds);
+        }, clients, results[5], preselectSessionIds, results[6]);
+        if (!opened) {
+          opened = true;
+          autoSync(results[6]);
+        }
       }).catch(function (err) {
         R.renderError(root, err, load);
       });
     }
 
-    function render(data, clients, calInfo, preselectSessionIds) {
+    function render(data, clients, calInfo, preselectSessionIds, connections) {
       R.clear(root);
 
       var workflow = buildWorkflow(data, Date.now());
@@ -682,6 +754,7 @@
         class: 'btn btn--primary', type: 'button',
         onClick: function () {
           syncBtn.disabled = true;
+          writeLastSync(Date.now());
           api.calendarEvents.sync().then(function () {
             R.toast('Calendar synced', 'success');
             load();
@@ -746,11 +819,48 @@
         }, ['Syncing', picker]);
       }
 
+      // No calendar connected yet (known, not merely unknown): offer the connection
+      // right here — on an empty Calendar it is the only thing to do. A connection
+      // that needs re-authorizing is offered the same way. `connections === null`
+      // means the status could not be read, which shows nothing rather than guess.
+      var isConnected = !!activeConnection(connections);
+      var needsReauth = !isConnected && (connections || []).some(function (c) {
+        return c && c.status === 'needs_reauth';
+      });
+      var connectCard = null;
+      if (connections && !isConnected) {
+        var connectBtn = h('button', { class: 'btn btn--primary', type: 'button',
+          onClick: function () { R.connectGoogleCalendar(connectBtn); } },
+          needsReauth ? 'Reconnect Google Calendar' : 'Connect Google Calendar');
+        connectCard = h('div', { class: 'card' }, [
+          h('div', { class: 'card__header' }, [
+            h('h2', { class: 'card__title' },
+              needsReauth ? 'Reconnect your Google Calendar' : 'Connect your Google Calendar'),
+          ]),
+          h('p', {
+            style: 'margin:0 0 var(--space-3);color:var(--color-text-muted);font-size:var(--font-size-3)',
+          }, needsReauth
+            ? 'Your calendar connection needs to be re-authorized before new appointments can sync.'
+            : 'Your appointments then sync in automatically each time you open Calendar. ' +
+              'Reddably only reads them — you still match every appointment to a client and ' +
+              'confirm each session yourself.'),
+          connectBtn,
+        ]);
+      }
+
+      syncNoteEl = h('span', {
+        role: 'status',
+        style: 'color:var(--color-text-muted);font-size:var(--font-size-2)',
+      }, syncMessage);
+
       root.appendChild(h('div', { class: 'view stack' }, [
         h('div', { class: 'page-header' }, [
           h('h1', { class: 'page-header__title' }, 'Calendar'),
-          h('div', { class: 'page-header__actions' }, [calendarPicker, syncBtn]),
+          h('div', { class: 'page-header__actions' }, [
+            syncNoteEl, calendarPicker, (connections && !isConnected) ? null : syncBtn,
+          ]),
         ]),
+        connectCard,
         h('p', {
           style: 'margin:0;color:var(--color-text-muted);font-size:var(--font-size-3)',
         }, 'Match each appointment to a client, then confirm the session once it has ended.'),

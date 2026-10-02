@@ -468,7 +468,105 @@
         });
       }
 
-      // --- Calendar sync (per-user, de-identified read-only ICS feed) ----------
+      // --- Calendar connection (inbound: Google Calendar -> Reddably) -----------
+      // Connect your Google Calendar so appointments sync in on their own (the
+      // Calendar screen refreshes them whenever you open it). Read-only: matching an
+      // appointment to a client and confirming the session stay your decisions.
+      // Per-user (your own calendar), so every role sees and manages their own.
+      // Independent async load: a status failure shows inline, never blocks Settings.
+      function calendarConnectionCard() {
+        var body = h('div', { class: 'stack', style: 'gap:var(--space-3)' },
+          h('div', { class: 'skeleton skeleton--line' }));
+
+        function note(text) {
+          return h('p', {
+            style: 'margin:0;color:var(--color-text-muted);font-size:var(--font-size-3)',
+          }, text);
+        }
+
+        function fmtWhen(iso) {
+          if (!iso) return 'not yet';
+          var d = new Date(iso);
+          return isNaN(d.getTime()) ? 'not yet' : d.toLocaleString();
+        }
+
+        function paint(connections) {
+          R.clear(body);
+          var list = connections || [];
+          var active = list.filter(function (c) { return c.status === 'active'; })[0] || null;
+          var stale = !active && list.filter(function (c) { return c.status === 'needs_reauth'; })[0] || null;
+
+          if (active) {
+            var disconnectBtn = h('button', { class: 'btn btn--ghost btn--sm', type: 'button',
+              onClick: function () {
+                R.confirmModal({
+                  title: 'Disconnect Google Calendar?',
+                  body: 'New appointments will stop syncing. Appointments and sessions you ' +
+                    'already have stay exactly as they are, and you can reconnect any time.',
+                  confirmLabel: 'Disconnect',
+                  danger: true,
+                }).then(function (ok) {
+                  if (!ok) return;
+                  disconnectBtn.disabled = true;
+                  api.calendarConnections.disconnect(active.id).then(function () {
+                    R.toast('Google Calendar disconnected', 'success');
+                    load();
+                  }).catch(function (err) {
+                    disconnectBtn.disabled = false;
+                    R.toast((err && err.message) || 'Could not disconnect.', 'error');
+                  });
+                });
+              } }, 'Disconnect');
+            body.appendChild(h('div', { style: 'display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap' }, [
+              h('span', { class: 'badge badge--success' }, 'Connected'),
+              h('span', null, active.account_email || 'Google Calendar'),
+            ]));
+            body.appendChild(note('Last synced: ' + fmtWhen(active.last_synced_at) +
+              '. Appointments refresh whenever you open Calendar, or use Sync now there.'));
+            body.appendChild(h('div', { class: 'page-header__actions' }, [
+              h('a', { href: '#calendar', class: 'btn btn--secondary btn--sm' }, 'Open Calendar'),
+              disconnectBtn,
+            ]));
+            return;
+          }
+
+          var connectBtn = h('button', { class: 'btn btn--primary', type: 'button',
+            onClick: function () { R.connectGoogleCalendar(connectBtn); } },
+            stale ? 'Reconnect Google Calendar' : 'Connect Google Calendar');
+          body.appendChild(note(stale
+            ? 'Your calendar connection needs to be re-authorized before appointments can sync.'
+            : 'Connect your Google Calendar and your appointments sync in automatically. ' +
+              'Reddably only reads them — you still match each one to a client and confirm ' +
+              'the session yourself.'));
+          body.appendChild(h('div', { class: 'page-header__actions' }, [connectBtn]));
+        }
+
+        function load() {
+          Promise.resolve().then(function () {
+            return api.calendarConnections.status();
+          }).then(function (res) {
+            paint((res && res.connections) || []);
+          }).catch(function (err) {
+            R.clear(body);
+            body.appendChild(h('p', { class: 'inline-error', style: 'margin:0' },
+              'Could not load your calendar connection. ' + ((err && err.message) || '')));
+            body.appendChild(h('button', { class: 'btn btn--ghost btn--sm', type: 'button',
+              onClick: load }, 'Retry'));
+          });
+        }
+        load();
+
+        return h('div', { class: 'card' }, [
+          h('div', { class: 'card__header' }, [
+            h('h2', { class: 'card__title' }, 'Calendar connection'),
+          ]),
+          body,
+        ]);
+      }
+
+      // --- Calendar feed (export): per-user, de-identified read-only ICS feed ---
+      // (Not the same thing as the Calendar connection above, which pulls YOUR
+      // appointments IN from Google Calendar. This one publishes a feed OUT.)
       // Independent of the practice form (its own async load + actions). The feed
       // never contains client names or any PHI — only initials + a deep link.
       function calendarCard() {
@@ -538,7 +636,7 @@
 
         var card = h('div', { class: 'card' }, [
           h('div', { class: 'card__header' }, [
-            h('h2', { class: 'card__title' }, 'Calendar sync'),
+            h('h2', { class: 'card__title' }, 'Calendar feed (export)'),
           ]),
           h('p', {
             style: 'margin:0 0 var(--space-4);color:var(--color-text-muted);' +
@@ -649,6 +747,7 @@
         form,
         sessionDefaultsCard(),
         passwordCard(),
+        calendarConnectionCard(),
         calendarCard(),
       ]);
 

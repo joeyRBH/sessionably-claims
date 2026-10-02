@@ -1165,8 +1165,50 @@
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Google Calendar connection (shared by Settings and the Calendar screen)
+  // ---------------------------------------------------------------------------
+  // Starts the consent flow: asks the API for the consent URL (the server route is a
+  // 302 that a browser navigation cannot authenticate, see calendar_oauth.js) and
+  // navigates there. The button shows busy for the round trip; if it fails the
+  // button comes back and the user is told. Google sends the browser back to
+  // /app/app.html?calendar=connected (handled in initRouter below).
+  function connectGoogleCalendar(btn) {
+    setBusy(btn, true, 'Opening Google…');
+    return Promise.resolve().then(function () {
+      return api.calendarConnections.start();
+    }).then(function (res) {
+      if (!res || !res.url) throw new Error('Could not start the calendar connection.');
+      window.location.assign(res.url);
+    }).catch(function (err) {
+      setBusy(btn, false);
+      toast((err && err.message) || 'Could not start the calendar connection.', 'error');
+    });
+  }
+
+  // The consent round trip lands here with ?calendar=connected | declined. Tell the
+  // user what happened, send them to the Calendar (which syncs on open), and strip the
+  // flag so a refresh does not repeat the message. A status flag only — no PHI.
+  function handleCalendarReturn() {
+    var flag = null;
+    try { flag = new URLSearchParams(window.location.search).get('calendar'); }
+    catch (e) { return; }
+    if (flag !== 'connected' && flag !== 'declined') return;
+    try {
+      window.history.replaceState(null, '', window.location.pathname + (flag === 'connected' ? '#calendar' : '#settings'));
+    } catch (e) { /* history unavailable — the hash below still routes */ }
+    if (flag === 'connected') {
+      window.location.hash = '#calendar';
+      toast('Google Calendar connected. Syncing your appointments…', 'success');
+    } else {
+      window.location.hash = '#settings';
+      toast('Calendar access was not granted, so nothing was connected.', 'error');
+    }
+  }
+
   function initRouter() {
     window.addEventListener('hashchange', renderRoute);
+    handleCalendarReturn();
     renderRoute();
   }
 
@@ -1426,6 +1468,7 @@
     confirmModal: confirmModal,
     formModal: formModal,
     setBusy: setBusy,
+    connectGoogleCalendar: connectGoogleCalendar,
     // onboarding walkthrough
     openTutorial: openTutorial,
     maybeAutoOpenTutorial: maybeAutoOpenTutorial,

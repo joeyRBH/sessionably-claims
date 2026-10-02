@@ -254,11 +254,71 @@ async function testSsmFailureDeletesRow() {
   console.log('PASS SSM-failure path (row deleted, vendor-free error)');
 }
 
+// --- test 5: /start serves the app (JSON) and everything else (302) -----------------
+
+async function testStart() {
+  const { sign } = require(path.join(__dirname, '..', 'lib', 'jwt.js'));
+  googleLib.buildAuthUrl = async ({ state: st }) => `https://accounts.google.com/o/oauth2/v2/auth?state=${st}`;
+  const token = sign({ id: CALLER_ID, practice_id: PRACTICE_ID, role: 'clinician' });
+  const startEvent = (qs) => ({
+    requestContext: {
+      http: { method: 'GET', path: '/integrations/google/start' },
+      routeKey: 'GET /integrations/google/start',
+    },
+    headers: { authorization: `Bearer ${token}` },
+    queryStringParameters: qs || null,
+  });
+
+  // The app cannot follow a 302 with an Authorization header, so it asks for JSON.
+  const asJson = await handler(startEvent({ format: 'json' }));
+  assert.strictEqual(asJson.statusCode, 200);
+  const url = JSON.parse(asJson.body).url;
+  assert.ok(/^https:\/\/accounts\.google\.com\//.test(url), 'returns the consent URL');
+  const st = new URL(url).searchParams.get('state');
+  assert.strictEqual(handlerMod.verifyState(st).sub, CALLER_ID, 'carrying a state bound to the caller');
+
+  // Default behaviour is unchanged: a 302 to the consent URL.
+  const asRedirect = await handler(startEvent());
+  assert.strictEqual(asRedirect.statusCode, 302);
+  assert.ok(/^https:\/\/accounts\.google\.com\//.test(asRedirect.headers.Location));
+
+  // Still Bearer-authed in either mode.
+  const noAuth = await handler({ ...startEvent({ format: 'json' }), headers: {} });
+  assert.strictEqual(noAuth.statusCode, 401, 'no token, no consent URL');
+  console.log('PASS /start (JSON for the app, 302 by default, authed)');
+}
+
+// --- test 6: declining on the consent screen returns to the app ----------------------
+
+async function testDeclined() {
+  const stateToken = handlerMod.makeState({ sub: CALLER_ID, practice_id: PRACTICE_ID });
+  const before = state.table.length;
+  const res = await handler({
+    requestContext: {
+      http: { method: 'GET', path: '/integrations/google/callback' },
+      routeKey: 'GET /integrations/google/callback',
+    },
+    queryStringParameters: { error: 'access_denied', state: stateToken },
+  });
+  assert.strictEqual(res.statusCode, 302, 'a browser tab gets sent back to the app, not a JSON page');
+  assert.ok(/\/app\/app\.html\?calendar=declined$/.test(res.headers.Location), res.headers.Location);
+  assert.strictEqual(state.table.length, before, 'nothing was connected');
+  // The state is still verified first: a forged state cannot use this redirect.
+  const forged = await handler({
+    requestContext: { http: { method: 'GET', path: '/integrations/google/callback' }, routeKey: 'GET /integrations/google/callback' },
+    queryStringParameters: { error: 'access_denied', state: 'nope' },
+  });
+  assert.strictEqual(forged.statusCode, 401);
+  console.log('PASS declined consent redirects to the app');
+}
+
 (async function main() {
   await testAuthUrl();
   testStateRoundTrip();
   await testCallbackConflictUpdates();
   await testSsmFailureDeletesRow();
+  await testStart();
+  await testDeclined();
   console.log('PASS google_oauth.test.js');
 })().catch((err) => {
   console.error('FAIL google_oauth.test.js');

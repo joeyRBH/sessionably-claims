@@ -6,6 +6,7 @@
 // resources:
 //
 //   GET   /integrations/google/start            → 302 to the Google consent URL
+//                                                  (or { url } with ?format=json — what the app uses)
 //   GET   /integrations/google/callback         → code exchange + connection upsert
 //   GET   /integrations/google/status           → the caller's connections (no tokens)
 //   POST  /integrations/google/disconnect       → status 'disconnected' + token cleanup
@@ -170,10 +171,19 @@ function redirect(location, event) {
 
 // GET /integrations/google/start — Bearer-authed. Mints the signed state and
 // bounces the browser to the consent URL.
+//
+// A browser NAVIGATION cannot carry an Authorization header, and a fetch() cannot
+// read a cross-origin 302's Location, so the app calls this with `?format=json` and
+// receives { url } to navigate to itself. The default stays the 302 (curl, tests,
+// anything that already follows redirects). The URL carries only the signed state
+// and public OAuth parameters — nothing PHI.
 async function start(event) {
   const { user } = requireAuth(event);
   const state = makeState(user);
   const url = await google.buildAuthUrl({ state });
+  if (queryParam(event, 'format') === 'json') {
+    return json(200, { url }, event);
+  }
   return redirect(url, event);
 }
 
@@ -184,9 +194,11 @@ async function callback(event) {
   const st = verifyState(queryParam(event, 'state'));
   const authCtx = { userId: st.sub, practiceId: st.practice_id };
 
-  // The clinician declined on the consent screen (or the provider errored).
+  // The clinician declined on the consent screen (or the provider errored). They
+  // are in a browser tab, not an API client, so send them back to the app (which
+  // says so) rather than leaving them on a raw JSON error page.
   if (queryParam(event, 'error')) {
-    return json(400, { error: 'Calendar access was not granted. No connection was made.' }, event);
+    return redirect(`${APP_RETURN_URL}?calendar=declined`, event);
   }
   const code = queryParam(event, 'code');
   if (!code) {

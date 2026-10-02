@@ -449,7 +449,21 @@
   //                                active connection (404 when none)
   //   setCalendar(id, calId)    -> { updated, id, calendar_id, ... }  switches the
   //                                connection; unconfirmed staged events are cleared
+  //   status()                  -> { connections: [{ id, account_email, calendar_id,
+  //                                calendar_time_zone, status, last_synced_at }] } the
+  //                                caller's own connections, any status (no tokens)
+  //   start()                   -> { url } the consent URL to navigate to. The server
+  //                                route is a 302 that a browser navigation cannot
+  //                                authenticate, so the app asks for JSON instead.
+  //   disconnect(id)            -> { disconnected: true, id }
   var calendarConnections = {
+    status: function () { return request('GET', '/integrations/google/status'); },
+    start: function () {
+      return request('GET', '/integrations/google/start' + buildQuery({ format: 'json' }));
+    },
+    disconnect: function (id) {
+      return request('POST', '/integrations/google/disconnect', { connection_id: id });
+    },
     calendars: function () { return request('GET', '/integrations/google/calendars'); },
     setCalendar: function (id, calendarId) {
       return request('PATCH', '/integrations/google/connections/' + id, { calendar_id: calendarId });
