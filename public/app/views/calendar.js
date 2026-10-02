@@ -96,6 +96,11 @@
   function renderCalendar(root, focusKey) {
     R.renderLoading(root);
 
+    // The client search box's text. Held out here (not inside render()) so it
+    // survives the reload that follows every action — confirming one session
+    // must not clear the filter in the middle of working through a client.
+    var searchTerm = '';
+
     // preselectSessionIds: session ids to re-tick in "Sessions to confirm"
     // once this reload's render is up — used only by a bulk confirm that had
     // partial failures, so the rows a biller still needs to retry don't have
@@ -412,7 +417,7 @@
       // `preselectIds` re-ticks the rows named in it (see load() above) — the
       // survival mechanism for "still selected" across the reload that follows
       // a bulk confirm with partial failures.
-      function awaitingTable(items, preselectIds) {
+      function awaitingTable(items, preselectIds, emptyText) {
         var bulkEnabled = items.length >= 2;
         var selected = {};   // session id -> item, per render like claims.js's grouping
         var boxes = {};
@@ -460,7 +465,7 @@
         var tbody = h('tbody');
         if (!items.length) {
           tbody.appendChild(h('tr', null,
-            h('td', { colspan: '6' }, inlineEmpty('No sessions waiting to be confirmed.'))));
+            h('td', { colspan: '6' }, inlineEmpty(emptyText || 'No sessions waiting to be confirmed.'))));
         } else {
           items.forEach(function (item) {
             var row = h('tr');
@@ -540,67 +545,136 @@
         ]);
       }
 
-      // Built directly (not through sectionCard()) because it needs the bulk
-      // "Confirm selected" action in its header — see awaitingTable() above.
-      // Still carries the SAME focus-highlight class sectionCard applies to
-      // the other sections, so a #calendar/focus/awaiting deep link works
-      // identically here.
-      var awaitingBuilt = awaitingTable(workflow.awaiting, preselectSessionIds);
-      var awaitingCard = h('div', { class: 'card' + (focusKey === 'awaiting' ? ' card--focus' : '') }, [
-        h('div', { class: 'card__header' }, [
-          h('h2', { class: 'card__title' }, 'Sessions to confirm'),
-          awaitingBuilt.bulkBtn,
-        ]),
-        h('p', {
-          style: 'margin:0 0 var(--space-3);color:var(--color-text-muted);font-size:var(--font-size-2)',
-        }, 'Appointments that have ended. Confirming creates the draft claim.'),
-        awaitingBuilt.table,
-      ]);
+      // --- search ------------------------------------------------------------
+      // A purely client-side filter over what the workflow already bucketed:
+      // it decides which rows are SHOWN, never which bucket a row belongs to
+      // (that stays workflow.js's job) and never changes what an action does.
+      // Every word typed must appear in the matched client's name or the
+      // appointment title, so "jane doe" and "doe jane" both find Jane Doe, and
+      // an appointment not yet matched to anyone is still findable by its title.
+      // Filtering "Sessions to confirm" to one client is what makes the existing
+      // select-all / "Confirm N sessions" cover exactly that client's sessions.
 
-      var matchingCard = sectionCard(
-        'Appointments needing a client',
-        'Past appointments that were never matched. Matching schedules the session.',
-        sectionTable('Client', workflow.matching.map(function (item) {
-          var ev = item.event;
-          return function (row) {
-            paintMatchRow(ev, row,
-              ev.match_state === 'matched' && ev.matched_client_id ? 'suggested' : 'picker',
-              true);
-          };
-        }), 'No past appointments waiting for a client.'),
-        focusKey === 'match'
-      );
+      function searchTerms() {
+        return searchTerm.toLowerCase().split(/\s+/).filter(function (t) { return t; });
+      }
 
-      var upcomingCard = sectionCard(
-        'Upcoming appointments',
-        'Match a client ahead of time. Confirming waits until the appointment ends.',
-        sectionTable('Client', workflow.upcoming.map(function (item) {
-          var ev = item.event;
-          return function (row) {
-            if (ev.session_id) {
-              paintScheduledRow(ev, row);
-              return;
-            }
-            paintMatchRow(ev, row,
-              ev.match_state === 'matched' && ev.matched_client_id ? 'suggested' : 'picker',
-              true);
-          };
-        }), 'No upcoming appointments. Sync to pull in new appointments.')
-      );
+      function filterItems(items) {
+        var terms = searchTerms();
+        if (!terms.length) return items;
+        return items.filter(function (item) {
+          var e = item.event;
+          var hay = ((e.matched_client_name || '') + ' ' + (e.summary_raw || '')).toLowerCase();
+          return terms.every(function (t) { return hay.indexOf(t) !== -1; });
+        });
+      }
 
-      // Subordinate: set aside, but reversible — matching one still promotes it.
-      var ignoredCard = sectionCard(
-        'Ignored appointments',
-        'Set aside. Matching a client still schedules the session.',
-        sectionTable('Client', workflow.ignored.map(function (item) {
-          var ev = item.event;
-          return function (row) {
-            paintMatchRow(ev, row,
-              ev.match_state === 'matched' && ev.matched_client_id ? 'suggested' : 'picker',
-              false);
-          };
-        }), 'No ignored appointments.')
-      );
+      // Builds the four section cards for the CURRENT search text. Called once
+      // at render and again on every keystroke, replacing only the cards — the
+      // search box itself is never rebuilt, so typing keeps its focus.
+      function buildSections(preselectIds) {
+        var searching = searchTerms().length > 0;
+        var quoted = '\u201c' + searchTerm.trim() + '\u201d';
+        function emptyFor(plain, forSearch) { return searching ? forSearch : plain; }
+
+        // Built directly (not through sectionCard()) because it needs the bulk
+        // "Confirm selected" action in its header — see awaitingTable() above.
+        // Still carries the SAME focus-highlight class sectionCard applies to
+        // the other sections, so a #calendar/focus/awaiting deep link works
+        // identically here.
+        var awaitingBuilt = awaitingTable(
+          filterItems(workflow.awaiting), preselectIds,
+          emptyFor('No sessions waiting to be confirmed.', 'No sessions to confirm match ' + quoted + '.')
+        );
+        var awaitingCard = h('div', { class: 'card' + (focusKey === 'awaiting' ? ' card--focus' : '') }, [
+          h('div', { class: 'card__header' }, [
+            h('h2', { class: 'card__title' }, 'Sessions to confirm'),
+            awaitingBuilt.bulkBtn,
+          ]),
+          h('p', {
+            style: 'margin:0 0 var(--space-3);color:var(--color-text-muted);font-size:var(--font-size-2)',
+          }, 'Appointments that have ended. Confirming creates the draft claim.'),
+          awaitingBuilt.table,
+        ]);
+
+        var matchingCard = sectionCard(
+          'Appointments needing a client',
+          'Past appointments that were never matched. Matching schedules the session.',
+          sectionTable('Client', filterItems(workflow.matching).map(function (item) {
+            var ev = item.event;
+            return function (row) {
+              paintMatchRow(ev, row,
+                ev.match_state === 'matched' && ev.matched_client_id ? 'suggested' : 'picker',
+                true);
+            };
+          }), emptyFor('No past appointments waiting for a client.', 'No appointments needing a client match ' + quoted + '.')),
+          focusKey === 'match'
+        );
+
+        var upcomingCard = sectionCard(
+          'Upcoming appointments',
+          'Match a client ahead of time. Confirming waits until the appointment ends.',
+          sectionTable('Client', filterItems(workflow.upcoming).map(function (item) {
+            var ev = item.event;
+            return function (row) {
+              if (ev.session_id) {
+                paintScheduledRow(ev, row);
+                return;
+              }
+              paintMatchRow(ev, row,
+                ev.match_state === 'matched' && ev.matched_client_id ? 'suggested' : 'picker',
+                true);
+            };
+          }), emptyFor('No upcoming appointments. Sync to pull in new appointments.', 'No upcoming appointments match ' + quoted + '.'))
+        );
+
+        // Subordinate: set aside, but reversible — matching one still promotes it.
+        var ignoredCard = sectionCard(
+          'Ignored appointments',
+          'Set aside. Matching a client still schedules the session.',
+          sectionTable('Client', filterItems(workflow.ignored).map(function (item) {
+            var ev = item.event;
+            return function (row) {
+              paintMatchRow(ev, row,
+                ev.match_state === 'matched' && ev.matched_client_id ? 'suggested' : 'picker',
+                false);
+            };
+          }), emptyFor('No ignored appointments.', 'No ignored appointments match ' + quoted + '.'))
+        );
+
+        // While searching, a section with no match is left out rather than
+        // repeating a "no matches" box four times. "Sessions to confirm" always
+        // stays: it is the section the search exists for, and its empty message
+        // is what tells the biller the name was heard but found nothing.
+        if (searching) {
+          var kept = [awaitingCard];
+          if (filterItems(workflow.matching).length) kept.push(matchingCard);
+          if (filterItems(workflow.upcoming).length) kept.push(upcomingCard);
+          if (filterItems(workflow.ignored).length) kept.push(ignoredCard);
+          return kept;
+        }
+        return [awaitingCard, matchingCard, upcomingCard, ignoredCard];
+      }
+
+      var firstCards = buildSections(preselectSessionIds);
+      var sectionsEl = h('div', { class: 'stack' }, firstCards);
+      var awaitingCard = firstCards[0];
+      var matchingCard = firstCards[1];
+
+      var searchInput = h('input', {
+        class: 'field__control',
+        type: 'search',
+        value: searchTerm,
+        placeholder: 'Search by client name\u2026',
+        autocomplete: 'off',
+        'aria-label': 'Search appointments by client name',
+        style: 'max-width:24rem',
+        onInput: function (e) {
+          searchTerm = ((e && e.target && e.target.value) || '');
+          R.clear(sectionsEl);
+          buildSections().forEach(function (card) { sectionsEl.appendChild(card); });
+        },
+      });
 
       // --- shell -------------------------------------------------------------
 
@@ -680,10 +754,8 @@
         h('p', {
           style: 'margin:0;color:var(--color-text-muted);font-size:var(--font-size-3)',
         }, 'Match each appointment to a client, then confirm the session once it has ended.'),
-        awaitingCard,
-        matchingCard,
-        upcomingCard,
-        ignoredCard,
+        searchInput,
+        sectionsEl,
       ]));
 
       // Bring the requested section into view. Real elements only — the
