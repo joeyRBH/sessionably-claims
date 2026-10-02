@@ -53,6 +53,7 @@ function reset(over) {
     timeZone: null,
     clinicianSent: [], practiceSent: [],
     practiceResult: { sent: true },
+    clinicianResult: { sent: true },
   });
 }
 const notBlank = (v) => v != null && String(v).trim() !== '';
@@ -111,6 +112,7 @@ dbLib.query = async (text, params) => {
       id: c.id, practice_id: c.practice_id, first_name: c.first_name, last_name: c.last_name,
       primary_clinician_id: c.primary_clinician_id,
       already_notified: c.practice_intake_notified_at != null,
+      clinician_notified: c.clinician_intake_notified_at != null,
       practice_to: notBlank(state.practiceEmail) ? String(state.practiceEmail).trim() : null,
       clinician_active: !!u && u.is_active && u.id === c.primary_clinician_id,
       clinician_email: u ? u.email : null,
@@ -127,7 +129,7 @@ dbLib.query = async (text, params) => {
   return { rows: [], rowCount: 0 };   // audit inserts, relink, etc.
 };
 
-emailLib.sendClinicianIntakeCompleteEmail = async (opts) => { state.clinicianSent.push(opts); return { sent: true }; };
+emailLib.sendClinicianIntakeCompleteEmail = async (opts) => { state.clinicianSent.push(opts); return state.clinicianResult; };
 emailLib.sendIntakeCompletionEmail = async (opts) => { state.practiceSent.push(opts); return state.practiceResult; };
 
 const call = (sub, body) => handler({
@@ -179,6 +181,37 @@ test('same inbox: when the clinician alert goes to the practice address, only th
   await saveInsurance();
   assert.strictEqual(state.practiceSent.length, 0, 'and it stays deduped on re-submits');
   assert.notStrictEqual(state.client.practice_intake_notified_at, null, 'claimed so it is not re-evaluated');
+});
+
+test('same inbox + the clinician send FAILS: the practice is not marked covered, and one email lands on retry', async () => {
+  reset();
+  state.clinician.email = 'owner@practice.test';          // clinician alert goes to the practice address
+  state.clinicianResult = { sent: false, error: 'ses down' };
+  await saveCard();
+  await saveInsurance();
+  assert.strictEqual(state.clinicianSent.length, 1, 'the clinician send was attempted');
+  assert.strictEqual(state.client.clinician_intake_notified_at, null, 'and its claim was released');
+  assert.strictEqual(state.practiceSent.length, 0, 'no practice email: it would be a second message to the same person');
+  assert.strictEqual(state.client.practice_intake_notified_at, null,
+    'the practice is NOT marked covered while nobody has actually been told');
+
+  state.clinicianResult = { sent: true };                  // SES recovers; the patient re-submits a step
+  await saveInsurance();
+  assert.strictEqual(state.clinicianSent.length, 2, 'the clinician send is retried');
+  assert.strictEqual(state.practiceSent.length, 0, 'still exactly one message to that inbox');
+  assert.notStrictEqual(state.client.clinician_intake_notified_at, null);
+  assert.notStrictEqual(state.client.practice_intake_notified_at, null, 'now it IS covered, and stays quiet');
+  await saveInsurance();
+  assert.strictEqual(state.clinicianSent.length, 2);
+  assert.strictEqual(state.practiceSent.length, 0);
+});
+
+test('different inboxes: a failed clinician send does not hold back the practice email', async () => {
+  reset();
+  state.clinicianResult = { sent: false, error: 'ses down' };
+  await saveCard();
+  await saveInsurance();
+  assert.strictEqual(state.practiceSent.length, 1, 'the practice is told regardless');
 });
 
 test('same inbox is case-insensitive', async () => {

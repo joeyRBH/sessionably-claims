@@ -125,6 +125,7 @@ async function notifyPracticeIfComplete(clientId) {
     const r = await db.query(
       `select c.id, c.practice_id, c.first_name, c.last_name, c.primary_clinician_id,
               (c.practice_intake_notified_at is not null) as already_notified,
+              (c.clinician_intake_notified_at is not null) as clinician_notified,
               nullif(btrim(coalesce(p.notification_email, '')), '') as practice_to,
               (u.id is not null and u.is_active = true) as clinician_active,
               nullif(btrim(coalesce(u.email, '')), '') as clinician_email
@@ -154,6 +155,13 @@ async function notifyPracticeIfComplete(clientId) {
       ? (row.clinician_email && email.isValidEmail(row.clinician_email) ? row.clinician_email : to)
       : null;
     const sameInbox = !!clinicianTo && clinicianTo.toLowerCase() === to.toLowerCase();
+    // Same inbox: the practice copy is redundant ONLY if the clinician alert actually
+    // went out (clinician_intake_notified_at is set — it is released on a failed send).
+    // If it did not, the clinician alert is still owed and may never arrive, so claim
+    // nothing and send nothing here: the next intake step retries the clinician send,
+    // and once it lands this check passes. Marking the practice "covered" before that
+    // would leave the one inbox with no email at all.
+    if (sameInbox && !row.clinician_notified) return;
 
     const claim = await db.query(
       `update clients
@@ -164,7 +172,7 @@ async function notifyPracticeIfComplete(clientId) {
     );
     if (claim.rowCount === 0) return;   // a concurrent request got there first
     claimed = true;
-    if (sameInbox) return;              // covered by the clinician alert; stay claimed
+    if (sameInbox) return;              // covered by the clinician alert that DID go out; stay claimed
 
     const timeZone = await lookupTimeZone(row.practice_id, row.primary_clinician_id);
     const result = await email.sendIntakeCompletionEmail({

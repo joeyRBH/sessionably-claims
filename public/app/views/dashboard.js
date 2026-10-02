@@ -19,8 +19,9 @@
  * confirms, submits and deletes nothing — every card's action navigates to the
  * view that owns that decision.
  *
- * Two load groups that fail independently: a Reports outage must not hide the
- * work queues, and a workflow outage must not hide reporting. A failed request
+ * Three load groups that fail independently: a Reports outage must not hide the
+ * work queues, a workflow outage must not hide reporting, and the Clients list
+ * (intake) is separate from both. A failed request
  * NEVER becomes a zero — zero is only ever a real, successful empty response
  * (a practice with no calendar connected is a true zero, not an error).
  *
@@ -37,8 +38,10 @@
  *     ready_to_review is a validation projection, not an approval.
  *   * "New intakes to review" is the shared intake classifier's needs_review state
  *     (public/app/intake.js): card AND insurance on file, not yet confirmed by a
- *     clinician. It reads the Clients list the page already needs for no other
- *     purpose — one request, no per-client calls. Its card links to the Clients
+ *     clinician. It reads the Clients list — one request, no per-client calls — in
+ *     its OWN load group: a Clients failure shows a small inline error in that
+ *     card's place and never hides the calendar/claim queues (nor does a calendar
+ *     or claims failure hide a loaded intake count). Its card links to the Clients
  *     list filtered to exactly those clients; the hash carries a key, never a name.
  *   * "Claims needing follow-up" is post-submission attention only —
  *     info_requested and denied. Ordinary submitted / processing / paid /
@@ -76,7 +79,7 @@
   // ---------------------------------------------------------------------------
   // Counting (pure — the same inputs always give the same five numbers)
   // ---------------------------------------------------------------------------
-  // data: { pending, confirmed, sessions, claims, clients }, nowMs: epoch ms.
+  // data: { pending, confirmed, sessions, claims }, nowMs: epoch ms.
   function attentionCounts(data, nowMs) {
     var pending = (data && data.pending) || [];
     var claims = (data && data.claims) || [];
@@ -106,20 +109,22 @@
       return c && c.status !== 'draft' && FOLLOW_UP_STATUSES[c.status] === true;
     }).length;
 
-    // New intakes: patients who finished card + insurance and are waiting on a
-    // clinician's confirmation. R.intake is the single shared definition.
-    var intakeReview = ((data && data.clients) || []).filter(function (c) {
-      return R.intake && R.intake.isNeedsReview(c);
-    }).length;
-
     return {
-      intakeReview: intakeReview,
       toMatch: toMatch,
       toConfirm: wf.awaiting.length,
       needsCorrection: needsCorrection,
       toVerify: toVerify,
       followUp: followUp,
     };
+  }
+
+  // New intakes: patients who finished card + insurance and are waiting on a
+  // clinician's confirmation. R.intake is the single shared definition. Pure, and
+  // separate from attentionCounts because it comes from a different request.
+  function intakeReviewCount(clients) {
+    return (clients || []).filter(function (c) {
+      return R.intake && R.intake.isNeedsReview(c);
+    }).length;
   }
 
   // ---------------------------------------------------------------------------
@@ -208,30 +213,45 @@
   // ---------------------------------------------------------------------------
   // Sections
   // ---------------------------------------------------------------------------
-  function attentionSection(state, retry) {
-    var body;
-    if (state.error) {
-      body = inlineFailure(
-        'Could not load your workflow. ' + ((state.error && state.error.message) || ''),
-        retry
-      );
-    } else if (!state.data) {
-      body = h('div', { class: 'card' }, h('div', { class: 'skeleton skeleton--line' }));
-    } else {
-      var n = attentionCounts(state.data, Date.now());
-      var cards = [];
-
-      // First: it is the earliest step in the workflow (a patient just finished).
-      if (n.intakeReview) {
-        cards.push(attentionCard({
+  // work: the calendar + claims group; intake: the Clients list. Independent: each has
+  // its own error and Retry, and neither can hide or zero the other.
+  function attentionSection(work, intake, retryWork, retryIntake) {
+    // The intake slot: a count card, a small inline failure, or nothing (zero / still
+    // loading). A failed request never becomes a zero.
+    var intakeNodes = [];
+    if (intake.error) {
+      intakeNodes.push(inlineFailure(
+        'Could not load new intakes. ' + ((intake.error && intake.error.message) || ''),
+        retryIntake
+      ));
+    } else if (intake.data) {
+      var count = intakeReviewCount(intake.data);
+      if (count) {
+        // First: it is the earliest step in the workflow (a patient just finished).
+        intakeNodes.push(attentionCard({
           label: 'New intakes to review',
-          count: n.intakeReview,
+          count: count,
           body: 'Clients who added their insurance and a card. Check their chart and ' +
             'confirm them before billing.',
           actionLabel: 'Review clients',
           route: 'clients/focus/intake_review',
         }));
       }
+    }
+
+    var body;
+    if (work.error) {
+      var failure = inlineFailure(
+        'Could not load your workflow. ' + ((work.error && work.error.message) || ''),
+        retryWork
+      );
+      body = intakeNodes.length ? h('div', { class: 'card-grid' }, intakeNodes.concat([failure])) : failure;
+    } else if (!work.data) {
+      body = h('div', { class: 'card' }, h('div', { class: 'skeleton skeleton--line' }));
+    } else {
+      var n = attentionCounts(work.data, Date.now());
+      var cards = intakeNodes.slice();
+
       if (n.toMatch) {
         cards.push(attentionCard({
           label: 'Appointments to match',
@@ -280,9 +300,15 @@
         }));
       }
 
-      body = cards.length
-        ? h('div', { class: 'card-grid' }, cards)
-        : caughtUpCard();
+      if (cards.length) {
+        body = h('div', { class: 'card-grid' }, cards);
+      } else if (intake.data) {
+        // Nothing waiting AND the intake count genuinely loaded as zero.
+        body = caughtUpCard();
+      } else {
+        // The intake request is still in flight: do not claim "caught up" yet.
+        body = h('div', { class: 'card' }, h('div', { class: 'skeleton skeleton--line' }));
+      }
     }
 
     return h('div', { class: 'stack' }, [
@@ -332,6 +358,7 @@
     var state = {
       firstName: '',
       work: { data: null, error: null },
+      intake: { data: null, error: null },
       report: { data: null, error: null },
     };
 
@@ -342,7 +369,7 @@
         h('div', { class: 'page-header' }, [
           h('h1', { class: 'page-header__title' }, greeting),
         ]),
-        attentionSection(state.work, loadWork),
+        attentionSection(state.work, state.intake, loadWork, loadIntake),
         overviewSection(state.report, loadReport),
       ]));
     }
@@ -357,8 +384,6 @@
         api.calendarEvents.list({ state: 'confirmed' }),
         api.sessions.list({ status: 'scheduled' }),
         api.claims.list(),
-        // Intake state (card + insurance on file) rides on the list response itself.
-        api.clients.list(),
       ]).then(function (res) {
         state.work = {
           data: {
@@ -366,13 +391,26 @@
             confirmed: (res[1] && res[1].calendar_events) || [],
             sessions: (res[2] && res[2].sessions) || [],
             claims: (res[3] && res[3].claims) || [],
-            clients: (res[4] && res[4].clients) || [],
           },
           error: null,
         };
         paint();
       }).catch(function (err) {
         state.work = { data: null, error: err || new Error('Request failed.') };
+        paint();
+      });
+    }
+
+    // Intake state (card + insurance on file) rides on the Clients list response. Its
+    // own group: a failure here is contained to the "New intakes to review" slot.
+    function loadIntake() {
+      state.intake = { data: null, error: null };
+      paint();
+      api.clients.list().then(function (res) {
+        state.intake = { data: (res && res.clients) || [], error: null };
+        paint();
+      }).catch(function (err) {
+        state.intake = { data: null, error: err || new Error('Request failed.') };
         paint();
       });
     }
@@ -395,6 +433,7 @@
       state.firstName = name || '';
       paint();
       loadWork();
+      loadIntake();
       loadReport();
     });
   }
