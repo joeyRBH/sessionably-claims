@@ -21,6 +21,7 @@ const { requireAuth } = require('../lib/auth');
 const { json, preflight } = require('../lib/response');
 const { parseBody } = require('../lib/util');
 const { audit, sanitizeFields } = require('../lib/audit');
+const { relinkDraftClaimsToPrimaryInsurance } = require('../lib/claims');
 const { normalizeEligibility, computeDiscrepancies } = require('./vob');
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -328,6 +329,7 @@ async function createRecord(practiceId, body, event, authCtx) {
     resourceType: 'insurance_record',
     resourceId: created.id,
   });
+  await relinkClaims(practiceId, clientId, event, authCtx);
   return json(201, { insurance_record: shapeRecord(created) }, event);
 }
 
@@ -543,6 +545,7 @@ async function updateRecord(practiceId, id, body, event, authCtx) {
     resourceId: id,
     metadata: { fields_changed: sanitizeFields(before, changes) },
   });
+  await relinkClaims(practiceId, res.rows[0].client_id, event, authCtx);
   return json(200, { insurance_record: shapeRecord(res.rows[0]) }, event);
 }
 
@@ -554,7 +557,7 @@ async function deleteRecord(practiceId, id, event, authCtx) {
   const res = await db.query(
     `update insurance_records set is_hidden = true
       where id = $1 and practice_id = $2 and is_hidden = false
-      returning id`,
+      returning id, client_id`,
     [id, practiceId]
   );
   if (res.rowCount === 0) {
@@ -565,7 +568,28 @@ async function deleteRecord(practiceId, id, event, authCtx) {
     resourceType: 'insurance_record',
     resourceId: id,
   });
+  await relinkClaims(practiceId, res.rows[0].client_id, event, authCtx);
   return json(200, { deleted: true, id: res.rows[0].id }, event);
+}
+
+// Coverage changed for a client (added, edited, made primary, or removed): attach
+// the current primary to any of their draft claims that lack a live policy. Never
+// fails the caller — the coverage write has already committed — but a failure is
+// logged (error name only, never PHI) rather than swallowed silently.
+async function relinkClaims(practiceId, clientId, event, authCtx) {
+  try {
+    const ids = await relinkDraftClaimsToPrimaryInsurance(db, practiceId, clientId);
+    for (const claimId of ids) {
+      await audit(event, authCtx, {
+        action: 'claim.insurance_relink',
+        resourceType: 'claim',
+        resourceId: claimId,
+        metadata: { trigger: 'insurance_change' },
+      });
+    }
+  } catch (err) {
+    console.error('claim insurance relink failed:', err && err.name);
+  }
 }
 
 // --- entrypoint --------------------------------------------------------------
