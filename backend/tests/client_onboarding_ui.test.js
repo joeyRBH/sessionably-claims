@@ -223,7 +223,8 @@ const Reddably = {
   statusBadge(status) { return h('span', { class: 'badge badge--neutral' }, status); },
   toast(message, tone, dwell) { toasts.push({ message, tone, dwell }); },
   navigate(route) { navigations.push(route); },
-  confirmModal() {
+  confirmModal(opts) {
+    calls.push({ name: 'confirmModal', opts });
     return Promise.resolve(confirmQueue.length ? confirmQueue.shift() : false);
   },
   formModal(opts) {
@@ -381,7 +382,7 @@ test('New client opens exactly ONE form, in the specified order, with no Status 
   assert.ok(!gender.required, 'Biological Sex is optional on create');
 });
 
-test('the session-defaults fields are one COLLAPSED group, pre-filled from the practice', async () => {
+test('the session-defaults fields are one COLLAPSED group, left BLANK with the practice value as a placeholder', async () => {
   const newBtn = await openNewClient();
   newBtn.dispatch('click');
   await flush();
@@ -390,10 +391,26 @@ test('the session-defaults fields are one COLLAPSED group, pre-filled from the p
   assert.strictEqual(defaults.length, 4);
   assert.ok(defaults.every((d) => d.group === 'Session defaults' && !d.groupOpen),
     'grouped, and not opened by default');
-  assert.strictEqual(f.values.default_cpt_code, '90837');
-  assert.strictEqual(f.values.default_place_of_service, '11');
-  assert.strictEqual(f.values.default_session_fee, '175.00');
-  assert.strictEqual(f.values.default_procedure_modifiers, '95');
+  for (const k of ['default_cpt_code', 'default_place_of_service', 'default_session_fee', 'default_procedure_modifiers']) {
+    assert.strictEqual(f.values[k], undefined, k + ' is NOT pre-filled — blank means inherit the practice default');
+  }
+  const by = (n) => defaults.find((d) => d.name === n);
+  assert.strictEqual(by('default_cpt_code').placeholder, 'Practice default: 90837');
+  assert.strictEqual(by('default_session_fee').placeholder, 'Practice default: 175.00');
+  assert.strictEqual(by('default_procedure_modifiers').placeholder, 'Practice default: 95');
+  const pos = JSON.parse(JSON.stringify(by('default_place_of_service').options));
+  assert.strictEqual(pos[0].value, '', 'the blank option is the inherit choice');
+  assert.ok(/^Practice default: 11/.test(pos[0].label), 'and it says what it inherits');
+  assert.ok(pos.some((o) => o.value === 'none'), 'an explicit None is offered separately');
+});
+
+test('with no practice defaults the blank option just says Not set', async () => {
+  practiceRow = {};
+  const newBtn = await openNewClient();
+  newBtn.dispatch('click');
+  await flush();
+  const pos = JSON.parse(JSON.stringify(formCall().fieldDefs.find((d) => d.name === 'default_place_of_service').options));
+  assert.strictEqual(pos[0].label, 'Not set');
 });
 
 test('the clinician defaults to the signed-in clinician', async () => {
@@ -515,23 +532,109 @@ test('the form still opens when the roster / practice lookups fail', async () =>
 
 // --- 3. unmatched calendar events are an inline suggestion, not a modal ---------
 
-test('unmatched calendar events show an inline card on the chart with a Match button', async () => {
+const CAL_EVENTS = () => [
+  { id: 'ev-weekly', starts_at: '2026-10-05T15:00:00Z', summary_raw: 'Weekly sync', event_status: 'confirmed', match_state: 'unmatched', session_id: null },
+  { id: 'ev-client-late', starts_at: '2026-10-09T12:00:00Z', summary_raw: 'Legacy Client - 50 min', event_status: 'confirmed', match_state: 'unmatched', session_id: null },
+  { id: 'ev-other', starts_at: '2026-10-06T15:00:00Z', summary_raw: 'Other Person', event_status: 'confirmed', match_state: 'unmatched', session_id: null },
+  { id: 'ev-done', starts_at: '2026-10-06T15:00:00Z', summary_raw: 'Done', event_status: 'confirmed', session_id: 's-1' },
+  { id: 'ev-gone', starts_at: '2026-10-07T15:00:00Z', summary_raw: 'Gone', event_status: 'cancelled', session_id: null },
+];
+async function chartWithEvents(clientOver) {
+  const original = api.calendarEvents.list;
+  api.calendarEvents.list = () => Promise.resolve({ calendar_events: CAL_EVENTS() });
+  const root = await chart(clientOver);
+  api.calendarEvents.list = original;
+  return root;
+}
+const eventSelect = (root) => walk(root).find((e) => e.tagName === 'SELECT' && e.attributes['aria-label'] === 'Appointment');
+const optionOf = (sel) => walk(sel).filter((e) => e.tagName === 'OPTION');
+
+test('inline Match card: only live unpromoted events, nothing preselected, button disabled until one is chosen', async () => {
+  const root = await chartWithEvents();
+  assert.ok(/Appointments on your calendar/.test(root.textContent));
+  assert.ok(/3 appointments aren’t matched/.test(root.textContent), 'promoted and cancelled events are not counted');
+  assert.ok(!calls.some((c) => c.name === 'formModal'), 'no modal');
+  const sel = eventSelect(root);
+  const opts = optionOf(sel);
+  assert.strictEqual(opts[0].textContent, 'Choose an appointment', 'blank first option');
+  assert.strictEqual(opts[0].attributes.value, '');
+  assert.ok(opts.every((o) => o.attributes.selected === undefined), 'no option carries selected');
+  assert.strictEqual(sel.value, '', 'nothing is selected');
+  assert.strictEqual(byLabel(root, 'Match appointment').disabled, true, 'cannot match with nothing chosen');
+  assert.ok(!calls.some((c) => c.name === 'calendarEvents.promote'));
+});
+
+test('inline Match card: labels show date AND time', async () => {
+  const root = await chartWithEvents();
+  const labels = optionOf(eventSelect(root)).map((o) => o.textContent);
+  const late = labels.find((l) => /Legacy Client/.test(l));
+  assert.ok(/Oct \d{1,2}, 2026/.test(late) && /\d{1,2}:\d{2}\s?(AM|PM)/i.test(late), 'date and a clock time: ' + late);
+});
+
+test('inline Match card: events titled like this client sort first, by date after that', async () => {
+  const root = await chartWithEvents();
+  const ids = optionOf(eventSelect(root)).slice(1).map((o) => o.attributes.value);
+  assert.deepStrictEqual(ids, ['ev-client-late', 'ev-weekly', 'ev-other'],
+    'the client-named event leads even though it is the LATEST; the rest are chronological');
+  assert.ok(/listed first/.test(walk(root).filter((e) => e.tagName === 'P').map((p) => p.textContent).join(' ')));
+});
+
+test('inline Match card: calendar_display_name and the matcher suggestion also count as likely', async () => {
   const original = api.calendarEvents.list;
   api.calendarEvents.list = () => Promise.resolve({ calendar_events: [
-    { id: 'ev-1', starts_at: '2026-10-05T15:00:00Z', summary_raw: 'Appt', event_status: 'confirmed', match_state: 'unmatched', session_id: null },
-    { id: 'ev-2', starts_at: '2026-10-06T15:00:00Z', summary_raw: 'Done', event_status: 'confirmed', session_id: 's-1' },
-    { id: 'ev-3', starts_at: '2026-10-07T15:00:00Z', summary_raw: 'Gone', event_status: 'cancelled', session_id: null },
+    { id: 'a', starts_at: '2026-10-05T15:00:00Z', summary_raw: 'Weekly sync', event_status: 'confirmed', session_id: null },
+    { id: 'b', starts_at: '2026-10-08T15:00:00Z', summary_raw: 'AC 3pm', event_status: 'confirmed', session_id: null },
+    { id: 'c', starts_at: '2026-10-09T15:00:00Z', summary_raw: 'Untitled', event_status: 'confirmed', match_state: 'matched', matched_client_id: CLIENT_ID, session_id: null },
   ] });
-  const root = await chart();
+  const root = await chart({ calendar_display_name: 'AC 3pm' });
   api.calendarEvents.list = original;
-  assert.ok(/Appointments on your calendar/.test(root.textContent));
-  assert.ok(/1 appointment isn’t matched/.test(root.textContent), 'only the unpromoted, live event counts');
-  assert.ok(!calls.some((c) => c.name === 'formModal'), 'no modal');
-  byLabel(root, 'Match appointment').dispatch('click');
+  assert.deepStrictEqual(optionOf(eventSelect(root)).slice(1).map((o) => o.attributes.value), ['b', 'c', 'a']);
+});
+
+test('promote needs the confirmation: declining sends nothing; confirming names the client and the time', async () => {
+  const root = await chartWithEvents();
+  const sel = eventSelect(root);
+  sel.value = 'ev-client-late';
+  sel.dispatch('change');
+  const btn = byLabel(root, 'Match appointment');
+  assert.strictEqual(btn.disabled, false, 'enabled once an appointment is chosen');
+
+  confirmQueue = [false];
+  btn.dispatch('click');
   await flush();
+  assert.ok(calls.some((c) => c.name === 'confirmModal'), 'it asks first');
+  assert.ok(!calls.some((c) => c.name === 'calendarEvents.promote'), 'declined: nothing is created');
+
+  confirmQueue = [true];
+  btn.dispatch('click');
+  await flush();
+  const ask = calls.filter((c) => c.name === 'confirmModal').slice(-1)[0].opts;
+  assert.ok(/^Create a session for Legacy on /.test(ask.body), ask.body);
+  assert.ok(/Oct \d{1,2}, 2026/.test(ask.body) && /:\d{2}/.test(ask.body), 'with the date and time');
   const promote = calls.find((c) => c.name === 'calendarEvents.promote');
-  assert.ok(promote, 'matching is an explicit click');
+  assert.ok(promote, 'confirmed: now it promotes');
+  assert.strictEqual(promote.id, 'ev-client-late');
   assert.strictEqual(promote.clientId, CLIENT_ID);
+});
+
+test('a failed link send does NOT also toast "Client created"', async () => {
+  const original = api.clients.sendPaymentLink;
+  api.clients.sendPaymentLink = () => Promise.reject(new Error('Twilio unavailable'));
+  const newBtn = await openNewClient();
+  formQueue = [{ _action: 'send', first_name: 'Brand', last_name: 'New', phone: '+13035550100' }];
+  newBtn.dispatch('click');
+  await flush();
+  api.clients.sendPaymentLink = original;
+  assert.ok(toasts.some((t) => /Client saved, but the payment link could not be sent/.test(t.message)));
+  assert.ok(!toasts.some((t) => t.message === 'Client created'), 'only the honest message is shown');
+});
+
+test('a successful Save & send still toasts "Client created"', async () => {
+  const newBtn = await openNewClient();
+  formQueue = [{ _action: 'send', first_name: 'Brand', last_name: 'New', phone: '+13035550100' }];
+  newBtn.dispatch('click');
+  await flush();
+  assert.ok(toasts.some((t) => t.message === 'Client created'));
 });
 
 test('no unmatched events → no suggestion card at all', async () => {

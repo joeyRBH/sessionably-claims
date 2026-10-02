@@ -425,18 +425,28 @@
     }).catch(function () { return {}; });
   }
 
-  // The practice's defaults as the values the client-default form fields take.
-  function practiceDefaultValues(practice) {
-    var out = {};
-    if (practice.default_cpt_code) out.default_cpt_code = practice.default_cpt_code;
-    if (practice.default_place_of_service) out.default_place_of_service = practice.default_place_of_service;
-    if (practice.default_session_fee != null && practice.default_session_fee !== '') {
-      out.default_session_fee = practice.default_session_fee;
+  // A client-default form field, grouped under "Session defaults", that shows the
+  // practice's value as a placeholder / blank-option label instead of filling it in.
+  function withPracticePlaceholder(field, practice) {
+    var copy = Object.assign({}, field, { group: 'Session defaults' });
+    var p = practice || {};
+    var has = function (v) { return v !== null && v !== undefined && v !== ''; };
+    if (field.name === 'default_place_of_service') {
+      var code = p.default_place_of_service;
+      var match = has(code) ? field.options.filter(function (o) { return o.value === code; })[0] : null;
+      copy.options = field.options.map(function (o, i) {
+        if (i !== 0) return o;
+        return { value: '', label: match ? 'Practice default: ' + match.label : 'Not set' };
+      });
+    } else if (field.name === 'default_cpt_code' && has(p.default_cpt_code)) {
+      copy.placeholder = 'Practice default: ' + p.default_cpt_code;
+    } else if (field.name === 'default_session_fee' && has(p.default_session_fee)) {
+      copy.placeholder = 'Practice default: ' + p.default_session_fee;
+    } else if (field.name === 'default_procedure_modifiers'
+        && Array.isArray(p.default_procedure_modifiers) && p.default_procedure_modifiers.length) {
+      copy.placeholder = 'Practice default: ' + p.default_procedure_modifiers.join(', ');
     }
-    if (Array.isArray(practice.default_procedure_modifiers) && practice.default_procedure_modifiers.length) {
-      out.default_procedure_modifiers = practice.default_procedure_modifiers.join(', ');
-    }
-    return out;
+    return copy;
   }
 
   // The billing-defaults editor (opened from the chart's checklist). It makes "just verify the
@@ -522,17 +532,17 @@
         }
         fields = fields.concat([CREATE_DIAGNOSIS_FIELD]);
 
-        // Collapsed "Session defaults", pre-filled from the practice (editable per
-        // client). Clearing a pre-filled value just means "use the practice's".
+        // Collapsed "Session defaults". Left BLANK on purpose: blank means "use the
+        // practice default", resolved when each session is created, so a later change to
+        // the practice default reaches this client too. Copying the practice's values
+        // into the client here would freeze them. The practice values are shown as
+        // placeholders ("Practice default: …") so it is clear what blank means.
         fields = fields.concat(BILLING_DEFAULT_FIELDS.map(function (f) {
-          var copy = Object.assign({}, f);
-          copy.group = 'Session defaults';
-          return copy;
+          return withPracticePlaceholder(f, both[1]);
         }));
-        var seeded = practiceDefaultValues(both[1]);
-        Object.keys(seeded).forEach(function (k) { values[k] = seeded[k]; });
 
         var created = null;
+        var linkFailed = false;
         return R.formModal({
           title: 'New client',
           fields: fields,
@@ -554,7 +564,9 @@
               return api.clients.sendPaymentLink(created.id).then(function () {
                 R.toast('Payment link sent', 'success');
               }).catch(function (err) {
-                // The client IS saved; only the text failed. Say so, not "failed".
+                // The client IS saved; only the text failed. Say so, not "failed" —
+                // and then do NOT also announce "Client created" over the top of it.
+                linkFailed = true;
                 R.toast('Client saved, but the payment link could not be sent: ' +
                   ((err && err.message) || 'try again from their chart') + '.', 'error');
               });
@@ -566,7 +578,7 @@
           },
         }).then(function (result) {
           if (!result || !created) return;
-          R.toast('Client created', 'success');
+          if (!linkFailed) R.toast('Client created', 'success');
           // Land on the chart: it lists whatever is still outstanding.
           R.navigate('clients/' + created.id);
         });
@@ -1156,6 +1168,37 @@
     // asynchronously so a slow or absent calendar never delays the chart. Matching
     // PROMOTES the appointment to a scheduled (billable) session, seeded from this
     // client's defaults — so it only ever happens on an explicit click here.
+    // Date AND time, because two appointments on the same day are otherwise
+    // indistinguishable in the list.
+    function fmtWhen(iso) {
+      var d = new Date(iso);
+      if (isNaN(d.getTime())) return String(iso || '');
+      return d.toLocaleString('en-US', {
+        weekday: 'short', month: 'short', day: 'numeric', year: 'numeric',
+        hour: 'numeric', minute: '2-digit',
+      });
+    }
+
+    // Does this event look like it belongs to this client? Name forms only — the title
+    // is the clinician's own calendar text, so this is a sort hint, never a match: the
+    // person still picks one and confirms it.
+    function eventLooksLike(ev, client) {
+      if (ev.matched_client_id && ev.matched_client_id === client.id) return true;
+      var title = String(ev.summary_raw || '').toLowerCase();
+      if (!title) return false;
+      var first = String(client.first_name || '').trim().toLowerCase();
+      var last = String(client.last_name || '').trim().toLowerCase();
+      var forms = [
+        String(client.calendar_display_name || '').trim().toLowerCase(),
+        String(client.preferred_name || '').trim().toLowerCase(),
+        (first + ' ' + last).trim(),
+        (last + ', ' + first).trim(),
+        (last + ' ' + first).trim(),
+      ].filter(function (f) { return f.length > 2 && f !== ',' ; });
+      if (forms.some(function (f) { return title.indexOf(f) !== -1; })) return true;
+      return !!(first && last && title.indexOf(first) !== -1 && title.indexOf(last) !== -1);
+    }
+
     function calendarSuggestionCard(client) {
       var holder = h('div');
       Promise.resolve(api.calendarEvents.list()).then(function (res) {
@@ -1165,23 +1208,52 @@
         });
         if (!events.length) return;
 
+        // This client's likely appointments first, then by date. Sorted BEFORE the
+        // 25-row cut so a likely match can never be the one that falls off the end.
+        var ranked = events.map(function (ev, i) {
+          return { ev: ev, i: i, likely: eventLooksLike(ev, client) };
+        }).sort(function (a, b) {
+          if (a.likely !== b.likely) return a.likely ? -1 : 1;
+          var ta = new Date(a.ev.starts_at).getTime() || 0;
+          var tb = new Date(b.ev.starts_at).getTime() || 0;
+          return ta !== tb ? ta - tb : a.i - b.i;
+        });
+        var anyLikely = ranked.some(function (r) { return r.likely; });
+
+        // NOTHING is preselected: the first option is a blank "Choose an appointment",
+        // and the button stays disabled until a real one is picked.
         var select = h('select', { class: 'field__control', 'aria-label': 'Appointment',
-          style: 'max-width:28rem' },
-          events.slice(0, 25).map(function (ev) {
-            return h('option', { value: ev.id },
-              R.fmtDate(ev.starts_at) + ' · ' + (ev.summary_raw || 'Untitled appointment'));
-          }));
+          style: 'max-width:32rem' }, [
+          h('option', { value: '' }, 'Choose an appointment'),
+        ].concat(ranked.slice(0, 25).map(function (r) {
+          return h('option', { value: r.ev.id },
+            fmtWhen(r.ev.starts_at) + ' · ' + (r.ev.summary_raw || 'Untitled appointment'));
+        })));
         var btn = h('button', { class: 'btn btn--secondary btn--sm', type: 'button',
+          disabled: 'disabled',
           onClick: function () {
-            btn.disabled = true;
-            api.calendarEvents.promote(select.value, client.id).then(function () {
-              R.toast('Appointment matched — session scheduled', 'success');
-              load();
-            }).catch(function (err) {
-              btn.disabled = false;
-              R.toast((err && err.message) || 'Could not match this appointment.', 'error');
+            var ev = events.filter(function (e) { return e.id === select.value; })[0];
+            if (!ev) return;
+            // Matching creates a scheduled — and eventually billable — session, so it
+            // always asks first, naming who and when.
+            R.confirmModal({
+              title: 'Create a session?',
+              body: 'Create a session for ' + (client.first_name || clientName(client)) +
+                ' on ' + fmtWhen(ev.starts_at) + '?',
+              confirmLabel: 'Create session',
+            }).then(function (ok) {
+              if (!ok) return;
+              btn.disabled = true;
+              return api.calendarEvents.promote(ev.id, client.id).then(function () {
+                R.toast('Appointment matched — session scheduled', 'success');
+                load();
+              }).catch(function (err) {
+                btn.disabled = false;
+                R.toast((err && err.message) || 'Could not match this appointment.', 'error');
+              });
             });
           } }, 'Match appointment');
+        select.addEventListener('change', function () { btn.disabled = !select.value; });
 
         holder.appendChild(h('div', { class: 'card' }, [
           h('div', { class: 'card__header' }, [
@@ -1190,8 +1262,9 @@
           h('p', { style: 'margin:0 0 var(--space-3);color:var(--color-text-muted);' +
             'font-size:var(--font-size-3)' },
             events.length + (events.length === 1 ? ' appointment isn’t' : ' appointments aren’t') +
-            ' matched to a client yet. Matching one to ' + clientName(client) +
-            ' schedules the session using their defaults. You can also confirm them in bulk from Calendar.'),
+            ' matched to a client yet.' +
+            (anyLikely ? ' Ones whose title looks like ' + clientName(client) + ' are listed first.' : '') +
+            ' Matching one schedules the session using their defaults. You can also confirm them in bulk from Calendar.'),
           h('div', { style: 'display:flex;gap:var(--space-3);align-items:center;flex-wrap:wrap' },
             [select, btn]),
         ]));
