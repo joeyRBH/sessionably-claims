@@ -36,7 +36,10 @@ const {
   parsePlaceOfService,
   placeOfServiceError,
   applyClientDefaults,
+  PRACTICE_DURATION_COLUMN,
+  NONE,
 } = require('../lib/billing_fields');
+const { loadPracticeDefaults } = require('../lib/practice_defaults');
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -304,14 +307,25 @@ async function createSession(practiceId, body, event, authCtx) {
   // above; the stored defaults were validated on the way INTO the clients row by
   // the same parsers (backend/handlers/clients.js imports them from the same
   // module), so nothing unvalidated can reach a session through this path.
+  //
+  // The practice's own defaults sit behind the client's (client > practice), and
+  // the practice default duration fills a session that arrived with none.
+  //
+  // An explicit "None" in the request (place of service 'none' / modifiers ['NONE'])
+  // is passed down as the sentinel so it beats BOTH defaults, and comes back as a plain
+  // null — the sentinel is never stored on a session.
+  const practice = await loadPracticeDefaults(db.query.bind(db), practiceId);
   const seeded = applyClientDefaults({
     cpt_code: cptCode,
-    place_of_service: pos.value,
+    place_of_service: pos.none ? NONE : pos.value,
     fee: fee.value,
-    procedure_modifiers: modifiers.value,
+    procedure_modifiers: modifiers.none ? [] : modifiers.value,
     diagnosis_codes: dx.value,
-  }, client);
+  }, client, practice);
   const placeOfService = seeded.place_of_service;
+  const durationMinutes = duration.value != null
+    ? duration.value
+    : (practice && practice[PRACTICE_DURATION_COLUMN] != null ? practice[PRACTICE_DURATION_COLUMN] : null);
 
   if (recurrence === 'none') {
     let res;
@@ -328,7 +342,7 @@ async function createSession(practiceId, body, event, authCtx) {
         clientId,
         clinicianId,
         sessionDate,
-        duration.value,
+        durationMinutes,
         seeded.cpt_code,
         seeded.diagnosis_codes,
         placeOfService,
@@ -395,7 +409,7 @@ async function createSession(practiceId, body, event, authCtx) {
           clientId,
           clinicianId,
           dates[i],
-          duration.value,
+          durationMinutes,
           seeded.cpt_code,
           seeded.diagnosis_codes,
           placeOfService,

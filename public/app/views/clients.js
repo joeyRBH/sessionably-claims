@@ -57,20 +57,24 @@
       options: ['awaiting_info', 'active', 'inactive'] },
   ];
 
-  // CMS two-character place-of-service codes (837P 2300/CLM05-01), listed once
-  // and shared by the session form and the per-client default below — two copies
-  // would be two lists that could disagree about what is billable. The backend
-  // re-validates against lib/place_of_service.js and is authoritative; the empty
-  // option means "not set" (the 837P builder then defaults it to 11 — Office).
-  var PLACE_OF_SERVICE_OPTIONS = [
-    { value: '',   label: 'Not set' },
-    { value: '02', label: '02 — Telehealth (patient not in their home)' },
-    { value: '10', label: '10 — Telehealth (patient in their home)' },
-    { value: '11', label: '11 — Office' },
-    { value: '12', label: '12 — Home' },
-    { value: '49', label: '49 — Independent clinic' },
-    { value: '53', label: '53 — Community mental health center' },
-  ];
+  // CMS place-of-service options: one shared list (client-defaults.js), used by the
+  // session form, the per-client default below, and the practice Session defaults.
+  var PLACE_OF_SERVICE_OPTIONS = R.clientDefaults.PLACE_OF_SERVICE_OPTIONS_WITH_NONE;
+
+  // Comma-separated modifiers -> array of uppercased codes, with the word "none" meaning
+  // an explicit "no modifier" (sent as ['NONE']; the server resolves it). Blank stays
+  // blank = inherit the next default.
+  function modifiersTransform(v) {
+    var parts = String(v || '').split(',')
+      .map(function (t) { return t.trim().toUpperCase(); })
+      .filter(Boolean);
+    return (parts.length === 1 && parts[0] === 'NONE') ? ['NONE'] : parts;
+  }
+  // A stored client default as the form shows it: [] (explicit None) reads "none".
+  function modifiersDisplay(v) {
+    return Array.isArray(v) ? (v.length ? v.join(', ') : 'none') : '';
+  }
+  var MODIFIERS_NONE_HINT = ' Type "none" to bill with no modifier even where a default exists.';
 
   // The per-client billing defaults, seeded onto every new session (calendar
   // promote + manual create) so a promoted appointment arrives billable instead
@@ -95,13 +99,8 @@
     // the backend re-validates and is authoritative.
     { name: 'default_procedure_modifiers', label: 'Default procedure modifiers', type: 'text',
       placeholder: '95, GT',
-      hint: 'Optional, comma-separated. Applied to new sessions for this client.',
-      transform: function (v) {
-        return String(v || '')
-          .split(',')
-          .map(function (t) { return t.trim().toUpperCase(); })
-          .filter(Boolean);
-      } },
+      hint: 'Optional, comma-separated. Applied to new sessions for this client.' + MODIFIERS_NONE_HINT,
+      transform: modifiersTransform },
   ];
 
   // The "New client" form omits date of birth, pronouns, and the full address —
@@ -218,16 +217,11 @@
     { name: 'procedure_modifiers', label: 'Procedure modifiers', type: 'text',
       placeholder: '95, GT',
       hint: 'Optional payer-required modifiers, comma-separated. Example: 95 for ' +
-        'some synchronous telehealth claims — verify payer requirements.',
-      // Comma-separated text → an array of uppercased two-character codes. The
-      // backend re-validates (≤4 entries, each exactly two alphanumeric chars,
+        'some synchronous telehealth claims — verify payer requirements.' + MODIFIERS_NONE_HINT,
+      // Comma-separated text -> an array of uppercased two-character codes. The
+      // backend re-validates (<=4 entries, each exactly two alphanumeric chars,
       // trimmed, de-duplicated) and is authoritative; this just shapes the input.
-      transform: function (v) {
-        return String(v || '')
-          .split(',')
-          .map(function (s) { return s.trim().toUpperCase(); })
-          .filter(Boolean);
-      } },
+      transform: modifiersTransform },
     { name: 'diagnosis_codes',  label: 'Diagnosis code(s)', type: 'diagnosis',
       placeholder: 'Search code or condition (e.g. F411 or anxiety)…' },
     { name: 'status',           label: 'Status',         type: 'select',
@@ -242,6 +236,43 @@
     { value: 'weekly',   label: 'Weekly' },
     { value: 'biweekly', label: 'Every 2 weeks' },
   ];
+
+  // The billing values a NEW session on this client will start with, and where
+  // each came from. Mirrors applyClientDefaults() in backend/lib/billing_fields.js
+  // (client default beats practice default; the practice duration is practice-level
+  // only). The server is authoritative — this exists so the form shows the real
+  // values instead of blanks.
+  function effectiveSessionDefaults(client, practice) {
+    var values = {};
+    var source = {};
+    function has(v) { return v !== null && v !== undefined && v !== ''; }
+    [
+      ['cpt_code', 'default_cpt_code', 'default_cpt_code'],
+      ['fee', 'default_session_fee', 'default_session_fee'],
+      ['place_of_service', 'default_place_of_service', 'default_place_of_service'],
+      ['procedure_modifiers', 'default_procedure_modifiers', 'default_procedure_modifiers'],
+    ].forEach(function (m) {
+      var fromClient = client ? client[m[1]] : null;
+      var fromPractice = practice ? practice[m[2]] : null;
+      var isList = m[0] === 'procedure_modifiers';
+      var usable = function (v) { return isList ? (Array.isArray(v) && v.length > 0) : has(v); };
+      var chosen = null;
+      // A client's explicit "None" (empty modifier list / 'none' place of service) is a
+      // choice, not a blank: it is shown as such and the practice value is NOT shown.
+      if (isList && Array.isArray(fromClient) && fromClient.length === 0) {
+        values[m[0]] = 'none'; source[m[0]] = 'client\u2019s'; return;
+      }
+      if (usable(fromClient)) { chosen = fromClient; source[m[0]] = 'client\u2019s'; }
+      else if (usable(fromPractice)) { chosen = fromPractice; source[m[0]] = 'practice'; }
+      if (chosen === null) return;
+      values[m[0]] = isList ? chosen.join(', ') : chosen;
+    });
+    if (practice && has(practice.default_session_duration_minutes)) {
+      values.duration_minutes = practice.default_session_duration_minutes;
+      source.duration_minutes = 'practice';
+    }
+    return { values: values, source: source };
+  }
 
   // 'YYYY-MM-DD' six months from today — the max "Repeat until" the picker offers.
   // The backend independently enforces the 6-month bound relative to session_date.
@@ -391,9 +422,7 @@
         default_cpt_code: client.default_cpt_code || '',
         default_place_of_service: client.default_place_of_service || '',
         default_session_fee: client.default_session_fee != null ? client.default_session_fee : '',
-        default_procedure_modifiers: Array.isArray(client.default_procedure_modifiers)
-          ? client.default_procedure_modifiers.join(', ')
-          : '',
+        default_procedure_modifiers: modifiersDisplay(client.default_procedure_modifiers),
         diagnosis_codes: Array.isArray(client.diagnosis_codes) ? client.diagnosis_codes : [],
       },
       submitLabel: 'Save defaults',
@@ -655,7 +684,11 @@
       R.formModal({
         title: 'Edit client',
         fields: EDIT_CLIENT_FIELDS,
-        values: client,
+        // An explicit-None default modifier list ([]) must read "none" in the form, or
+        // saving would silently turn None back into blank (= inherit).
+        values: Object.assign({}, client, {
+          default_procedure_modifiers: modifiersDisplay(client.default_procedure_modifiers),
+        }),
         submitLabel: 'Save changes',
       }).then(function (values) {
         if (!values) return;
@@ -1694,7 +1727,17 @@
         // Fetch ALL active users (not just role 'clinician'): the backend accepts
         // any active practice member as a session's clinician, and solo-practice
         // owners are role practice_admin — a role filter would return an empty roster.
-        api.users.list({ active: true }).then(function (res) {
+        //
+        // The practice's own defaults load alongside the roster so the form can show
+        // the CPT / fee / place of service that will ACTUALLY be applied (client
+        // default, else practice default) instead of blanks. A failed practice
+        // lookup just means no practice fallback is shown — it never blocks the form.
+        Promise.all([
+          api.users.list({ active: true }),
+          session ? Promise.resolve({}) : Promise.resolve(api.practice.get()).catch(function () { return {}; }),
+        ]).then(function (both) {
+          var res = both[0];
+          var practiceDefaults = (both[1] && both[1].practice) || {};
           var clinicians = (res && res.users) || [];
           var clinicianOptions = clinicians.map(function (u) {
             var label = ((u.first_name || '') + ' ' + (u.last_name || '')).trim()
@@ -1748,6 +1791,20 @@
             Object.keys(session).forEach(function (k) { values[k] = session[k]; });
           } else {
             values.repeats = 'none';
+            // Pre-fill the billing fields with what the server WOULD apply (client
+            // default first, else practice default — the same precedence as
+            // applyClientDefaults in backend/lib/billing_fields.js), so the form
+            // shows real values rather than blanks. They are sent as typed, so
+            // clearing one here sends blank and the server fills it the same way.
+            var applied = effectiveSessionDefaults(client, practiceDefaults);
+            Object.keys(applied.values).forEach(function (k) { values[k] = applied.values[k]; });
+            sessionFields = sessionFields.map(function (f) {
+              var src = applied.source[f.name];
+              if (!src) return f;
+              var copy = Object.assign({}, f);
+              copy.hint = 'Pre-filled from the ' + src + ' default. Change it here for this session only.';
+              return copy;
+            });
             // Auto-populate the diagnosis from the client's default code(s); the
             // picker still lets the clinician override per session.
             values.diagnosis_codes = Array.isArray(client.diagnosis_codes)

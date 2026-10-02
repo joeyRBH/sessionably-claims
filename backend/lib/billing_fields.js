@@ -48,6 +48,11 @@ function parseMoney(v) {
 function parseProcedureModifiers(v) {
   if (v == null) return { ok: true, value: null };
   if (!Array.isArray(v)) return { ok: false };
+  // Explicit "None" is exactly ['NONE'] (any case). Mixed with real modifiers it is
+  // contradictory, so it falls through to the per-entry check below and is rejected.
+  if (v.length === 1 && typeof v[0] === 'string' && isNoneText(v[0])) {
+    return { ok: true, value: null, none: true };
+  }
   const out = [];
   const seen = new Set();
   for (const item of v) {
@@ -72,6 +77,9 @@ function parseProcedureModifiers(v) {
 function parsePlaceOfService(v) {
   const s = cleanText(v);
   if (s == null) return { ok: true, value: null };
+  // Explicit "None": value is null (what is stored on a session) and `none: true`
+  // tells the caller the person chose it, which is different from leaving it blank.
+  if (isNoneText(s)) return { ok: true, value: null, none: true };
   if (!isValidPlaceOfService(s)) return { ok: false };
   return { ok: true, value: s };
 }
@@ -79,6 +87,32 @@ function parsePlaceOfService(v) {
 function placeOfServiceError() {
   const allowed = PLACE_OF_SERVICE_CODES.map((e) => `${e.code} (${e.label})`).join(', ');
   return `Invalid place_of_service. Expected one of: ${allowed}.`;
+}
+
+// --- explicit "None" -----------------------------------------------------------
+// A default can be absent (blank = INHERIT from the next layer) or deliberately
+// EMPTY ("None" = bill with no modifier / no place of service even though a lower
+// layer has one). Those are different instructions and must not collapse into one.
+//
+//   place of service   API value 'none'  -> stored on a CLIENT default as 'none'
+//   modifiers          API value ['NONE'] -> stored on a CLIENT default as {} (empty array)
+//
+// On a SESSION nothing is stored differently: "None" is resolved at creation time to
+// a plain NULL, so the sentinel never reaches a session, a claim or the 837P (where
+// 'none' is not a valid place of service and would block submission). That is the
+// whole point of resolving at create time.
+const NONE = 'none';
+
+function isNoneText(v) {
+  return typeof v === 'string' && v.trim().toLowerCase() === NONE;
+}
+
+// Is `v` an explicit None for this field? Places of service use the sentinel; modifiers
+// use an EMPTY ARRAY (null/absent is "inherit", never "none").
+function isExplicitNone(field, v) {
+  if (field === 'place_of_service') return v === NONE;
+  if (field === 'procedure_modifiers') return Array.isArray(v) && v.length === 0;
+  return false;
 }
 
 // --- per-client billing defaults ---------------------------------------------
@@ -101,14 +135,34 @@ const CLIENT_DEFAULT_COLUMNS = Object.freeze({
 
 const DEFAULTABLE_SESSION_FIELDS = Object.freeze(Object.keys(CLIENT_DEFAULT_COLUMNS));
 
-// Seed a NEW session's billable fields from the client's stored defaults: any
-// field that would otherwise be null takes the client's default. A value the
-// caller actually supplied always wins.
+// The practice-wide defaults (practices.default_*, migration 030) for the same
+// fields. Deliberately named identically to the client columns so the two layers
+// read the same way; there is no practice-level diagnosis (that is clinical and
+// per-client by nature).
+const PRACTICE_DEFAULT_COLUMNS = Object.freeze({
+  cpt_code: 'default_cpt_code',
+  place_of_service: 'default_place_of_service',
+  fee: 'default_session_fee',
+  procedure_modifiers: 'default_procedure_modifiers',
+});
+
+// Practice-level only: a session's length is not something a client carries.
+const PRACTICE_DURATION_COLUMN = 'default_session_duration_minutes';
+
+// Seed a NEW session's billable fields from stored defaults. Precedence, per field:
+//
+//   request  >  client default  >  practice default
+//
+// A blank (null) at a layer INHERITS from the next one down; an explicit None (see
+// isExplicitNone) STOPS the search and resolves to null, so a client "None" overrides
+// a practice modifier and a request "None" overrides both. Values are resolved HERE,
+// at creation time, and never copied onto the client: changing the practice default
+// later changes what every client that has no value of their own gets from then on.
 //
 // This is the whole point of the defaults: a calendar-promoted appointment used
 // to arrive with cpt_code / place_of_service / fee / procedure_modifiers all
-// NULL, so "just verify the appointment" was never true — every promoted session
-// needed billing data typed in before it could become a claim.
+// NULL, so "just verify the appointment" was never true — every promoted
+// session needed billing data typed in before it could become a claim.
 //
 // CREATE ONLY. Deliberately not used on update: a default is a starting value,
 // not a floor, so clearing a field on an existing session must stick rather than
@@ -116,16 +170,32 @@ const DEFAULTABLE_SESSION_FIELDS = Object.freeze(Object.keys(CLIENT_DEFAULT_COLU
 // time has no such intent behind it — there is nothing yet to clear — which is
 // why filling nulls here is safe and filling them on update would not be.
 //
-// Returns a NEW object; neither argument is mutated.
-function applyClientDefaults(input, client) {
+// `practice` is optional; omitting it is exactly the pre-030 behavior.
+//
+// Returns a NEW object; no argument is mutated. An explicit None comes back as null.
+function applyClientDefaults(input, client, practice) {
   const out = Object.assign({}, input || {});
-  if (!client) return out;
   for (const field of DEFAULTABLE_SESSION_FIELDS) {
+    if (isExplicitNone(field, out[field])) { out[field] = null; continue; }
     if (out[field] != null) continue;
-    const value = client[CLIENT_DEFAULT_COLUMNS[field]];
-    if (value != null) out[field] = value;
+    const fromClient = client ? client[CLIENT_DEFAULT_COLUMNS[field]] : null;
+    if (isExplicitNone(field, fromClient)) { out[field] = null; continue; }
+    if (fromClient != null) { out[field] = fromClient; continue; }
+    const practiceCol = PRACTICE_DEFAULT_COLUMNS[field];
+    const fromPractice = practice && practiceCol ? practice[practiceCol] : null;
+    if (fromPractice != null) out[field] = fromPractice;
   }
   return out;
+}
+
+// Optional session length in minutes: absent/blank → null; otherwise an integer
+// >= 1 (and a sane ceiling — nobody bills a 24h+ session).
+const MAX_DURATION_MINUTES = 600;
+function parseDurationMinutes(v) {
+  if (v == null || v === '') return { ok: true, value: null };
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < 1 || n > MAX_DURATION_MINUTES) return { ok: false };
+  return { ok: true, value: n };
 }
 
 module.exports = {
@@ -137,5 +207,12 @@ module.exports = {
   placeOfServiceError,
   CLIENT_DEFAULT_COLUMNS,
   DEFAULTABLE_SESSION_FIELDS,
+  PRACTICE_DEFAULT_COLUMNS,
+  PRACTICE_DURATION_COLUMN,
+  MAX_DURATION_MINUTES,
+  parseDurationMinutes,
+  NONE,
+  isNoneText,
+  isExplicitNone,
   applyClientDefaults,
 };

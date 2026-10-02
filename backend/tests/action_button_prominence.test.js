@@ -263,6 +263,11 @@ const Reddably = {
 const CLIENTS_SOURCE = path.join(__dirname, '..', '..', 'public', 'app', 'views', 'clients.js');
 const CLIENTS_SRC = fs.readFileSync(CLIENTS_SOURCE, 'utf8');
 
+// The shared kit module clients.js reads at load time (the place-of-service list).
+vm.runInNewContext(
+  fs.readFileSync(path.join(__dirname, '..', '..', 'public', 'app', 'client-defaults.js'), 'utf8'),
+  { window: { Reddably }, console, Promise });
+
 vm.runInNewContext(CLIENTS_SRC, {
   window: {
     Reddably,

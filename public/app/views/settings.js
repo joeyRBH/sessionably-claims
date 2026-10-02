@@ -157,6 +157,146 @@
         ]);
       }
 
+      // --- Session defaults (practice-wide; admin-only edit) ------------------
+      // The standard billing values for this practice. A NEW client is seeded from
+      // them, and a blank client field falls back to them when a session is created
+      // (client > practice). Its own form + own PUT, a SIBLING of the practice form:
+      // saving identity must not touch these, and billing_staff may edit identity
+      // but not these (the server returns 403; the card is read-only for them).
+      function sessionDefaultsCard() {
+        var cu = R.currentUser;
+        var meUser = cu && (cu.user || cu);
+        var role = meUser && meUser.role;
+        // Unknown role (not loaded yet) stays editable; the server is the boundary.
+        var readOnly = !!role && role !== 'practice_admin';
+
+        var sdControls = {};
+        var sdErrors = {};
+
+        function sdField(name, label, control, hint) {
+          sdControls[name] = control;
+          if (readOnly) control.disabled = true;
+          var errorEl = h('span', { class: 'field__error', hidden: 'hidden' });
+          sdErrors[name] = errorEl;
+          var children = [h('span', { class: 'field__label' }, label), control];
+          if (hint) {
+            children.push(h('p', {
+              class: 'field__hint',
+              style: 'margin:var(--space-1) 0 0;color:var(--color-text-muted);' +
+                'font-size:var(--font-size-2)',
+            }, hint));
+          }
+          children.push(errorEl);
+          // margin-top:0 — `.field + .field` adds a top margin that would nudge every
+          // grid cell after the first down by one step.
+          return h('label', { class: 'field', style: 'margin-top:0' }, children);
+        }
+        function setSdError(name, message) {
+          var errEl = sdErrors[name];
+          if (!errEl) return;
+          errEl.textContent = message || '';
+          errEl.hidden = !message;
+          errEl.parentNode.classList.toggle('field--invalid', !!message);
+        }
+        function textVal(v) { return v == null ? '' : String(v); }
+
+        var cptInput = h('input', { class: 'field__control', type: 'text', name: 'default_cpt_code',
+          value: textVal(practice.default_cpt_code), placeholder: 'e.g. 90837', autocomplete: 'off' });
+        var feeInput = h('input', { class: 'field__control', type: 'number', name: 'default_session_fee',
+          value: textVal(practice.default_session_fee), placeholder: 'e.g. 175', min: '0', step: '0.01' });
+        var posSelect = h('select', { class: 'field__control', name: 'default_place_of_service' },
+          R.clientDefaults.PLACE_OF_SERVICE_OPTIONS.map(function (o) {
+            return h('option', { value: o.value }, o.label);
+          }));
+        posSelect.value = textVal(practice.default_place_of_service);
+        var modsInput = h('input', { class: 'field__control', type: 'text',
+          name: 'default_procedure_modifiers', placeholder: '95, GT', autocomplete: 'off',
+          value: Array.isArray(practice.default_procedure_modifiers)
+            ? practice.default_procedure_modifiers.join(', ') : '' });
+        var durInput = h('input', { class: 'field__control', type: 'number',
+          name: 'default_session_duration_minutes', placeholder: 'e.g. 50', min: '1', step: '1',
+          value: textVal(practice.default_session_duration_minutes) });
+
+        var sdSave = h('button', { class: 'btn btn--primary', type: 'submit' }, 'Save session defaults');
+
+        function onSdSubmit(e) {
+          if (e) e.preventDefault();
+          Object.keys(sdErrors).forEach(function (n) { setSdError(n, null); });
+
+          var fee = (feeInput.value || '').trim();
+          var dur = (durInput.value || '').trim();
+          var ok = true;
+          if (fee !== '' && !(Number(fee) >= 0)) {
+            setSdError('default_session_fee', 'Enter a fee of 0 or more.'); ok = false;
+          }
+          if (dur !== '' && !(/^\d+$/.test(dur) && Number(dur) >= 1 && Number(dur) <= 600)) {
+            setSdError('default_session_duration_minutes', 'Enter whole minutes, 1 to 600.'); ok = false;
+          }
+          var mods = (modsInput.value || '').split(',').map(function (m) {
+            return m.trim().toUpperCase();
+          }).filter(Boolean);
+          if (mods.some(function (m) { return !/^[A-Z0-9]{2}$/.test(m); }) || mods.length > 4) {
+            setSdError('default_procedure_modifiers',
+              'Up to four two-character codes, comma-separated (e.g. 95, GT).'); ok = false;
+          }
+          if (!ok) return;
+
+          // Every default is sent (a blank clears it), and nothing else rides along.
+          var payload = {
+            default_cpt_code: (cptInput.value || '').trim(),
+            default_place_of_service: posSelect.value,
+            default_session_fee: fee,
+            default_procedure_modifiers: mods,
+            default_session_duration_minutes: dur,
+          };
+          sdSave.disabled = true;
+          api.practice.update(payload).then(function (res) {
+            if (res && res.practice) practice = res.practice;
+            R.toast('Session defaults saved', 'success');
+          }).catch(function (err) {
+            if (err && err.status === 403) {
+              R.toast('Only a practice admin can edit session defaults.', 'error');
+            } else {
+              R.toast((err && err.message) || 'Could not save session defaults.', 'error');
+            }
+          }).then(function () { sdSave.disabled = false; });
+        }
+
+        var children = [
+          h('div', { class: 'card__header' }, [
+            h('h2', { class: 'card__title' }, 'Session defaults'),
+          ]),
+          h('p', {
+            style: 'margin:0 0 var(--space-4);color:var(--color-text-muted);' +
+              'font-size:var(--font-size-3)',
+          }, 'Your practice’s standard billing values. New clients start with these, and ' +
+             'they fill any blank on a client’s chart when a session is added. A client’s ' +
+             'own defaults, and anything typed on a session, always win.'),
+          h('div', {
+            style: 'display:grid;grid-template-columns:repeat(auto-fit,minmax(14rem,1fr));' +
+              'gap:var(--space-4);align-items:start',
+          }, [
+            sdField('default_cpt_code', 'Default CPT code', cptInput),
+            sdField('default_session_fee', 'Default fee', feeInput),
+            sdField('default_place_of_service', 'Default place of service', posSelect),
+            sdField('default_procedure_modifiers', 'Default procedure modifiers', modsInput,
+              'Optional, comma-separated. Example: 95 for synchronous telehealth.'),
+            sdField('default_session_duration_minutes', 'Default duration (minutes)', durInput,
+              'Used for a manual session added without a duration.'),
+          ]),
+        ];
+        if (readOnly) {
+          children.push(h('p', {
+            style: 'margin:var(--space-4) 0 0;color:var(--color-text-muted);' +
+              'font-size:var(--font-size-2)',
+          }, 'Only a practice admin can change session defaults.'));
+        } else {
+          children.push(h('div', { class: 'page-header__actions', style: 'margin-top:var(--space-4)' },
+            [sdSave]));
+        }
+        return h('form', { class: 'card', novalidate: 'novalidate', onSubmit: onSdSubmit }, children);
+      }
+
       // --- Your account: change password -------------------------------------
       // A SIBLING of the practice form, never inside it. The page's Save button
       // PUTs practice identity + billing address; a password must not ride along
@@ -507,6 +647,7 @@
           h('h1', { class: 'page-header__title' }, 'Settings'),
         ]),
         form,
+        sessionDefaultsCard(),
         passwordCard(),
         calendarCard(),
       ]);

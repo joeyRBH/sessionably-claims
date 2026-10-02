@@ -173,7 +173,33 @@
     };
   }
 
+  // CMS two-character place-of-service codes (837P 2300/CLM05-01), listed ONCE and
+  // shared by every form that offers one (the session form, the per-client default,
+  // and the practice-wide Session defaults in Settings) — separate copies would be
+  // lists that could disagree about what is billable. The backend re-validates
+  // against lib/place_of_service.js and is authoritative; the empty option means
+  // "not set" (the 837P builder then defaults it to 11 — Office).
+  var PLACE_OF_SERVICE_OPTIONS = [
+    { value: '',   label: 'Not set' },
+    { value: '02', label: '02 — Telehealth (patient not in their home)' },
+    { value: '10', label: '10 — Telehealth (patient in their home)' },
+    { value: '11', label: '11 — Office' },
+    { value: '12', label: '12 — Home' },
+    { value: '49', label: '49 — Independent clinic' },
+    { value: '53', label: '53 — Community mental health center' },
+  ];
+
+  // The same list with an explicit "None" after "Not set", for the forms where a
+  // value can be given per client or per session. "Not set" (blank) INHERITS the next
+  // default; "None" deliberately means no place of service even where a default exists.
+  // Not offered on the practice defaults (there is nothing above them to override).
+  var PLACE_OF_SERVICE_OPTIONS_WITH_NONE = [PLACE_OF_SERVICE_OPTIONS[0],
+    { value: 'none', label: 'None — don’t use a default' }]
+    .concat(PLACE_OF_SERVICE_OPTIONS.slice(1));
+
   R.clientDefaults = {
+    PLACE_OF_SERVICE_OPTIONS: PLACE_OF_SERVICE_OPTIONS,
+    PLACE_OF_SERVICE_OPTIONS_WITH_NONE: PLACE_OF_SERVICE_OPTIONS_WITH_NONE,
     DEFAULTABLE: DEFAULTABLE,
     buildPayload: buildPayload,
     submitWithDefaults: submitWithDefaults,

@@ -28,6 +28,7 @@ const { json, preflight } = require('../lib/response');
 const { parseBody } = require('../lib/util');
 const { audit } = require('../lib/audit');
 const { applyClientDefaults } = require('../lib/billing_fields');
+const { loadPracticeDefaults } = require('../lib/practice_defaults');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -269,7 +270,11 @@ async function promoteEvent(practiceId, id, body, event, authCtx) {
     // The event itself is still never trusted to supply billing data, and a name
     // match still never promotes anything on its own: this runs only after an
     // explicit human confirmation upstream.
-    const billing = applyClientDefaults({}, client);
+    //
+    // The practice's own defaults sit behind the client's (client > practice), so
+    // a client with nothing set still arrives billable at the practice standard.
+    const practiceDefaults = await loadPracticeDefaults(tx.query.bind(tx), practiceId);
+    const billing = applyClientDefaults({}, client, practiceDefaults);
     const sessionDate = sessionDateInZone(ev.starts_at, ev.calendar_time_zone);
     const insRes = await tx.query(
       `insert into sessions
