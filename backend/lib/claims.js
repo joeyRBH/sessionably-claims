@@ -62,6 +62,42 @@ async function primaryInsuranceForClient(q, practiceId, clientId) {
   return res.rows[0] || null;
 }
 
+// Attach the client's current primary coverage to their DRAFT claims that have
+// none. A draft claim takes its insurance_record_id once, at creation, so a claim
+// drafted before the patient's insurance was on file (the usual order: a session
+// is completed, then the intake link or staff fills in insurance) stayed null
+// forever and could never be submitted even though the chart showed coverage.
+//
+// Deliberately narrow:
+//   * DRAFT claims only — a submitted / processing / paid / denied claim was filed
+//     against a specific policy and must not be rewritten under the payer;
+//   * only where the link is missing, or points at a record that has since been
+//     hidden (deleted). A claim whose coverage someone chose and is still live is
+//     never overwritten;
+//   * the target is primaryInsuranceForClient(), the same pick claim creation makes.
+//
+// Returns the ids of the claims changed ([] when there was nothing to do) so the
+// caller can audit each one. `q` is the db module or a pg client.
+async function relinkDraftClaimsToPrimaryInsurance(q, practiceId, clientId) {
+  const primary = await primaryInsuranceForClient(q, practiceId, clientId);
+  if (!primary) return [];
+  const res = await q.query(
+    `update claims c
+        set insurance_record_id = $1
+      where c.practice_id = $2
+        and c.client_id = $3
+        and c.status = 'draft'
+        and c.is_hidden = false
+        and (c.insurance_record_id is null
+             or exists (select 1 from insurance_records ir
+                         where ir.id = c.insurance_record_id
+                           and ir.is_hidden = true))
+      returning c.id`,
+    [primary.id, practiceId, clientId]
+  );
+  return res.rows.map((r) => r.id);
+}
+
 // True when the session already has a non-hidden claim. The idempotency guard for
 // auto-draft creation: completing a session twice must not create two claims.
 async function sessionHasActiveClaim(q, practiceId, sessionId) {
@@ -341,6 +377,7 @@ module.exports = {
   generatePatientControlNumber,
   ensurePatientControlNumber,
   primaryInsuranceForClient,
+  relinkDraftClaimsToPrimaryInsurance,
   sessionHasActiveClaim,
   logClaimEvent,
   logClaimAcknowledgment,

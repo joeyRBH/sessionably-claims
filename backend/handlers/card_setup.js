@@ -32,6 +32,7 @@ const paymentToken = require('../lib/payment_token');
 const { json, preflight } = require('../lib/response');
 const { parseBody, normalizePhone } = require('../lib/util');
 const { audit } = require('../lib/audit');
+const { relinkDraftClaimsToPrimaryInsurance } = require('../lib/claims');
 const stedi = require('../lib/clearinghouse/stedi');
 const email = require('../lib/email');
 
@@ -600,6 +601,24 @@ exports.handler = async (event) => {
             payerIdOrNull,
           ]
         );
+      }
+
+      // Draft claims created before this insurance existed carry no coverage and
+      // could never be submitted. Attach it now. Non-blocking: the patient's save
+      // has already succeeded, so a failure is logged (name only, no PHI), not raised.
+      let relinkedClaimIds = [];
+      try {
+        relinkedClaimIds = await relinkDraftClaimsToPrimaryInsurance(db, client.practice_id, clientId);
+      } catch (err) {
+        console.error('claim insurance relink failed:', err && err.name);
+      }
+      for (const claimId of relinkedClaimIds) {
+        await audit(event, { actorType: 'patient_link', practiceId: client.practice_id }, {
+          action: 'claim.insurance_relink',
+          resourceType: 'claim',
+          resourceId: claimId,
+          metadata: { trigger: 'patient_intake' },
+        });
       }
 
       // Insurance is the final intake step: demographics + insurance are now on file
