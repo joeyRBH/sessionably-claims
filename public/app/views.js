@@ -1165,8 +1165,85 @@
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Google Calendar connection (shared by Settings and the Calendar screen)
+  // ---------------------------------------------------------------------------
+  // Starts the consent flow: asks the API for the consent URL (the server route is a
+  // 302 that a browser navigation cannot authenticate, see calendar_oauth.js) and
+  // navigates there. The button shows busy for the round trip; if it fails the
+  // button comes back and the user is told. Google sends the browser back to
+  // /app/app.html?calendar=connected (handled in initRouter below).
+  function connectGoogleCalendar(btn) {
+    setBusy(btn, true, 'Opening Google…');
+    return Promise.resolve().then(function () {
+      return api.calendarConnections.start();
+    }).then(function (res) {
+      if (!res || !res.url) throw new Error('Could not start the calendar connection.');
+      window.location.assign(res.url);
+    }).catch(function (err) {
+      setBusy(btn, false);
+      toast((err && err.message) || 'Could not start the calendar connection.', 'error');
+    });
+  }
+
+  // Who is offered "Connect Google Calendar". A connection is one person's OWN calendar
+  // (their appointments, their clients), so it belongs to clinicians; an admin or
+  // billing user connecting theirs would stage someone else's — or no — appointments.
+  // The exception is a one-person practice, where the owner (usually a practice admin)
+  // IS the clinician. This is UX, not the security boundary — connecting only ever
+  // touches the caller's own connection.
+  //
+  // The role comes from the /me cache the shell fills in the background; on a deep link
+  // or refresh a view can mount BEFORE that lands, so it is fetched here when missing
+  // (guessing "allowed" for an unknown role showed admins a Connect button). If /me
+  // itself fails the app is unusable anyway, so that case is allowed rather than hidden,
+  // while a failed roster lookup for a non-clinician reads as "not allowed".
+  // Resolves to a boolean; never rejects.
+  function calendarConnectAllowed() {
+    function roleOf(res) {
+      var user = res && (res.user || res);
+      return (user && user.role) || null;
+    }
+    var cached = window.Reddably && window.Reddably.currentUser;
+    var rolePromise = roleOf(cached)
+      ? Promise.resolve(roleOf(cached))
+      : Promise.resolve().then(function () { return api.me(); }).then(function (res) {
+        if (window.Reddably) window.Reddably.currentUser = res;
+        return roleOf(res);
+      }).catch(function () { return null; });
+    return rolePromise.then(function (role) {
+      if (!role || role === 'clinician') return true;
+      return Promise.resolve().then(function () {
+        return api.users.list({ active: true });
+      }).then(function (res) {
+        return ((res && res.users) || []).length === 1;
+      }).catch(function () { return false; });
+    });
+  }
+
+  // The consent round trip lands here with ?calendar=connected | declined. Tell the
+  // user what happened, send them to the Calendar (which syncs on open), and strip the
+  // flag so a refresh does not repeat the message. A status flag only — no PHI.
+  function handleCalendarReturn() {
+    var flag = null;
+    try { flag = new URLSearchParams(window.location.search).get('calendar'); }
+    catch (e) { return; }
+    if (flag !== 'connected' && flag !== 'declined') return;
+    try {
+      window.history.replaceState(null, '', window.location.pathname + (flag === 'connected' ? '#calendar' : '#settings'));
+    } catch (e) { /* history unavailable — the hash below still routes */ }
+    if (flag === 'connected') {
+      window.location.hash = '#calendar';
+      toast('Google Calendar connected. Syncing your appointments…', 'success');
+    } else {
+      window.location.hash = '#settings';
+      toast('Calendar access was not granted, so nothing was connected.', 'error');
+    }
+  }
+
   function initRouter() {
     window.addEventListener('hashchange', renderRoute);
+    handleCalendarReturn();
     renderRoute();
   }
 
@@ -1426,6 +1503,8 @@
     confirmModal: confirmModal,
     formModal: formModal,
     setBusy: setBusy,
+    connectGoogleCalendar: connectGoogleCalendar,
+    calendarConnectAllowed: calendarConnectAllowed,
     // onboarding walkthrough
     openTutorial: openTutorial,
     maybeAutoOpenTutorial: maybeAutoOpenTutorial,

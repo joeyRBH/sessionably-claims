@@ -419,7 +419,7 @@ assert.strictEqual(bustOf('./workflow.js'), VERSION,
 // UNINTENDED further bump is still caught — just at their current value.
 assert.strictEqual(bustOf('./views/dashboard.js'), '20261002b',
   'the Dashboard cache-buster is at its current value');
-assert.strictEqual(bustOf('./views/calendar.js'), '20261001a',
+assert.strictEqual(bustOf('./views/calendar.js'), '20261002b',
   'the Calendar cache-buster is at its current value');
 assert.strictEqual(bustOf('./views/claims.js'), '20260923a',
   'the Claims cache-buster is at its current value');
