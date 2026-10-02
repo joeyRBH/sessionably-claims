@@ -269,7 +269,14 @@ async function promoteEvent(practiceId, id, body, event, authCtx) {
     // The event itself is still never trusted to supply billing data, and a name
     // match still never promotes anything on its own: this runs only after an
     // explicit human confirmation upstream.
-    const billing = applyClientDefaults({}, client);
+    //
+    // The practice's own defaults sit behind the client's (client > practice), so
+    // a client with nothing set still arrives billable at the practice standard.
+    const practiceRes = await tx.query(
+      `select * from practices where id = $1 limit 1`,
+      [practiceId]
+    );
+    const billing = applyClientDefaults({}, client, practiceRes.rows[0] || null);
     const sessionDate = sessionDateInZone(ev.starts_at, ev.calendar_time_zone);
     const insRes = await tx.query(
       `insert into sessions

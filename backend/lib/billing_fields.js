@@ -101,9 +101,24 @@ const CLIENT_DEFAULT_COLUMNS = Object.freeze({
 
 const DEFAULTABLE_SESSION_FIELDS = Object.freeze(Object.keys(CLIENT_DEFAULT_COLUMNS));
 
-// Seed a NEW session's billable fields from the client's stored defaults: any
-// field that would otherwise be null takes the client's default. A value the
-// caller actually supplied always wins.
+// The practice-wide defaults (practices.default_*, migration 030) for the same
+// fields. Deliberately named identically to the client columns so the two layers
+// read the same way; there is no practice-level diagnosis (that is clinical and
+// per-client by nature).
+const PRACTICE_DEFAULT_COLUMNS = Object.freeze({
+  cpt_code: 'default_cpt_code',
+  place_of_service: 'default_place_of_service',
+  fee: 'default_session_fee',
+  procedure_modifiers: 'default_procedure_modifiers',
+});
+
+// Practice-level only: a session's length is not something a client carries.
+const PRACTICE_DURATION_COLUMN = 'default_session_duration_minutes';
+
+// Seed a NEW session's billable fields from stored defaults: any field that would
+// otherwise be null takes the CLIENT's default, and if the client has none either,
+// the PRACTICE's. A value the caller actually supplied always wins, and a client
+// value always beats the practice's (client > practice).
 //
 // This is the whole point of the defaults: a calendar-promoted appointment used
 // to arrive with cpt_code / place_of_service / fee / procedure_modifiers all
@@ -116,16 +131,46 @@ const DEFAULTABLE_SESSION_FIELDS = Object.freeze(Object.keys(CLIENT_DEFAULT_COLU
 // time has no such intent behind it — there is nothing yet to clear — which is
 // why filling nulls here is safe and filling them on update would not be.
 //
-// Returns a NEW object; neither argument is mutated.
-function applyClientDefaults(input, client) {
+// `practice` is optional; omitting it is exactly the pre-030 behavior.
+//
+// Returns a NEW object; no argument is mutated.
+function applyClientDefaults(input, client, practice) {
   const out = Object.assign({}, input || {});
-  if (!client) return out;
   for (const field of DEFAULTABLE_SESSION_FIELDS) {
     if (out[field] != null) continue;
-    const value = client[CLIENT_DEFAULT_COLUMNS[field]];
-    if (value != null) out[field] = value;
+    const fromClient = client ? client[CLIENT_DEFAULT_COLUMNS[field]] : null;
+    if (fromClient != null) { out[field] = fromClient; continue; }
+    const practiceCol = PRACTICE_DEFAULT_COLUMNS[field];
+    const fromPractice = practice && practiceCol ? practice[practiceCol] : null;
+    if (fromPractice != null) out[field] = fromPractice;
   }
   return out;
+}
+
+// The client default columns a NEW client should be created with: the value the
+// request carried if it carried one, else the practice's. A key that is absent OR
+// blank inherits — "unless overridden" means the person typed something.
+// `supplied` is the output of the clients handler's parseBillingDefaults.
+function seedClientDefaultsFromPractice(supplied, practice) {
+  const out = Object.assign({}, supplied || {});
+  if (!practice) return out;
+  for (const field of Object.keys(PRACTICE_DEFAULT_COLUMNS)) {
+    const col = CLIENT_DEFAULT_COLUMNS[field];
+    if (out[col] == null && practice[PRACTICE_DEFAULT_COLUMNS[field]] != null) {
+      out[col] = practice[PRACTICE_DEFAULT_COLUMNS[field]];
+    }
+  }
+  return out;
+}
+
+// Optional session length in minutes: absent/blank → null; otherwise an integer
+// >= 1 (and a sane ceiling — nobody bills a 24h+ session).
+const MAX_DURATION_MINUTES = 600;
+function parseDurationMinutes(v) {
+  if (v == null || v === '') return { ok: true, value: null };
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < 1 || n > MAX_DURATION_MINUTES) return { ok: false };
+  return { ok: true, value: n };
 }
 
 module.exports = {
@@ -137,5 +182,10 @@ module.exports = {
   placeOfServiceError,
   CLIENT_DEFAULT_COLUMNS,
   DEFAULTABLE_SESSION_FIELDS,
+  PRACTICE_DEFAULT_COLUMNS,
+  PRACTICE_DURATION_COLUMN,
+  MAX_DURATION_MINUTES,
+  parseDurationMinutes,
   applyClientDefaults,
+  seedClientDefaultsFromPractice,
 };

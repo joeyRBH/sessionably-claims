@@ -57,20 +57,9 @@
       options: ['awaiting_info', 'active', 'inactive'] },
   ];
 
-  // CMS two-character place-of-service codes (837P 2300/CLM05-01), listed once
-  // and shared by the session form and the per-client default below — two copies
-  // would be two lists that could disagree about what is billable. The backend
-  // re-validates against lib/place_of_service.js and is authoritative; the empty
-  // option means "not set" (the 837P builder then defaults it to 11 — Office).
-  var PLACE_OF_SERVICE_OPTIONS = [
-    { value: '',   label: 'Not set' },
-    { value: '02', label: '02 — Telehealth (patient not in their home)' },
-    { value: '10', label: '10 — Telehealth (patient in their home)' },
-    { value: '11', label: '11 — Office' },
-    { value: '12', label: '12 — Home' },
-    { value: '49', label: '49 — Independent clinic' },
-    { value: '53', label: '53 — Community mental health center' },
-  ];
+  // CMS place-of-service options: one shared list (client-defaults.js), used by the
+  // session form, the per-client default below, and the practice Session defaults.
+  var PLACE_OF_SERVICE_OPTIONS = R.clientDefaults.PLACE_OF_SERVICE_OPTIONS;
 
   // The per-client billing defaults, seeded onto every new session (calendar
   // promote + manual create) so a promoted appointment arrives billable instead
@@ -242,6 +231,38 @@
     { value: 'weekly',   label: 'Weekly' },
     { value: 'biweekly', label: 'Every 2 weeks' },
   ];
+
+  // The billing values a NEW session on this client will start with, and where
+  // each came from. Mirrors applyClientDefaults() in backend/lib/billing_fields.js
+  // (client default beats practice default; the practice duration is practice-level
+  // only). The server is authoritative — this exists so the form shows the real
+  // values instead of blanks.
+  function effectiveSessionDefaults(client, practice) {
+    var values = {};
+    var source = {};
+    function has(v) { return v !== null && v !== undefined && v !== ''; }
+    [
+      ['cpt_code', 'default_cpt_code', 'default_cpt_code'],
+      ['fee', 'default_session_fee', 'default_session_fee'],
+      ['place_of_service', 'default_place_of_service', 'default_place_of_service'],
+      ['procedure_modifiers', 'default_procedure_modifiers', 'default_procedure_modifiers'],
+    ].forEach(function (m) {
+      var fromClient = client ? client[m[1]] : null;
+      var fromPractice = practice ? practice[m[2]] : null;
+      var isList = m[0] === 'procedure_modifiers';
+      var usable = function (v) { return isList ? (Array.isArray(v) && v.length > 0) : has(v); };
+      var chosen = null;
+      if (usable(fromClient)) { chosen = fromClient; source[m[0]] = 'client\u2019s'; }
+      else if (usable(fromPractice)) { chosen = fromPractice; source[m[0]] = 'practice'; }
+      if (chosen === null) return;
+      values[m[0]] = isList ? chosen.join(', ') : chosen;
+    });
+    if (practice && has(practice.default_session_duration_minutes)) {
+      values.duration_minutes = practice.default_session_duration_minutes;
+      source.duration_minutes = 'practice';
+    }
+    return { values: values, source: source };
+  }
 
   // 'YYYY-MM-DD' six months from today — the max "Repeat until" the picker offers.
   // The backend independently enforces the 6-month bound relative to session_date.
@@ -1694,7 +1715,17 @@
         // Fetch ALL active users (not just role 'clinician'): the backend accepts
         // any active practice member as a session's clinician, and solo-practice
         // owners are role practice_admin — a role filter would return an empty roster.
-        api.users.list({ active: true }).then(function (res) {
+        //
+        // The practice's own defaults load alongside the roster so the form can show
+        // the CPT / fee / place of service that will ACTUALLY be applied (client
+        // default, else practice default) instead of blanks. A failed practice
+        // lookup just means no practice fallback is shown — it never blocks the form.
+        Promise.all([
+          api.users.list({ active: true }),
+          session ? Promise.resolve({}) : Promise.resolve(api.practice.get()).catch(function () { return {}; }),
+        ]).then(function (both) {
+          var res = both[0];
+          var practiceDefaults = (both[1] && both[1].practice) || {};
           var clinicians = (res && res.users) || [];
           var clinicianOptions = clinicians.map(function (u) {
             var label = ((u.first_name || '') + ' ' + (u.last_name || '')).trim()
@@ -1748,6 +1779,20 @@
             Object.keys(session).forEach(function (k) { values[k] = session[k]; });
           } else {
             values.repeats = 'none';
+            // Pre-fill the billing fields with what the server WOULD apply (client
+            // default first, else practice default — the same precedence as
+            // applyClientDefaults in backend/lib/billing_fields.js), so the form
+            // shows real values rather than blanks. They are sent as typed, so
+            // clearing one here sends blank and the server fills it the same way.
+            var applied = effectiveSessionDefaults(client, practiceDefaults);
+            Object.keys(applied.values).forEach(function (k) { values[k] = applied.values[k]; });
+            sessionFields = sessionFields.map(function (f) {
+              var src = applied.source[f.name];
+              if (!src) return f;
+              var copy = Object.assign({}, f);
+              copy.hint = 'Pre-filled from the ' + src + ' default. Change it here for this session only.';
+              return copy;
+            });
             // Auto-populate the diagnosis from the client's default code(s); the
             // picker still lets the clinician override per session.
             values.diagnosis_codes = Array.isArray(client.diagnosis_codes)

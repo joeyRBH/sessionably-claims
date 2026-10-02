@@ -225,6 +225,11 @@ const Reddably = {
   registerView(name, fn) { if (name === 'clients') viewFn = fn; },
 };
 
+// The shared kit module clients.js reads at load time (the place-of-service list).
+vm.runInNewContext(
+  fs.readFileSync(path.join(__dirname, '..', '..', 'public', 'app', 'client-defaults.js'), 'utf8'),
+  { window: { Reddably }, console, Promise });
+
 const SOURCE = path.join(__dirname, '..', '..', 'public', 'app', 'views', 'clients.js');
 vm.runInNewContext(
   fs.readFileSync(SOURCE, 'utf8'),

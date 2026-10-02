@@ -203,6 +203,26 @@ check('expand: schema.sql declares NEITHER claim_events CHECK', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Migration 030 — practice-wide session defaults
+// ---------------------------------------------------------------------------
+
+check('030: practices gains the five session-default columns', () => {
+    for (const col of ['default_cpt_code', 'default_place_of_service', 'default_session_fee',
+        'default_procedure_modifiers', 'default_session_duration_minutes']) {
+        has(new RegExp(`alter table practices add column if not exists ${col}\\b`, 'i'),
+            `practices.${col} (as an ALTER, for databases that already exist)`);
+    }
+    const body = tableBody('practices');
+    assert.ok(/default_session_duration_minutes integer/i.test(body),
+        'a fresh database would not get default_session_duration_minutes');
+});
+
+check('030: the duration CHECK is guarded so a re-run is a no-op', () => {
+    has(/practices_default_duration_check[\s\S]{0,200}?default_session_duration_minutes > 0/i,
+        'the positive-duration CHECK');
+});
+
+// ---------------------------------------------------------------------------
 // schema.sql runs as ONE implicit transaction
 // ---------------------------------------------------------------------------
 

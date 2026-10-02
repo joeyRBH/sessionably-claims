@@ -36,6 +36,7 @@ const {
   parsePlaceOfService,
   placeOfServiceError,
   applyClientDefaults,
+  PRACTICE_DURATION_COLUMN,
 } = require('../lib/billing_fields');
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -304,14 +305,25 @@ async function createSession(practiceId, body, event, authCtx) {
   // above; the stored defaults were validated on the way INTO the clients row by
   // the same parsers (backend/handlers/clients.js imports them from the same
   // module), so nothing unvalidated can reach a session through this path.
+  //
+  // The practice's own defaults sit behind the client's (client > practice), and
+  // the practice default duration fills a session that arrived with none.
+  const practiceRes = await db.query(
+    `select * from practices where id = $1 limit 1`,
+    [practiceId]
+  );
+  const practice = practiceRes.rows[0] || null;
   const seeded = applyClientDefaults({
     cpt_code: cptCode,
     place_of_service: pos.value,
     fee: fee.value,
     procedure_modifiers: modifiers.value,
     diagnosis_codes: dx.value,
-  }, client);
+  }, client, practice);
   const placeOfService = seeded.place_of_service;
+  const durationMinutes = duration.value != null
+    ? duration.value
+    : (practice && practice[PRACTICE_DURATION_COLUMN] != null ? practice[PRACTICE_DURATION_COLUMN] : null);
 
   if (recurrence === 'none') {
     let res;
@@ -328,7 +340,7 @@ async function createSession(practiceId, body, event, authCtx) {
         clientId,
         clinicianId,
         sessionDate,
-        duration.value,
+        durationMinutes,
         seeded.cpt_code,
         seeded.diagnosis_codes,
         placeOfService,
@@ -395,7 +407,7 @@ async function createSession(practiceId, body, event, authCtx) {
           clientId,
           clinicianId,
           dates[i],
-          duration.value,
+          durationMinutes,
           seeded.cpt_code,
           seeded.diagnosis_codes,
           placeOfService,

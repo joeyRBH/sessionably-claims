@@ -84,6 +84,11 @@ create table if not exists practices (
   npi_verified         boolean not null default false,        -- practice's OWN (organizational, Type-2) NPI verified against NPPES
   npi_verified_at      timestamptz,
   npi_enumeration_type text check (npi_enumeration_type in ('NPI-1', 'NPI-2')),  -- NPPES enumeration type of practices.npi (should be NPI-2 to bill as an org)
+  default_cpt_code     text,                                  -- practice-wide session defaults (see migration 030): seed new clients; fall back when a client field is blank
+  default_place_of_service text,                              -- 2-char CMS code; validated on write
+  default_session_fee  numeric(12,2),
+  default_procedure_modifiers text[],                         -- CMS-1500 Box 24D
+  default_session_duration_minutes integer,                   -- practice-level only; CHECK > 0 added below (practices_default_duration_check)
   is_active            boolean not null default true,
   created_at           timestamptz not null default now(),
   updated_at           timestamptz not null default now()
@@ -160,6 +165,24 @@ begin
   if not exists (select 1 from pg_constraint where conname = 'practices_npi_enum_type_check') then
     alter table practices add constraint practices_npi_enum_type_check
       check (npi_enumeration_type is null or npi_enumeration_type in ('NPI-1', 'NPI-2'));
+  end if;
+end $$;
+
+-- Migration (idempotent): practice-wide session defaults. A new client is seeded
+-- from these, and a blank client field falls back to them when a session is
+-- created (client > practice). The duration is practice-level only and is used
+-- for a manual session that carries none. Additive, nullable, no backfill. See
+-- db/migrations/030_add_session_defaults_to_practices.sql.
+alter table practices add column if not exists default_cpt_code text;
+alter table practices add column if not exists default_place_of_service text;
+alter table practices add column if not exists default_session_fee numeric(12,2);
+alter table practices add column if not exists default_procedure_modifiers text[];
+alter table practices add column if not exists default_session_duration_minutes integer;
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'practices_default_duration_check') then
+    alter table practices add constraint practices_default_duration_check
+      check (default_session_duration_minutes is null or default_session_duration_minutes > 0);
   end if;
 end $$;
 

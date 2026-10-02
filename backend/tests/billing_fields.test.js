@@ -121,6 +121,75 @@ test('parseProcedureModifiers: normalized, de-duplicated, capped', () => {
   assert.strictEqual(BF.parseProcedureModifiers('95').ok, false, 'must be an array');
 });
 
+// --- practice-wide defaults (migration 030) ----------------------------------
+
+test('a blank field falls back to the PRACTICE default when the client has none', () => {
+  const out = BF.applyClientDefaults(
+    { cpt_code: null, place_of_service: null, fee: null, procedure_modifiers: null },
+    { default_cpt_code: null },
+    { default_cpt_code: '90837', default_place_of_service: '11', default_session_fee: '175.00',
+      default_procedure_modifiers: ['95'] }
+  );
+  assert.strictEqual(out.cpt_code, '90837');
+  assert.strictEqual(out.place_of_service, '11');
+  assert.strictEqual(out.fee, '175.00');
+  assert.deepStrictEqual(out.procedure_modifiers, ['95']);
+});
+
+test('precedence is request > client > practice, field by field', () => {
+  const out = BF.applyClientDefaults(
+    { cpt_code: '90791', fee: null, place_of_service: null },
+    { default_cpt_code: '90834', default_session_fee: 120, default_place_of_service: null },
+    { default_cpt_code: '90837', default_session_fee: 175, default_place_of_service: '11' }
+  );
+  assert.strictEqual(out.cpt_code, '90791', 'the request wins over both');
+  assert.strictEqual(out.fee, 120, 'the client wins over the practice');
+  assert.strictEqual(out.place_of_service, '11', 'the practice fills what the client lacks');
+});
+
+test('a client fee of 0 is a real client default and beats the practice fee', () => {
+  const out = BF.applyClientDefaults({}, { default_session_fee: 0 }, { default_session_fee: 175 });
+  assert.strictEqual(out.fee, 0);
+});
+
+test('the practice supplies no diagnosis (that stays per-client)', () => {
+  assert.strictEqual(BF.PRACTICE_DEFAULT_COLUMNS.diagnosis_codes, undefined);
+  const out = BF.applyClientDefaults({}, {}, { diagnosis_codes: ['F411'] });
+  assert.strictEqual(out.diagnosis_codes, undefined);
+});
+
+test('practice defaults apply even when there is no client row', () => {
+  const out = BF.applyClientDefaults({}, null, { default_cpt_code: '90837' });
+  assert.strictEqual(out.cpt_code, '90837');
+});
+
+test('omitting the practice is exactly the pre-030 behavior', () => {
+  const out = BF.applyClientDefaults({ fee: null }, { default_session_fee: 90 });
+  assert.strictEqual(out.fee, 90);
+});
+
+test('a new client inherits blank billing defaults from the practice; an override wins', () => {
+  const practice = { default_cpt_code: '90837', default_place_of_service: '11',
+    default_session_fee: '175.00', default_procedure_modifiers: ['95'] };
+  const out = BF.seedClientDefaultsFromPractice({
+    default_cpt_code: '90834', default_place_of_service: null, default_session_fee: null,
+    default_procedure_modifiers: null, calendar_display_name: null,
+  }, practice);
+  assert.strictEqual(out.default_cpt_code, '90834', 'typed value is an override');
+  assert.strictEqual(out.default_place_of_service, '11');
+  assert.strictEqual(out.default_session_fee, '175.00');
+  assert.deepStrictEqual(out.default_procedure_modifiers, ['95']);
+  assert.strictEqual(out.calendar_display_name, null, 'unrelated keys untouched');
+});
+
+test('parseDurationMinutes: blank → null, whole minutes 1..600, nothing else', () => {
+  assert.deepStrictEqual(BF.parseDurationMinutes(''), { ok: true, value: null });
+  assert.deepStrictEqual(BF.parseDurationMinutes('50'), { ok: true, value: 50 });
+  for (const bad of [0, -5, 2.5, 'abc', 601]) {
+    assert.strictEqual(BF.parseDurationMinutes(bad).ok, false, String(bad));
+  }
+});
+
 // --- runner -------------------------------------------------------------------
 
 let failed = 0;

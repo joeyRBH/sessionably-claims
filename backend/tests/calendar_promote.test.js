@@ -82,6 +82,11 @@ async function stubQuery(text, params) {
     return { rows: row ? [row] : [], rowCount: row ? 1 : 0 };
   }
 
+  // Practice-wide session defaults sit behind the client's. None here.
+  if (/select \* from practices/.test(t)) {
+    return { rows: [{ id: params[0] }], rowCount: 1 };
+  }
+
   if (/insert into sessions/.test(t)) {
     // Parse the column list from the SQL itself so a drifted INSERT (e.g. one
     // that started sending a cpt_code) fails here instead of silently passing.

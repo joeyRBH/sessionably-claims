@@ -28,6 +28,7 @@ const {
   parseProcedureModifiers,
   parsePlaceOfService,
   placeOfServiceError,
+  seedClientDefaultsFromPractice,
 } = require('../lib/billing_fields');
 
 // Allowed client.status values — mirror the CHECK constraint in db/schema.sql.
@@ -288,6 +289,15 @@ async function createClient(practiceId, body, event, authCtx) {
 
   const defaults = parseBillingDefaults(body);
   if (!defaults.ok) return json(400, { error: defaults.error }, event);
+
+  // A new client inherits the practice-wide session defaults for any billing
+  // default the request left blank (an explicit value is an override and wins).
+  // The practice values were validated by the same parsers on the way in.
+  const practiceRes = await db.query(
+    `select * from practices where id = $1 limit 1`,
+    [practiceId]
+  );
+  defaults.value = seedClientDefaultsFromPractice(defaults.value, practiceRes.rows[0] || null);
 
   const res = await db.query(
     `insert into clients
