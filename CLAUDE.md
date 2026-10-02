@@ -203,11 +203,12 @@ end to end; if a change touches that chain, it belongs there.
 
 ## Handing over shell work (deploys, migrations, one-off ops)
 
-Operational work runs in the user's terminal, not the agent's. Anything that has to
-be run by hand is delivered as **one paste-able script**, never as prose steps the
-user has to sequence themselves.
+Operational work runs in the user's terminal. Hand it over as **one script, one command**.
+The user is not a coder and is frustrated by long, fussy sequences: keep it short, and never
+make them decide ordering, SHAs, or which step comes next.
 
-**Deliver it as a heredoc that WRITES A FILE, then a separate line that runs it:**
+**Format.** The user's shell is zsh, which breaks on `!` and on a pasted `#!/usr/bin/env bash`
+line. So always write a file with a quoted heredoc, then run it:
 
 ```
 cat > /tmp/thing.sh <<'SCRIPT'
@@ -216,74 +217,41 @@ SCRIPT
 bash /tmp/thing.sh
 ```
 
-Never hand over a bare multi-line script to paste. The user's shell is zsh, which
-performs HISTORY EXPANSION on `!` in interactive input — so a `#!/usr/bin/env bash`
-shebang fails with `zsh: event not found: /usr/bin/env`, and any `!` inside a
-double-quoted string (`echo "!! stopping"`) fails the same way. The first line then
-errors and the REST OF THE PASTE executes as loose commands, which on a deploy
-script is genuinely dangerous. A QUOTED heredoc delimiter (`<<'SCRIPT'`) suppresses
-all expansion, and `bash file` avoids zsh's parsing entirely.
+**Rules for the script:**
 
-**The operator's machine (never make the user search for the repo).** The local clone
-lives at `/Users/joeyholub/dev/sessionably-claims` (macOS, zsh). Every handed-over command
-or script that touches the repo starts with that absolute `cd`, e.g.
-`cd /Users/joeyholub/dev/sessionably-claims && git checkout main && git pull`. Never use
-`find`/`mdfind` or a guessed `~/sessionably-claims`. `~/Downloads/reddably-scaffold` is an
-old scaffold, not the repo — ignore it. The deploy scripts need `terraform`, `aws`, `jq`
-and `node` on that machine.
+- Start with `set -euo pipefail` and `cd /Users/joeyholub/dev/sessionably-claims` (macOS,
+  zsh; never search for the repo). Run from `main` after `git pull`. Print the commit being
+  deployed, but do NOT hard-code a SHA to gate on: the branch or SHA moves and a stale gate
+  just blocks the user.
+- **Do the whole job in one script, in the right order** (see Deploy order). Never give the
+  user several scripts to sequence, and never ask them to run a step "after" another.
+- **Gate only on real results** (`jq -e '.ok == true'`, an HTTP status). Say the expected
+  value inline (`^^ MUST be 401`). If a check cannot run, say so and name the substitute.
+- **At most ONE confirmation, and only before something irreversible or user-visible**
+  (e.g. a data backfill). Terraform already asks `yes`; do not add a second prompt around
+  it. Read it with `read -r ANSWER </dev/tty` and accept `y` or `yes` in ANY case
+  (`case "$ANSWER" in [yY]|[yY][eE][sS]) ;; *) exit 1 ;; esac`). Never demand upper case.
+- End with a one-line rollback and say which step is the first user-visible one.
 
-Rules for that script:
+### Deploy order
 
-- `set -euo pipefail`, and derive identifiers rather than hardcoding them
-  (`terraform output -raw migrate_function_name`, `git rev-parse --show-toplevel`).
-  A wrong guessed resource name is discovered in production.
-- **Every check is a hard gate that exits non-zero.** A comment saying "confirm this
-  looks right" is not a gate. Parse the actual result (`jq -e '.ok == true'`) and stop.
-- **Explicit confirmation before anything user-facing**, via
-  `read -r ANSWER </dev/tty` — `/dev/tty`, or a pasted block feeds its own remaining
-  lines into the prompt.
-- **When a check cannot run, say so in the output** and name the substitute. Never
-  skip silently: a script that prints nothing looks identical to one that verified
-  everything.
-- **State the expected value inline** (`^^ all three MUST be 0`). The person running
-  it should not need the schema in their head to tell pass from fail.
-- **Close with a rollback line per phase**, and say which phase is the first one that
-  is user-visible.
+`infra/terraform` builds ONE zip shared by every Lambda, so a plain `terraform apply` ships
+handlers and the migrate Lambda together. A handler that needs a new column must not go
+live before the schema has it. One script therefore does, in order:
 
-### Deploy ordering — the fact that makes ordering necessary here
+1. `./deploy.sh -target=aws_lambda_function.migrate -target=aws_lambda_function.apply_migration`
+   (applies `schema.sql` and puts the new migration files in the runner's bundle)
+2. any one-off migration via the apply-migration Lambda (data backfills only)
+3. a plain `./deploy.sh` (API handlers)
 
-`infra/terraform` builds ONE `archive_file.backend` zip shared by every Lambda
-(`auth`, `migrate`, `backfill`). A plain `terraform apply` updates them together, so
-a schema-dependent handler goes live before the migrate Lambda has applied the
-schema. `infra/terraform/deploy.sh` passes extra args through to `terraform apply`,
-so an ordered rollout is:
+Merging to `main` is the Vercel frontend deploy (the project is git-linked), so it comes
+LAST. Never describe a merge as inert. `deploy.sh` already sets the AWS profile, loads
+secrets, refuses while the state lock is held, and rejects deletes/replacements.
 
-```
-./deploy.sh -target=aws_lambda_function.migrate   # migrate function only
-aws lambda invoke --function-name "$(terraform output -raw migrate_function_name)" ...
-<verify>
-./deploy.sh                                       # then the API handlers
-```
-
-Terraform warns that `-target` is for exceptional use; this is that exception.
-PROVEN on a real apply (2026-09-30, migration 029): phase 1 is
-`./deploy.sh -target=aws_lambda_function.migrate -target=aws_lambda_function.apply_migration`
-(include `apply_migration` so the read-only `{"verify":true}` check runs the new code —
-the two Lambdas are separate resources sharing one zip), then verify, then a plain
-`./deploy.sh`. `deploy.sh` now sets its own AWS profile/region, loads the DB password
-from SSM, refuses to run while the S3 state lock is held (never auto-unlocks), and
-applies a saved plan only after `plan_gate.jq` passes (no delete/replace ever; infra
-changes need `ALLOW_INFRA_CHANGE=1`). It aborts on an untracked/dirty working tree
-when run through the handed-over script.
-
-The Vercel project is **git-linked** to this repo and serves the production domains,
-so **merging to `main` IS the frontend deploy**. It belongs last in any sequence,
-not first. Never describe a merge as inert.
-
-Migrations are applied by the operator, never automatically (`db/README.md`;
-`backend/handlers/migrate.js` is invoked by hand). Every migration file carries its
-own deploy order and verification queries in its header, each with a stated expected
-result.
+Migrations are applied by the operator, never automatically. Prefer folding a migration
+into `db/schema.sql` (idempotent, applied on every deploy); use the one-off runner only for
+data backfills that must not re-run. Each migration file carries its own verification
+queries in its header.
 
 ## More context
 
