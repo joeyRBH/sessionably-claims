@@ -2,14 +2,14 @@
 --
 -- WHY
 --
--- Per-client billing defaults (migration 021) exist, but every new client starts
--- with them blank, so a practice that bills 90837 at one rate in one place of
--- service has to re-enter the same four values on every chart. These columns hold
--- the practice's own standard values. A new client is seeded from them at create
--- time, and a client field that is still blank falls back to them when a session
--- is created (backend/lib/billing_fields.js applyClientDefaults:
--- client > practice). default_session_duration_minutes is practice-level only; it
--- is used for a manual session that arrives with no duration.
+-- Per-client billing defaults (migration 021) exist, but a practice that bills
+-- 90837 at one rate in one place of service had nowhere to say so once. These columns
+-- hold the practice's own standard values. They are NOT copied onto clients: a blank
+-- client default means "inherit", resolved when a session is created
+-- (backend/lib/billing_fields.js applyClientDefaults: request > client > practice),
+-- so changing the practice default later reaches every client who never set their
+-- own. default_session_duration_minutes is practice-level only; it is used for a
+-- manual session that arrives with no duration.
 --
 -- WHAT IT IS NOT
 --

@@ -188,7 +188,7 @@ async function updatePractice(practiceId, role, body, event, authCtx) {
     if (!pos.ok) {
       return json(400, { error: placeOfServiceError().replace('place_of_service', 'default_place_of_service') }, event);
     }
-    add('default_place_of_service', pos.value);
+    add('default_place_of_service', pos.value);   // 'none' has no meaning at the top layer: it is just blank
   }
   if ('default_session_fee' in body) {
     const fee = parseMoney(body.default_session_fee);

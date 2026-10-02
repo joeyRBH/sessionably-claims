@@ -83,7 +83,7 @@ async function stubQuery(text, params) {
   }
 
   // Practice-wide session defaults sit behind the client's. None here.
-  if (/select \* from practices/.test(t)) {
+  if (/from practices/.test(t)) {
     return { rows: [{ id: params[0] }], rowCount: 1 };
   }
 

@@ -67,7 +67,7 @@ const fakeDb = {
     }
     // The practice's own session defaults (migration 030). None are set here, so
     // the practice contributes nothing, same as the client above.
-    if (/select\s+\*\s+from\s+practices/i.test(sql)) {
+    if (/from\s+practices/i.test(sql)) {
       return { rows: [{ id: 'practice-1' }], rowCount: 1 };
     }
     if (/select\s+1\s+from\s+users/i.test(sql)) return { rows: [{ '?column?': 1 }], rowCount: 1 };

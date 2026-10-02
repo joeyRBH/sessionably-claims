@@ -4,11 +4,14 @@
 //
 //   PUT  /practice   admin-only edit of default CPT / fee / POS / modifiers /
 //                    duration, validated with the same parsers a session uses.
-//   POST /clients    a new client inherits the practice defaults unless the
-//                    request overrides them.
-//   POST /sessions   a client field that is blank falls back to the practice
-//                    (client > practice), and a session with no duration takes
-//                    the practice default duration.
+//   POST /clients    does NOT copy the practice defaults onto the client: blank
+//                    stays blank (= inherit), so a later change to the practice
+//                    default reaches clients created before it.
+//   POST /sessions   resolves request > client > practice at creation time; an
+//                    explicit "None" (place of service 'none' / modifiers ['NONE'])
+//                    at client or session level overrides the practice and is
+//                    never stored as a value on the session; a session with no
+//                    duration takes the practice default duration.
 //
 // DB is an in-memory fake routed by SQL shape; an unrecognized query throws so a
 // handler that starts reading something new fails here. Synthetic ids only.
@@ -35,6 +38,7 @@ const state = {
   lastClientInsert: null,
   lastSessionInsert: null,
   practiceUpdate: null,
+  practiceReads: 0,
 };
 
 const fakeDb = {
@@ -49,7 +53,9 @@ const fakeDb = {
     if (/^select \* from practices where id = \$1 and is_active/i.test(t)) {
       return { rows: [state.practice], rowCount: 1 };
     }
-    if (/^select \* from practices where id = \$1 limit 1/i.test(t)) {
+    // The narrowed defaults query used by POST /sessions: only the five columns.
+    if (/^select default_cpt_code, default_place_of_service, default_session_fee, default_procedure_modifiers, default_session_duration_minutes from practices where id = \$1 limit 1/i.test(t)) {
+      state.practiceReads += 1;
       return { rows: [state.practice], rowCount: 1 };
     }
     if (/^update practices set/i.test(t)) {
@@ -153,32 +159,49 @@ test('blank values clear a default (stored as null)', async () => {
   assert.strictEqual(state.practiceUpdate.params.filter((p) => p === null).length, 2);
 });
 
-test('POST /clients with no billing defaults inherits the practice defaults', async () => {
+const SESSION = () => ({
+  client_id: state.client.id, clinician_id: '00000000-0000-4000-8000-000000000002',
+  session_date: '2026-10-01',
+});
+
+test('POST /clients does NOT copy the practice defaults: they stay blank (= inherit)', async () => {
   const res = await call(clientsH, 'POST', { first_name: 'Alex', last_name: 'Doe' });
   assert.strictEqual(res.statusCode, 201, res.body);
   const p = state.lastClientInsert.params;
-  assert.ok(p.includes('90837'), 'default CPT inherited');
-  assert.ok(p.includes('11'), 'default POS inherited');
-  assert.ok(p.includes('175.00'), 'default fee inherited');
+  assert.ok(!p.includes('90837') && !p.includes('11') && !p.includes('175.00'),
+    'nothing from the practice is written to the client row');
+  assert.strictEqual(state.practiceReads, 0, 'and creating a client does not even read the practice');
 });
 
-test('POST /clients with an explicit value overrides the practice for that field only', async () => {
+test('POST /clients stores only what the request supplied', async () => {
   const res = await call(clientsH, 'POST', {
     first_name: 'Alex', last_name: 'Doe', default_cpt_code: '90834', default_session_fee: 99,
   });
   assert.strictEqual(res.statusCode, 201, res.body);
   const p = state.lastClientInsert.params;
-  assert.ok(p.includes('90834') && !p.includes('90837'), 'override wins');
-  assert.ok(p.includes(99) && !p.includes('175.00'));
-  assert.ok(p.includes('11'), 'a field not overridden still inherits');
+  assert.ok(p.includes('90834') && p.includes(99));
+});
+
+test('a client created BEFORE a practice change gets the NEW practice fee on its next session', async () => {
+  state.practice.default_session_fee = '175.00';
+  state.client = Object.assign({}, state.client, { default_session_fee: null, default_cpt_code: null });
+  const created = await call(clientsH, 'POST', { first_name: 'Later', last_name: 'Change' });
+  assert.strictEqual(created.statusCode, 201);
+  let res = await call(sessionsH, 'POST', SESSION());
+  assert.strictEqual(res.statusCode, 201, res.body);
+  assert.strictEqual(state.lastSessionInsert.params[9], '175.00', 'resolved from the practice today');
+  state.practice.default_session_fee = '200.00';        // the practice raises its rate
+  res = await call(sessionsH, 'POST', SESSION());
+  assert.strictEqual(state.lastSessionInsert.params[9], '200.00',
+    'the same client picks up the new rate — nothing was frozen onto their row');
+  state.client.default_session_fee = '120.00';           // restore for the later cases
 });
 
 // sessions insert params: [practice, client, clinician, date, duration, cpt, dx, pos, mods, fee, ...]
 test('POST /sessions: client > practice per field, practice duration fills a missing one', async () => {
-  const res = await call(sessionsH, 'POST', {
-    client_id: state.client.id, clinician_id: '00000000-0000-4000-8000-000000000002',
-    session_date: '2026-10-01',
-  });
+  state.practice.default_session_fee = '175.00';
+  state.client = Object.assign({}, state.client, { default_session_fee: '120.00' });
+  const res = await call(sessionsH, 'POST', SESSION());
   assert.strictEqual(res.statusCode, 201, res.body);
   const p = state.lastSessionInsert.params;
   assert.strictEqual(p[4], 50, 'practice default duration');
@@ -188,11 +211,61 @@ test('POST /sessions: client > practice per field, practice duration fills a mis
 });
 
 test('POST /sessions: a supplied duration beats the practice default', async () => {
-  await call(sessionsH, 'POST', {
-    client_id: state.client.id, clinician_id: '00000000-0000-4000-8000-000000000002',
-    session_date: '2026-10-01', duration_minutes: 30,
-  });
+  await call(sessionsH, 'POST', Object.assign(SESSION(), { duration_minutes: 30 }));
   assert.strictEqual(state.lastSessionInsert.params[4], 30);
+});
+
+test('practice modifier 95 + session "None" = no modifier (and no sentinel is stored)', async () => {
+  state.practice.default_procedure_modifiers = ['95'];
+  let res = await call(sessionsH, 'POST', SESSION());
+  assert.deepStrictEqual(state.lastSessionInsert.params[8], ['95'], 'blank still inherits the practice modifier');
+  res = await call(sessionsH, 'POST', Object.assign(SESSION(), { procedure_modifiers: ['NONE'] }));
+  assert.strictEqual(res.statusCode, 201, res.body);
+  assert.strictEqual(state.lastSessionInsert.params[8], null, 'explicit None → no modifier');
+  state.practice.default_procedure_modifiers = null;
+});
+
+test('client "None" overrides the practice modifier and place of service', async () => {
+  state.practice.default_procedure_modifiers = ['95'];
+  state.client = Object.assign({}, state.client, { default_procedure_modifiers: [], default_place_of_service: 'none' });
+  const res = await call(sessionsH, 'POST', SESSION());
+  assert.strictEqual(res.statusCode, 201, res.body);
+  const p = state.lastSessionInsert.params;
+  assert.strictEqual(p[8], null, 'client None beats practice 95');
+  assert.strictEqual(p[7], null, "client POS None beats practice 11 — and 'none' never reaches the session row");
+  assert.ok(!JSON.stringify(p).includes('"none"'), 'no sentinel anywhere in the insert');
+  // A session-level value still beats the client None.
+  await call(sessionsH, 'POST', Object.assign(SESSION(), { procedure_modifiers: ['GT'], place_of_service: '12' }));
+  assert.deepStrictEqual(state.lastSessionInsert.params[8], ['GT']);
+  assert.strictEqual(state.lastSessionInsert.params[7], '12');
+  state.practice.default_procedure_modifiers = null;
+  state.client = Object.assign({}, state.client, { default_procedure_modifiers: null, default_place_of_service: null });
+});
+
+test('session place of service "none" overrides the client and practice defaults', async () => {
+  state.client = Object.assign({}, state.client, { default_place_of_service: '10' });
+  const res = await call(sessionsH, 'POST', Object.assign(SESSION(), { place_of_service: 'none' }));
+  assert.strictEqual(res.statusCode, 201, res.body);
+  assert.strictEqual(state.lastSessionInsert.params[7], null);
+  state.client = Object.assign({}, state.client, { default_place_of_service: null });
+});
+
+test('POST /clients stores "None" as the sentinel / empty array, and a blank [] still clears', async () => {
+  let res = await call(clientsH, 'POST', { first_name: 'No', last_name: 'Defaults',
+    default_place_of_service: 'none', default_procedure_modifiers: ['NONE'] });
+  assert.strictEqual(res.statusCode, 201, res.body);
+  let p = state.lastClientInsert.params;
+  assert.ok(p.includes('none'), 'client POS None stored as the sentinel');
+  assert.ok(p.some((v) => Array.isArray(v) && v.length === 0), 'client modifiers None stored as an empty array');
+  res = await call(clientsH, 'POST', { first_name: 'Blank', last_name: 'Mods', default_procedure_modifiers: [] });
+  p = state.lastClientInsert.params;
+  assert.ok(!p.some((v) => Array.isArray(v)), '[] on the wire is still "blank", not None');
+});
+
+test('the practice defaults read is the narrowed column list, not select *', async () => {
+  state.practiceReads = 0;
+  await call(sessionsH, 'POST', SESSION());
+  assert.strictEqual(state.practiceReads, 1);
 });
 
 (async () => {

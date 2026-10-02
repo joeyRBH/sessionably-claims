@@ -175,7 +175,8 @@ function routeSelect(q, sql, params) {
     const p = store.practices.find((r) => r.id === params[0]);
     return one(p ? { recipient: nullifBlank(p.notification_email) } : null);
   }
-  if (/^select \* from practices where id = \$1 limit 1/.test(q)) {
+  if (/^select \* from practices where id = \$1 limit 1/.test(q)
+      || /^select default_cpt_code, .* from practices where id = \$1 limit 1/.test(q)) {
     return one(store.practices.find((r) => r.id === params[0]));
   }
 

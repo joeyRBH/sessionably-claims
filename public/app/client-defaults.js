@@ -189,8 +189,17 @@
     { value: '53', label: '53 — Community mental health center' },
   ];
 
+  // The same list with an explicit "None" after "Not set", for the forms where a
+  // value can be given per client or per session. "Not set" (blank) INHERITS the next
+  // default; "None" deliberately means no place of service even where a default exists.
+  // Not offered on the practice defaults (there is nothing above them to override).
+  var PLACE_OF_SERVICE_OPTIONS_WITH_NONE = [PLACE_OF_SERVICE_OPTIONS[0],
+    { value: 'none', label: 'None — don’t use a default' }]
+    .concat(PLACE_OF_SERVICE_OPTIONS.slice(1));
+
   R.clientDefaults = {
     PLACE_OF_SERVICE_OPTIONS: PLACE_OF_SERVICE_OPTIONS,
+    PLACE_OF_SERVICE_OPTIONS_WITH_NONE: PLACE_OF_SERVICE_OPTIONS_WITH_NONE,
     DEFAULTABLE: DEFAULTABLE,
     buildPayload: buildPayload,
     submitWithDefaults: submitWithDefaults,

@@ -38,10 +38,6 @@ const fakeDb = {
     if (/from users where id/i.test(sql)) {
       return { rows: [{ practice_id: 'practice-1' }], rowCount: 1 };
     }
-    if (/from practices where id/i.test(sql)) {
-      // Practice session defaults (migration 030): none set.
-      return { rows: [{ id: 'practice-1' }], rowCount: 1 };
-    }
     if (/insert into clients/i.test(sql)) {
       return {
         rows: [{

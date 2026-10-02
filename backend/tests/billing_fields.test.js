@@ -168,18 +168,50 @@ test('omitting the practice is exactly the pre-030 behavior', () => {
   assert.strictEqual(out.fee, 90);
 });
 
-test('a new client inherits blank billing defaults from the practice; an override wins', () => {
-  const practice = { default_cpt_code: '90837', default_place_of_service: '11',
-    default_session_fee: '175.00', default_procedure_modifiers: ['95'] };
-  const out = BF.seedClientDefaultsFromPractice({
-    default_cpt_code: '90834', default_place_of_service: null, default_session_fee: null,
-    default_procedure_modifiers: null, calendar_display_name: null,
-  }, practice);
-  assert.strictEqual(out.default_cpt_code, '90834', 'typed value is an override');
-  assert.strictEqual(out.default_place_of_service, '11');
-  assert.strictEqual(out.default_session_fee, '175.00');
-  assert.deepStrictEqual(out.default_procedure_modifiers, ['95']);
-  assert.strictEqual(out.calendar_display_name, null, 'unrelated keys untouched');
+test('applyClientDefaults never copies practice values onto anything but the new session', () => {
+  const practice = { default_cpt_code: '90837' };
+  const client = { default_cpt_code: null };
+  BF.applyClientDefaults({}, client, practice);
+  assert.strictEqual(client.default_cpt_code, null, 'the client row is not mutated: blank stays blank (= inherit)');
+  assert.strictEqual(BF.seedClientDefaultsFromPractice, undefined, 'the copy-on-create helper is gone');
+});
+
+// --- explicit "None" ------------------------------------------------------------
+
+test('parsers: "none" is an explicit choice, distinct from blank', () => {
+  assert.deepStrictEqual(BF.parsePlaceOfService('none'), { ok: true, value: null, none: true });
+  assert.deepStrictEqual(BF.parsePlaceOfService(' None '), { ok: true, value: null, none: true });
+  assert.deepStrictEqual(BF.parsePlaceOfService(''), { ok: true, value: null }, 'blank is just blank');
+  assert.deepStrictEqual(BF.parseProcedureModifiers(['NONE']), { ok: true, value: null, none: true });
+  assert.deepStrictEqual(BF.parseProcedureModifiers(['none']), { ok: true, value: null, none: true });
+  assert.deepStrictEqual(BF.parseProcedureModifiers([]), { ok: true, value: null }, '[] still just clears');
+  assert.strictEqual(BF.parseProcedureModifiers(['NONE', '95']).ok, false, 'None plus a real modifier is contradictory');
+});
+
+test('practice modifier 95 + request "None" = no modifier', () => {
+  const out = BF.applyClientDefaults({ procedure_modifiers: [] }, {}, { default_procedure_modifiers: ['95'] });
+  assert.strictEqual(out.procedure_modifiers, null);
+});
+
+test('practice modifier 95 + client "None" = no modifier; a request value still beats the client None', () => {
+  const practice = { default_procedure_modifiers: ['95'] };
+  const client = { default_procedure_modifiers: [] };
+  assert.strictEqual(BF.applyClientDefaults({}, client, practice).procedure_modifiers, null);
+  assert.deepStrictEqual(BF.applyClientDefaults({ procedure_modifiers: ['GT'] }, client, practice).procedure_modifiers, ['GT']);
+});
+
+test('place of service: client / request "none" override the practice and never survive as a value', () => {
+  const practice = { default_place_of_service: '11' };
+  assert.strictEqual(BF.applyClientDefaults({}, { default_place_of_service: 'none' }, practice).place_of_service, null);
+  assert.strictEqual(BF.applyClientDefaults({ place_of_service: 'none' }, { default_place_of_service: '10' }, practice).place_of_service, null);
+  assert.strictEqual(BF.applyClientDefaults({ place_of_service: '12' }, { default_place_of_service: 'none' }, practice).place_of_service, '12');
+});
+
+test('blank still inherits (null is not None)', () => {
+  const practice = { default_procedure_modifiers: ['95'], default_place_of_service: '11' };
+  const out = BF.applyClientDefaults({}, { default_procedure_modifiers: null, default_place_of_service: null }, practice);
+  assert.deepStrictEqual(out.procedure_modifiers, ['95']);
+  assert.strictEqual(out.place_of_service, '11');
 });
 
 test('parseDurationMinutes: blank → null, whole minutes 1..600, nothing else', () => {

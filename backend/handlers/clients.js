@@ -28,7 +28,7 @@ const {
   parseProcedureModifiers,
   parsePlaceOfService,
   placeOfServiceError,
-  seedClientDefaultsFromPractice,
+  NONE,
 } = require('../lib/billing_fields');
 
 // Allowed client.status values — mirror the CHECK constraint in db/schema.sql.
@@ -138,7 +138,9 @@ function parseBillingDefaults(body) {
   if ('default_place_of_service' in body) {
     const pos = parsePlaceOfService(body.default_place_of_service);
     if (!pos.ok) return { ok: false, error: placeOfServiceError().replace('place_of_service', 'default_place_of_service') };
-    value.default_place_of_service = pos.value;
+    // 'none' is stored as the sentinel: "this client uses NO place of service by
+    // default", which (unlike blank) overrides the practice default.
+    value.default_place_of_service = pos.none ? NONE : pos.value;
   }
   if ('default_session_fee' in body) {
     const fee = parseMoney(body.default_session_fee);
@@ -150,7 +152,9 @@ function parseBillingDefaults(body) {
     if (!mods.ok) {
       return { ok: false, error: 'Invalid default_procedure_modifiers. Expected an array of up to 4 two-character alphanumeric codes.' };
     }
-    value.default_procedure_modifiers = mods.value;
+    // ['NONE'] is stored as an EMPTY ARRAY: "no modifier by default", which (unlike
+    // null/blank) overrides the practice default. [] on the wire still clears (null).
+    value.default_procedure_modifiers = mods.none ? [] : mods.value;
   }
 
   return { ok: true, value };
@@ -290,14 +294,9 @@ async function createClient(practiceId, body, event, authCtx) {
   const defaults = parseBillingDefaults(body);
   if (!defaults.ok) return json(400, { error: defaults.error }, event);
 
-  // A new client inherits the practice-wide session defaults for any billing
-  // default the request left blank (an explicit value is an override and wins).
-  // The practice values were validated by the same parsers on the way in.
-  const practiceRes = await db.query(
-    `select * from practices where id = $1 limit 1`,
-    [practiceId]
-  );
-  defaults.value = seedClientDefaultsFromPractice(defaults.value, practiceRes.rows[0] || null);
+  // Practice defaults are NOT copied onto the client. A blank client default means
+  // "inherit", resolved when a session is created (session > client > practice), so a
+  // later change to the practice default reaches every client that never set their own.
 
   const res = await db.query(
     `insert into clients

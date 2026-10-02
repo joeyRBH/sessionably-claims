@@ -28,6 +28,7 @@ const { json, preflight } = require('../lib/response');
 const { parseBody } = require('../lib/util');
 const { audit } = require('../lib/audit');
 const { applyClientDefaults } = require('../lib/billing_fields');
+const { loadPracticeDefaults } = require('../lib/practice_defaults');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -272,11 +273,8 @@ async function promoteEvent(practiceId, id, body, event, authCtx) {
     //
     // The practice's own defaults sit behind the client's (client > practice), so
     // a client with nothing set still arrives billable at the practice standard.
-    const practiceRes = await tx.query(
-      `select * from practices where id = $1 limit 1`,
-      [practiceId]
-    );
-    const billing = applyClientDefaults({}, client, practiceRes.rows[0] || null);
+    const practiceDefaults = await loadPracticeDefaults(tx.query.bind(tx), practiceId);
+    const billing = applyClientDefaults({}, client, practiceDefaults);
     const sessionDate = sessionDateInZone(ev.starts_at, ev.calendar_time_zone);
     const insRes = await tx.query(
       `insert into sessions

@@ -37,7 +37,9 @@ const {
   placeOfServiceError,
   applyClientDefaults,
   PRACTICE_DURATION_COLUMN,
+  NONE,
 } = require('../lib/billing_fields');
+const { loadPracticeDefaults } = require('../lib/practice_defaults');
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -308,16 +310,16 @@ async function createSession(practiceId, body, event, authCtx) {
   //
   // The practice's own defaults sit behind the client's (client > practice), and
   // the practice default duration fills a session that arrived with none.
-  const practiceRes = await db.query(
-    `select * from practices where id = $1 limit 1`,
-    [practiceId]
-  );
-  const practice = practiceRes.rows[0] || null;
+  //
+  // An explicit "None" in the request (place of service 'none' / modifiers ['NONE'])
+  // is passed down as the sentinel so it beats BOTH defaults, and comes back as a plain
+  // null — the sentinel is never stored on a session.
+  const practice = await loadPracticeDefaults(db.query.bind(db), practiceId);
   const seeded = applyClientDefaults({
     cpt_code: cptCode,
-    place_of_service: pos.value,
+    place_of_service: pos.none ? NONE : pos.value,
     fee: fee.value,
-    procedure_modifiers: modifiers.value,
+    procedure_modifiers: modifiers.none ? [] : modifiers.value,
     diagnosis_codes: dx.value,
   }, client, practice);
   const placeOfService = seeded.place_of_service;

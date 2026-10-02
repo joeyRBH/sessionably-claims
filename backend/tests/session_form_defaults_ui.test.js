@@ -219,6 +219,38 @@ test('a failed practice lookup never blocks the form (client defaults still show
   assert.strictEqual(plain(form.values).cpt_code, '90834');
 });
 
+test('a client explicit None (modifiers [] / POS none) is shown as None, not the practice value', async () => {
+  client = baseClient({ default_procedure_modifiers: [], default_place_of_service: 'none' });
+  practice = { default_procedure_modifiers: ['95'], default_place_of_service: '11' };
+  const form = await openAddSession();
+  const v = plain(form.values);
+  assert.strictEqual(v.procedure_modifiers, 'none');
+  assert.strictEqual(v.place_of_service, 'none');
+  assert.ok(/client/.test(fieldHint(form, 'procedure_modifiers')));
+});
+
+test('the session form offers an explicit None place of service, distinct from Not set', async () => {
+  client = baseClient();
+  practice = {};
+  const form = await openAddSession();
+  const pos = form.fields.find((f) => f.name === 'place_of_service');
+  const values = plain(pos.options).map((o) => o.value);
+  assert.ok(values.includes('') && values.includes('none'), 'both blank (inherit) and none exist');
+  assert.notStrictEqual(values.indexOf(''), values.indexOf('none'));
+});
+
+test('typing "none" for modifiers sends [\'NONE\']; real codes and blank behave as before', async () => {
+  client = baseClient();
+  practice = {};
+  const form = await openAddSession();
+  const mods = form.fields.find((f) => f.name === 'procedure_modifiers');
+  assert.deepStrictEqual(plain(mods.transform('none')), ['NONE']);
+  assert.deepStrictEqual(plain(mods.transform(' None ')), ['NONE']);
+  assert.deepStrictEqual(plain(mods.transform('95, gt')), ['95', 'GT']);
+  assert.deepStrictEqual(plain(mods.transform('')), []);
+  assert.ok(/none/.test(mods.hint), 'the hint explains the None option');
+});
+
 (async () => {
   let failed = 0;
   for (const t of tests) {
