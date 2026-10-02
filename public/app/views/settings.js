@@ -484,13 +484,23 @@
           }, text);
         }
 
-        function fmtWhen(iso) {
+        // The time WITH its zone ("Oct 2, 2026, 3:00 PM MDT"): in the calendar's own
+        // zone when the connection recorded one, else the browser's. An unknown zone
+        // name falls back to the browser's rather than breaking the card.
+        function fmtWhen(iso, tz) {
           if (!iso) return 'not yet';
           var d = new Date(iso);
-          return isNaN(d.getTime()) ? 'not yet' : d.toLocaleString();
+          if (isNaN(d.getTime())) return 'not yet';
+          var opts = { month: 'short', day: 'numeric', year: 'numeric',
+            hour: 'numeric', minute: '2-digit', timeZoneName: 'short' };
+          try {
+            return d.toLocaleString('en-US', tz ? Object.assign({ timeZone: tz }, opts) : opts);
+          } catch (e) {
+            return d.toLocaleString('en-US', opts);
+          }
         }
 
-        function paint(connections) {
+        function paint(connections, canConnect) {
           R.clear(body);
           var list = connections || [];
           var active = list.filter(function (c) { return c.status === 'active'; })[0] || null;
@@ -521,7 +531,7 @@
               h('span', { class: 'badge badge--success' }, 'Connected'),
               h('span', null, active.account_email || 'Google Calendar'),
             ]));
-            body.appendChild(note('Last synced: ' + fmtWhen(active.last_synced_at) +
+            body.appendChild(note('Last synced: ' + fmtWhen(active.last_synced_at, active.calendar_time_zone) +
               '. Appointments refresh whenever you open Calendar, or use Sync now there.'));
             body.appendChild(h('div', { class: 'page-header__actions' }, [
               h('a', { href: '#calendar', class: 'btn btn--secondary btn--sm' }, 'Open Calendar'),
@@ -530,6 +540,14 @@
             return;
           }
 
+          // Clinicians (or the owner of a one-person practice) connect their own
+          // calendar; everyone else gets a pointer to who does. A user who already has
+          // a connection that needs re-authorizing is still offered Reconnect.
+          if (!canConnect && !stale) {
+            body.appendChild(note('Clinicians connect their own Google calendars from ' +
+              'their Settings, so appointments sync under the right clinician.'));
+            return;
+          }
           var connectBtn = h('button', { class: 'btn btn--primary', type: 'button',
             onClick: function () { R.connectGoogleCalendar(connectBtn); } },
             stale ? 'Reconnect Google Calendar' : 'Connect Google Calendar');
@@ -542,10 +560,11 @@
         }
 
         function load() {
-          Promise.resolve().then(function () {
-            return api.calendarConnections.status();
-          }).then(function (res) {
-            paint((res && res.connections) || []);
+          Promise.all([
+            Promise.resolve().then(function () { return api.calendarConnections.status(); }),
+            typeof R.calendarConnectAllowed === 'function' ? R.calendarConnectAllowed() : Promise.resolve(true),
+          ]).then(function (res) {
+            paint((res[0] && res[0].connections) || [], res[1] !== false);
           }).catch(function (err) {
             R.clear(body);
             body.appendChild(h('p', { class: 'inline-error', style: 'margin:0' },

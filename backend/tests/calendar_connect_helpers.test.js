@@ -117,7 +117,7 @@ window.window = window;
 const viewsSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'public', 'app', 'views.js'), 'utf8');
 
 // Load views.js into a fresh window whose URL/history/api the test controls.
-function load(search, startImpl) {
+function load(search, startImpl, extra) {
   const log = { assigned: [], replaced: [] };
   const w = {
     document, setTimeout, clearTimeout, URLSearchParams,
@@ -127,12 +127,13 @@ function load(search, startImpl) {
     },
     history: { replaceState(_s, _t, url) { log.replaced.push(url); } },
     addEventListener() {},
-    ReddablyAPI: { calendarConnections: { start: startImpl || (() => Promise.resolve({ url: 'https://accounts.example/consent' })) } },
+    ReddablyAPI: Object.assign({ calendarConnections: { start: startImpl || (() => Promise.resolve({ url: 'https://accounts.example/consent' })) } }, (extra && extra.api) || {}),
     localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
   };
   w.window = w;
   vm.createContext(w);
   vm.runInContext(viewsSrc, w, { filename: 'views.js' });
+  if (extra && 'currentUser' in extra) w.Reddably.currentUser = extra.currentUser;
   return { w, R: w.Reddably, log };
 }
 const toastTexts = () => document.body.querySelectorAll('.toast').map((t) => t.textContent);
@@ -204,6 +205,35 @@ const toastTexts = () => document.body.querySelectorAll('.toast').map((t) => t.t
     assert.strictEqual(w.location.hash, '');
     const l2 = load('?calendar=garbage');
     assert.deepStrictEqual(JSON.parse(JSON.stringify(l2.log.replaced)), [], 'an unknown flag does nothing');
+  }
+
+  // --- who is offered Connect ---
+  {
+    const allowed = async (currentUser, users) => {
+      const { R } = load('', null, { currentUser, api: { users: { list: () => (users instanceof Error ? Promise.reject(users) : Promise.resolve({ users })) } } });
+      return R.calendarConnectAllowed();
+    };
+    assert.strictEqual(await allowed({ user: { role: 'clinician' } }, []), true, 'clinicians connect');
+    assert.strictEqual(await allowed({}, []), true, 'no /me and no role anywhere: allowed rather than hidden');
+    assert.strictEqual(await allowed({ user: { role: 'practice_admin' } }, [{ id: 'a' }]), true,
+      'the owner of a one-person practice is the clinician');
+    assert.strictEqual(await allowed({ user: { role: 'practice_admin' } }, [{ id: 'a' }, { id: 'b' }]), false,
+      'an admin in a multi-person practice is not');
+    assert.strictEqual(await allowed({ user: { role: 'billing_staff' } }, [{ id: 'a' }, { id: 'b' }]), false);
+    // The cache may not be filled yet (a deep link or refresh mounts the view first):
+    // the role is then fetched from /me, never guessed.
+    const viaMe = async (meRole, users) => {
+      const { R } = load('', null, { currentUser: undefined, api: {
+        me: () => Promise.resolve({ user: { role: meRole } }),
+        users: { list: () => Promise.resolve({ users }) } } });
+      return R.calendarConnectAllowed();
+    };
+    assert.strictEqual(await viaMe('practice_admin', [{ id: 'a' }, { id: 'b' }]), false,
+      'an admin whose /me had not landed yet is still hidden — not shown a Connect button by default');
+    assert.strictEqual(await viaMe('clinician', []), true);
+    assert.strictEqual(await viaMe('practice_admin', [{ id: 'a' }]), true);
+    assert.strictEqual(await allowed({ user: { role: 'practice_admin' } }, new Error('down')), false,
+      'a failed roster lookup for a non-clinician reads as not allowed (and never rejects)');
   }
 
   console.log('calendar_connect_helpers.test.js: OK');

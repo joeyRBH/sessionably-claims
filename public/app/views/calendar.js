@@ -185,6 +185,9 @@
           return api.calendarConnections.status();
         }).then(function (res) { return (res && res.connections) || []; })
           .catch(function () { return null; }),
+        // Whether this user is the kind who connects a calendar (clinician, or the
+        // owner of a one-person practice). Never rejects.
+        typeof R.calendarConnectAllowed === 'function' ? R.calendarConnectAllowed() : Promise.resolve(true),
       ]).then(function (results) {
         function eventsOf(res) { return (res && res.calendar_events) || []; }
         // Pickable clients: not soft-deleted (the API already excludes those)
@@ -197,7 +200,7 @@
           confirmed: eventsOf(results[1]),
           ignored: eventsOf(results[2]),
           sessions: (results[3] && results[3].sessions) || [],
-        }, clients, results[5], preselectSessionIds, results[6]);
+        }, clients, results[5], preselectSessionIds, results[6], results[7] !== false);
         if (!opened) {
           opened = true;
           autoSync(results[6]);
@@ -207,7 +210,7 @@
       });
     }
 
-    function render(data, clients, calInfo, preselectSessionIds, connections) {
+    function render(data, clients, calInfo, preselectSessionIds, connections, canConnect) {
       R.clear(root);
 
       var workflow = buildWorkflow(data, Date.now());
@@ -828,7 +831,14 @@
         return c && c.status === 'needs_reauth';
       });
       var connectCard = null;
-      if (connections && !isConnected) {
+      if (connections && !isConnected && !canConnect && !needsReauth) {
+        // Not a clinician (and not a one-person practice): no Connect button — a short
+        // note instead. The appointment lists below are unaffected and stay visible.
+        connectCard = h('p', {
+          style: 'margin:0;color:var(--color-text-muted);font-size:var(--font-size-3)',
+        }, 'Clinicians connect their own Google calendars from their Settings, so ' +
+           'appointments sync under the right clinician.');
+      } else if (connections && !isConnected) {
         var connectBtn = h('button', { class: 'btn btn--primary', type: 'button',
           onClick: function () { R.connectGoogleCalendar(connectBtn); } },
           needsReauth ? 'Reconnect Google Calendar' : 'Connect Google Calendar');

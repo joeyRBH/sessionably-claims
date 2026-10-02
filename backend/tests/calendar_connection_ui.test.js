@@ -202,6 +202,7 @@ function makeEnv(opts) {
     fmtDate: (s) => String(s),
     toast(message, kind) { env.toasts.push({ message, kind }); },
     connectGoogleCalendar(btn) { env.connectBtns.push(btn); return Promise.resolve(); },
+    calendarConnectAllowed() { return Promise.resolve(o.canConnect !== false); },
     registerView(name, fn) { if (name === 'calendar') viewFn = fn; },
   };
   const FakeDate = class extends Date {
@@ -350,6 +351,36 @@ test('sync only stages appointments: it never matches, promotes, ignores or conf
   for (const forbidden of ['events.promote', 'events.ignore', 'sessions.update']) {
     assert.strictEqual(env.count(forbidden), 0, forbidden + ' must stay a human decision');
   }
+});
+
+test('a non-clinician (not a one-person practice) sees a note instead of the Connect card; events stay visible', async () => {
+  const env = makeEnv({ connections: [], canConnect: false });
+  const root = await env.open();
+  assert.ok(!hasButton(root, 'Connect Google Calendar'), 'no Connect button');
+  assert.ok(/Clinicians connect their own Google calendars/.test(root.textContent), 'a short pointer instead');
+  assert.ok(/Sessions to confirm/.test(root.textContent) && /Upcoming appointments/.test(root.textContent),
+    'the appointment lists are still there');
+  assert.ok(!hasButton(root, 'Sync now'), 'and nothing to sync without a connection');
+  assert.strictEqual(env.count('events.sync'), 0);
+});
+
+test('a non-clinician who already has a connection is unaffected (auto-sync, no note)', async () => {
+  const env = makeEnv({ connections: [ACTIVE], canConnect: false });
+  const root = await env.open();
+  assert.ok(!/Clinicians connect their own/.test(root.textContent));
+  assert.strictEqual(env.count('events.sync'), 1);
+});
+
+test('a non-clinician whose connection needs re-auth can still Reconnect', async () => {
+  const env = makeEnv({ connections: [{ id: 'c', status: 'needs_reauth' }], canConnect: false });
+  const root = await env.open();
+  assert.ok(hasButton(root, 'Reconnect Google Calendar'));
+});
+
+test('a clinician or the owner of a one-person practice (canConnect) still gets the Connect card', async () => {
+  const env = makeEnv({ connections: [], canConnect: true });
+  const root = await env.open();
+  assert.ok(hasButton(root, 'Connect Google Calendar'));
 });
 
 (async () => {

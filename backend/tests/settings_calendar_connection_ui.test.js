@@ -93,6 +93,7 @@ function walk(node, out) {
 let connections = [];
 let statusFails = false;
 let confirmAnswer = true;
+let canConnect = true;
 const calls = [];
 const toasts = [];
 const connectClicks = [];
@@ -120,6 +121,7 @@ const Reddably = {
   scrubVendor(s) { return s; },
   confirmModal() { return Promise.resolve(confirmAnswer); },
   connectGoogleCalendar(btn) { connectClicks.push(btn); return Promise.resolve(); },
+  calendarConnectAllowed() { return Promise.resolve(canConnect); },
   registerView(name, fn) { if (name === 'settings') Reddably._viewFn = fn; },
 };
 const APP = path.join(__dirname, '..', '..', 'public', 'app');
@@ -192,6 +194,45 @@ test('connected: shows the account, last sync and Disconnect; Disconnect asks fi
   assert.ok(calls.includes('disconnect:c1'), 'confirming POSTs the disconnect for that connection');
   assert.ok(toasts.some((t) => /disconnected/i.test(t.message)));
   assert.strictEqual(calls.filter((c) => c === 'status').length, 2, 'and the card reloads its status');
+});
+
+test('"Last synced" carries its time zone: the calendar\'s own zone when recorded', async () => {
+  connections = [{ id: 'c1', status: 'active', account_email: 'pat@example.com',
+    last_synced_at: '2026-10-02T21:04:00Z', calendar_time_zone: 'America/Denver' }];
+  let { conn } = await render();
+  assert.ok(/Last synced: Oct 2, 2026, 3:04 PM MDT\./.test(conn.textContent), conn.textContent);
+  connections[0].calendar_time_zone = 'Asia/Tokyo';
+  ({ conn } = await render());
+  assert.ok(/Oct 3, 2026, 6:04 AM GMT\+9/.test(conn.textContent), 'a different zone is shown in that zone');
+  connections[0].calendar_time_zone = 'Not/AZone';
+  ({ conn } = await render());
+  assert.ok(/Last synced: Oct \d, 2026, [\d:]+ [AP]M \S+\./.test(conn.textContent),
+    'an unknown zone falls back to the browser zone, still labelled: ' + conn.textContent);
+  connections[0].last_synced_at = null;
+  ({ conn } = await render());
+  assert.ok(/Last synced: not yet/.test(conn.textContent));
+});
+
+test('a non-clinician (not a one-person practice) is told clinicians connect their own calendars', async () => {
+  connections = []; canConnect = false;
+  let { conn } = await render();
+  canConnect = true;
+  assert.ok(!btn(conn, 'Connect Google Calendar'), 'no Connect button');
+  assert.ok(/Clinicians connect their own Google calendars/.test(conn.textContent));
+});
+
+test('a non-clinician with a connection that needs re-auth is still offered Reconnect', async () => {
+  connections = [{ id: 'c1', status: 'needs_reauth' }]; canConnect = false;
+  const { conn } = await render();
+  canConnect = true;
+  assert.ok(btn(conn, 'Reconnect Google Calendar'));
+});
+
+test('a non-clinician who already has an active connection still sees it and can disconnect', async () => {
+  connections = [{ id: 'c1', status: 'active', account_email: 'pat@example.com' }]; canConnect = false;
+  const { conn } = await render();
+  canConnect = true;
+  assert.ok(/Connected/.test(conn.textContent) && btn(conn, 'Disconnect'));
 });
 
 test('a status failure stays inside its card: inline error + Retry, rest of Settings intact', async () => {
