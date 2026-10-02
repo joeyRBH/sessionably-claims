@@ -195,9 +195,12 @@ const api = {
     create(payload) { calls.push({ name: 'clients.create', args: [payload] }); return Promise.resolve({ client: storedClient() }); },
     list() { calls.push({ name: 'clients.list', args: [] }); return Promise.resolve({ clients: [storedClient()] }); },
   },
+  // The chart suggests unmatched calendar appointments inline; none here.
+  calendarEvents: { list() { return Promise.resolve({ calendar_events: [] }); } },
   insuranceRecords: { list() { return Promise.resolve({ insurance_records: [] }); } },
   sessions: { list() { return Promise.resolve({ sessions: [] }); } },
   users: { list() { return Promise.resolve({ users: [] }); } },
+  practice: { get() { return Promise.resolve({ practice: {} }); } },
 };
 
 let scriptedFormResult = null;   // what the stubbed formModal resolves with
@@ -217,7 +220,13 @@ const Reddably = {
   toast(message, tone) { toasts.push({ message, tone }); },
   navigate() {},
   confirmModal() { return Promise.resolve(false); },
-  formModal() { return Promise.resolve(scriptedFormResult); },
+  formModal(opts) {
+    // The real modal runs onSubmit (the create request) while still open.
+    if (scriptedFormResult && opts && typeof opts.onSubmit === 'function') {
+      return Promise.resolve(opts.onSubmit(scriptedFormResult)).then(() => scriptedFormResult);
+    }
+    return Promise.resolve(scriptedFormResult);
+  },
   registerView(name, fn) { if (name === 'clients') Reddably._viewFn = fn; },
 };
 

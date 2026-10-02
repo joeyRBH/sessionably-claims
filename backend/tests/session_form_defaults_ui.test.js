@@ -99,6 +99,8 @@ let lastForm = null;
 
 const api = {
   clients: { get() { return Promise.resolve({ client }); } },
+  // The chart suggests unmatched calendar appointments inline; none here.
+  calendarEvents: { list() { return Promise.resolve({ calendar_events: [] }); } },
   insuranceRecords: { list() { return Promise.resolve({ insurance_records: [] }); } },
   sessions: { list() { return Promise.resolve({ sessions: [] }); } },
   users: { list() { return Promise.resolve({ users: [{ id: 'u1', first_name: 'Pat', last_name: 'Lee' }] }); } },
